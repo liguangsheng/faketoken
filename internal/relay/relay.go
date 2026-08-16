@@ -1,0 +1,927 @@
+// Package relay forwards client requests to upstream providers as verbatim as
+// possible: only the credentials, the destination host and (optionally) the
+// model name are rewritten. Everything else — headers, query string, body,
+// status code, response headers and streamed bytes — is passed straight
+// through in both directions.
+package relay
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/faketoken/faketoken/internal/auth"
+	"github.com/faketoken/faketoken/internal/billing"
+	"github.com/faketoken/faketoken/internal/config"
+	"github.com/faketoken/faketoken/internal/logstream"
+	"github.com/faketoken/faketoken/internal/model"
+	"github.com/faketoken/faketoken/internal/provider"
+	"github.com/faketoken/faketoken/internal/store"
+)
+
+// maxRequestBody bounds how much of a client request is buffered. Buffering is
+// what makes transparent retries across channels possible.
+const maxRequestBody = 100 << 20 // 100 MiB
+
+type Relay struct {
+	st      *store.Store
+	pricer  *billing.Pricer
+	cfg     *config.Config
+	clients *clientPool
+	breaker *breaker
+	// stream notifies connected consoles about new log rows. Optional: the
+	// relay works without one.
+	stream *logstream.Broker
+	// capture is the full-log body cap, updated from the console without a
+	// restart and read on every relayed request.
+	capture atomic.Int64
+	// blocked holds the keyword list a request body is refused for. Same
+	// treatment as capture: pushed from the console, read per request.
+	blocked blockedStore
+}
+
+func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config) *Relay {
+	rl := &Relay{
+		st:      st,
+		pricer:  pricer,
+		cfg:     cfg,
+		clients: newClientPool(),
+		breaker: newBreaker(),
+	}
+	rl.capture.Store(DefaultCaptureLimit)
+	return rl
+}
+
+// SetLogStream attaches the broker that pushes new entries to the console.
+func (rl *Relay) SetLogStream(broker *logstream.Broker) { rl.stream = broker }
+
+// publishLog notifies live consoles. Called only after the row is committed,
+// so what a console shows always matches what a reload would return.
+func (rl *Relay) publishLog(entry *model.RequestLog) {
+	if rl.stream != nil {
+		rl.stream.Publish(entry)
+	}
+}
+
+// Register mounts the relay on the OpenAI, Anthropic and Gemini path prefixes.
+func (rl *Relay) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/models", rl.handleModels)
+	mux.HandleFunc("/v1/models/", rl.handleModels)
+	// The billing pair another gateway reads when it adds this one as a
+	// channel. Same shape this relay probes upstreams with.
+	mux.HandleFunc("/dashboard/billing/subscription", rl.handleBillingSubscription)
+	mux.HandleFunc("/dashboard/billing/usage", rl.handleBillingUsage)
+	mux.Handle("/v1/", http.HandlerFunc(rl.ServeHTTP))
+	mux.Handle("/v1beta/", http.HandlerFunc(rl.ServeHTTP))
+	mux.Handle("/v1alpha/", http.HandlerFunc(rl.ServeHTTP))
+}
+
+// ------------------------------------------------------------------- errors
+
+type apiError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    string `json:"code,omitempty"`
+	Param   string `json:"param,omitempty"`
+}
+
+func writeError(w http.ResponseWriter, status int, errType, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]apiError{
+		"error": {Message: message, Type: errType, Code: code},
+	})
+}
+
+// ------------------------------------------------------------- authentication
+
+type principal struct {
+	user  *model.User
+	token *model.Token
+}
+
+// group decides both which channels this request may reach and the price
+// multiplier applied to it. A key may name its own group; falling back to the
+// account's is what every key did before per-key groups existed.
+func (p *principal) group() string {
+	if p.token != nil && p.token.Group != "" {
+		return p.token.Group
+	}
+	return p.user.Group
+}
+
+func extractKey(r *http.Request) string {
+	if v := r.Header.Get("Authorization"); v != "" {
+		if after, ok := strings.CutPrefix(v, "Bearer "); ok {
+			return strings.TrimSpace(after)
+		}
+		return strings.TrimSpace(v)
+	}
+	if v := r.Header.Get("X-Api-Key"); v != "" {
+		return strings.TrimSpace(v)
+	}
+	if v := r.Header.Get("X-Goog-Api-Key"); v != "" {
+		return strings.TrimSpace(v)
+	}
+	return strings.TrimSpace(r.URL.Query().Get("key"))
+}
+
+func (rl *Relay) authenticate(ctx context.Context, r *http.Request) (*principal, int, error) {
+	raw := extractKey(r)
+	if raw == "" {
+		return nil, http.StatusUnauthorized, errors.New("missing API key: send it as 'Authorization: Bearer sk-...'")
+	}
+
+	token, err := rl.st.GetTokenByHash(ctx, auth.HashAPIKey(raw))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, http.StatusUnauthorized, errors.New("invalid API key")
+		}
+		return nil, http.StatusInternalServerError, err
+	}
+	if token.Status != model.StatusEnabled {
+		return nil, http.StatusForbidden, errors.New("this API key is disabled")
+	}
+	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
+		return nil, http.StatusForbidden, errors.New("this API key has expired")
+	}
+	if !token.UnlimitedQuota && token.Quota <= 0 {
+		return nil, http.StatusPaymentRequired, errors.New("this API key has exhausted its quota")
+	}
+
+	user, err := rl.st.GetUser(ctx, token.UserID)
+	if err != nil {
+		return nil, http.StatusUnauthorized, errors.New("the owner of this API key no longer exists")
+	}
+	if user.Status != model.StatusEnabled {
+		return nil, http.StatusForbidden, errors.New("this account is disabled")
+	}
+	if user.Quota <= 0 {
+		return nil, http.StatusPaymentRequired, errors.New("insufficient balance")
+	}
+	return &principal{user: user, token: token}, 0, nil
+}
+
+// --------------------------------------------------------------- model listing
+
+func (rl *Relay) handleModels(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	p, status, err := rl.authenticate(ctx, r)
+	if err != nil {
+		writeError(w, status, "authentication_error", "", err.Error())
+		return
+	}
+
+	models, err := rl.st.GroupModels(ctx, p.group())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "", err.Error())
+		return
+	}
+	models = filterAllowed(models, p.token.AllowedModels)
+
+	// GET /v1/models/{id}
+	if id := strings.TrimPrefix(r.URL.Path, "/v1/models/"); id != "" && id != r.URL.Path {
+		for _, m := range models {
+			if m == id {
+				writeJSON(w, http.StatusOK, modelCard(m))
+				return
+			}
+		}
+		writeError(w, http.StatusNotFound, "invalid_request_error", "model_not_found",
+			fmt.Sprintf("the model %q does not exist or you do not have access to it", id))
+		return
+	}
+
+	cards := make([]map[string]any, 0, len(models))
+	for _, m := range models {
+		cards = append(cards, modelCard(m))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": cards})
+}
+
+func modelCard(id string) map[string]any {
+	return map[string]any{
+		"id":       id,
+		"object":   "model",
+		"created":  0,
+		"owned_by": "faketoken",
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func filterAllowed(models, allowed []string) []string {
+	if len(allowed) == 0 {
+		return models
+	}
+	set := make(map[string]struct{}, len(allowed))
+	for _, a := range allowed {
+		set[a] = struct{}{}
+	}
+	out := make([]string, 0, len(models))
+	for _, m := range models {
+		if _, ok := set[m]; ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// -------------------------------------------------------------- relay handler
+
+func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	ctx := r.Context()
+
+	p, status, err := rl.authenticate(ctx, r)
+	if err != nil {
+		writeError(w, status, "authentication_error", "", err.Error())
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "",
+			"request body too large or unreadable: "+err.Error())
+		return
+	}
+	_ = r.Body.Close()
+
+	info := inspect(r.URL.Path, r.Header.Get("Content-Type"), body)
+	entry := &model.RequestLog{
+		UserID:    p.user.ID,
+		Username:  p.user.Username,
+		TokenID:   p.token.ID,
+		TokenName: p.token.Name,
+		Model:     info.Model,
+		Endpoint:  r.URL.Path,
+		Method:    r.Method,
+		Stream:    info.Stream,
+		ClientIP:  clientIP(r),
+		// Read from what the caller already sent; nothing is added to the
+		// bytes that go upstream.
+		ReasoningEffort: reasoningEffort(body, info.IsJSON),
+		ClientType:      clientType(r),
+	}
+	// Only the cheap half is done here; the body is converted later, off the
+	// path the caller is waiting on.
+	captured := captureRequest(r, body)
+
+	// Checked before routing, pricing or quota: a blocked body should cost
+	// nothing beyond reading it, and must never reach an upstream.
+	if word := rl.matchBlocked(body); word != "" {
+		// The keyword goes to the operator's log, never to the caller. Telling
+		// the sender which word tripped would turn every rejection into a probe
+		// that maps out the list.
+		slog.Warn("blocked a request by keyword",
+			"keyword", word, "user", p.user.Username, "token", p.token.Name,
+			"model", info.Model, "ip", entry.ClientIP)
+
+		status, reply := rl.blockedResponse()
+
+		// A success is answered like a model would answer, in whichever
+		// dialect the caller used. Endpoints that expect something other than
+		// prose — embeddings, audio, images — are refused instead: a text
+		// reply where a vector belongs surfaces as a parse failure and sends
+		// the operator looking in the wrong place.
+		dialect := cannedDialectFor(r.URL.Path)
+		if status < 400 && dialect != cannedNone {
+			// Estimated from what was actually sent and what is being sent
+			// back, so the reply carries the kind of counts a real answer
+			// would rather than a conspicuous pair of zeroes.
+			usage := cannedUsage{
+				Prompt:     estimateTokens(string(body)),
+				Completion: estimateTokens(reply),
+			}
+			sent := writeCannedReply(w, dialect, info.Model, info.Stream, reply, usage)
+			captured.responseBody = sent
+			captured.responseHeaders = map[string][]string{
+				"Content-Type": {w.Header().Get("Content-Type")},
+			}
+			// Logged with the status the caller saw, and the keyword in the
+			// error field so these stay findable under the "only errors"
+			// filter even when that status is a 200.
+			rl.finish(entry, captured, started, status, "blocked by keyword: "+word)
+			return
+		}
+
+		// Refused, for one of two reasons, and the message differs by which.
+		//
+		// If the operator chose an error status, their text is the message
+		// they want the caller to read. If instead we are here only because
+		// this endpoint cannot carry prose — an embeddings caller expects
+		// vectors, and a 200 with an error body is a response no client can
+		// make sense of — then their text was written to be an answer, not an
+		// error, and a generic refusal reads better than a poem in an error
+		// field.
+		message := reply
+		if status < 400 {
+			status = http.StatusUnauthorized
+			message = "the request was rejected by this gateway's content policy"
+		}
+		rl.finish(entry, captured, started, status, "blocked by keyword: "+word)
+		writeError(w, status, "invalid_request_error", "content_blocked", message)
+		return
+	}
+
+	if info.Model == "" {
+		message := "could not determine the target model from the request"
+		rl.finish(entry, captured, started, http.StatusBadRequest, message)
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "model_required", message)
+		return
+	}
+
+	if len(p.token.AllowedModels) > 0 && len(filterAllowed([]string{info.Model}, p.token.AllowedModels)) == 0 {
+		rl.finish(entry, captured, started, http.StatusForbidden,
+			fmt.Sprintf("model %q is not allowed for this API key", info.Model))
+		writeError(w, http.StatusForbidden, "invalid_request_error", "model_not_allowed",
+			fmt.Sprintf("the model %q is not permitted for this API key", info.Model))
+		return
+	}
+
+	candidates, err := rl.st.Candidates(ctx, p.group(), info.Model)
+	if err != nil {
+		rl.finish(entry, captured, started, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "server_error", "", err.Error())
+		return
+	}
+	if len(candidates) == 0 {
+		msg := fmt.Sprintf("no channel in group %q currently serves the model %q", p.group(), info.Model)
+		rl.finish(entry, captured, started, http.StatusNotFound, msg)
+		writeError(w, http.StatusNotFound, "invalid_request_error", "model_not_found", msg)
+		return
+	}
+
+	// The model is routable, so this request would really spend the operator's
+	// money. Refuse before touching an upstream if nobody has priced it: usage
+	// only becomes known after the answer, and an unbillable answer is a gift.
+	if rl.pricer.Blocked(info.Model) {
+		msg := fmt.Sprintf("the model %q has no price configured on this gateway; "+
+			"ask an administrator to set one before using it", info.Model)
+		slog.Warn("refused an unpriced model",
+			"model", info.Model, "user", p.user.Username, "token", p.token.Name)
+		rl.finish(entry, captured, started, http.StatusForbidden, "model has no price configured")
+		writeError(w, http.StatusForbidden, "invalid_request_error", "model_not_priced", msg)
+		return
+	}
+
+	rl.dispatch(w, r, p, entry, captured, info, body, order(candidates), started)
+}
+
+// dispatch walks the ordered candidate list until one upstream answers.
+func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
+	entry *model.RequestLog, captured *capturedRequest, info requestInfo, body []byte,
+	candidates []model.Candidate, started time.Time) {
+
+	ctx := r.Context()
+	budget := min(rl.cfg.MaxRetries, len(candidates))
+
+	var (
+		lastStatus  int
+		lastMessage string
+		attempts    int
+		lastOutcome attemptOutcome
+	)
+
+	// Channels that recently failed move to the back of the queue instead of
+	// being dropped: a degraded upstream still beats a hard failure when it is
+	// the only one left that serves the model.
+	healthy := make([]model.Candidate, 0, len(candidates))
+	cooling := make([]model.Candidate, 0, len(candidates))
+	for _, cand := range candidates {
+		if rl.breaker.tripped(cand.ChannelID) {
+			cooling = append(cooling, cand)
+		} else {
+			healthy = append(healthy, cand)
+		}
+	}
+
+	for _, cand := range append(healthy, cooling...) {
+		if attempts >= budget {
+			break
+		}
+
+		ch, err := rl.st.GetChannel(ctx, cand.ChannelID)
+		if err != nil {
+			continue
+		}
+		if attempts > 0 && !rl.pauseBeforeRetry(ctx, attempts) {
+			// The caller hung up while we were backing off.
+			return
+		}
+		attempts++
+		entry.Retries = int32(attempts - 1)
+
+		outcome := rl.attempt(w, r, ch, entry, info, body)
+		switch outcome.kind {
+		case outcomeDone:
+			rl.breaker.succeed(ch.ID)
+			rl.settle(p, entry, captured, ch, outcome, started)
+			return
+		case outcomeAborted:
+			// The client hung up or the stream broke after headers were sent;
+			// retrying would corrupt the response.
+			rl.settle(p, entry, captured, ch, outcome, started)
+			return
+		case outcomeRetry:
+			lastStatus, lastMessage = outcome.status, outcome.message
+			lastOutcome = outcome
+			rl.noteFailure(ctx, ch, outcome)
+			slog.Warn("relay attempt failed",
+				"channel", ch.Name, "channel_id", ch.ID, "model", info.Model,
+				"status", outcome.status, "error", outcome.message)
+		}
+	}
+
+	if lastStatus == 0 {
+		lastStatus = http.StatusServiceUnavailable
+		lastMessage = "every candidate channel is unavailable"
+	}
+	applyResponseDetails(captured, lastOutcome)
+	rl.finish(entry, captured, started, lastStatus, lastMessage)
+	writeError(w, lastStatus, "upstream_error", "",
+		fmt.Sprintf("all %d attempt(s) failed: %s", max(attempts, 1), lastMessage))
+}
+
+type outcomeKind int
+
+const (
+	outcomeRetry outcomeKind = iota
+	outcomeDone
+	outcomeAborted
+)
+
+type attemptOutcome struct {
+	kind              outcomeKind
+	status            int
+	message           string
+	usage             model.Usage
+	hasUsage          bool
+	ttfb              time.Duration
+	authFail          bool
+	retryAfter        time.Duration
+	responseHeaders   map[string][]string
+	responseBody      string
+	responseTruncated bool
+}
+
+// attempt performs one upstream call. On success it streams the response
+// straight to the client; on a retryable failure it consumes and reports the
+// upstream error without touching the client connection.
+func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Channel,
+	entry *model.RequestLog, info requestInfo, body []byte) attemptOutcome {
+
+	adaptor := provider.For(ch.Type)
+	baseURL := ch.BaseURL
+	if baseURL == "" {
+		baseURL = adaptor.DefaultBaseURL()
+	}
+
+	upstreamModel := ch.UpstreamModel(info.Model)
+	path := r.URL.Path
+	outBody := body
+
+	if upstreamModel != info.Model {
+		if adaptor.ModelInPath() {
+			path = provider.ReplaceGeminiModelInPath(path, info.Model, upstreamModel)
+		}
+		if info.IsJSON && len(body) > 0 {
+			outBody = rewriteModel(body, upstreamModel)
+		}
+	}
+
+	entry.ChannelID = ch.ID
+	entry.ChannelName = ch.Name
+	entry.UpstreamModel = upstreamModel
+
+	target := provider.JoinURL(baseURL, path)
+	if query := forwardableQuery(r.URL); query != "" {
+		target += "?" + query
+	}
+
+	timeout := rl.cfg.RelayTimeout
+	if ch.TimeoutSecs > 0 {
+		timeout = time.Duration(ch.TimeoutSecs) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, r.Method, target, bytes.NewReader(outBody))
+	if err != nil {
+		return attemptOutcome{kind: outcomeRetry, status: http.StatusBadGateway, message: err.Error()}
+	}
+	copyRequestHeaders(req.Header, r.Header)
+	for k, v := range ch.Headers {
+		req.Header.Set(k, v)
+	}
+	adaptor.ApplyAuth(req, ch.APIKey)
+	req.ContentLength = int64(len(outBody))
+
+	client, err := rl.clients.get(ch.ProxyURL)
+	if err != nil {
+		return attemptOutcome{kind: outcomeRetry, status: http.StatusBadGateway,
+			message: "invalid channel proxy: " + err.Error()}
+	}
+
+	dialled := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		if r.Context().Err() != nil {
+			return attemptOutcome{kind: outcomeAborted, status: 499, message: "client closed request"}
+		}
+		return attemptOutcome{kind: outcomeRetry, status: http.StatusBadGateway, message: err.Error()}
+	}
+	defer resp.Body.Close()
+	headersAt := time.Now()
+
+	if resp.StatusCode >= 400 && retryable(resp.StatusCode) {
+		limit := rl.captureLimit()
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+		truncated := len(snippet) > limit
+		if truncated {
+			snippet = snippet[:limit]
+		}
+		responseBody, responseTruncated := sanitizeBody(resp.Header.Get("Content-Type"), snippet, truncated, limit)
+		return attemptOutcome{
+			kind:            outcomeRetry,
+			status:          resp.StatusCode,
+			message:         upstreamErrorMessage(snippet),
+			authFail:        resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden,
+			retryAfter:      parseRetryAfter(resp.Header),
+			responseHeaders: sanitizeHeaders(resp.Header), responseBody: responseBody,
+			responseTruncated: responseTruncated,
+		}
+	}
+
+	// From here the upstream owns the response: status, headers and bytes are
+	// forwarded verbatim, including non-retryable 4xx errors.
+	copyResponseHeaders(w.Header(), resp.Header)
+	contentType := resp.Header.Get("Content-Type")
+	isStream := info.Stream || strings.Contains(strings.ToLower(contentType), "event-stream")
+	if isStream {
+		w.Header().Set("X-Accel-Buffering", "no")
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	sniff := newUsageSniffer(contentType, rl.captureLimit())
+	_, bodyTTFB, pumpErr := pump(w, resp.Body, sniff, isStream, rl.cfg.StreamIdleTimeout, cancel)
+
+	usage, hasUsage := sniff.Usage()
+	captured, captureTruncated := sniff.Capture()
+	responseBody, responseTruncated := sanitizeBody(contentType, captured, captureTruncated, rl.captureLimit())
+	out := attemptOutcome{
+		kind: outcomeDone, status: resp.StatusCode,
+		usage: usage, hasUsage: hasUsage,
+		// Time to first byte spans the whole upstream call: an upstream may sit
+		// on the response headers while the model is still thinking, so the
+		// wait for headers counts just as much as the wait for the first chunk.
+		ttfb:            headersAt.Sub(dialled) + bodyTTFB,
+		responseHeaders: sanitizeHeaders(resp.Header), responseBody: responseBody,
+		responseTruncated: responseTruncated,
+	}
+	if resp.StatusCode >= 400 {
+		out.message = upstreamErrorMessage(sniff.Body())
+	}
+	if pumpErr != nil {
+		out.kind = outcomeAborted
+		out.message = "stream interrupted: " + pumpErr.Error()
+	}
+	return out
+}
+
+// forwardableQuery reproduces the caller's query string minus `key`, which
+// Gemini-style clients use to carry *our* relay credential. Forwarding it
+// would leak the caller's key to the upstream; every dialect gets its real
+// credential from ApplyAuth instead.
+func forwardableQuery(u *url.URL) string {
+	if !u.Query().Has("key") {
+		return u.RawQuery
+	}
+	query := u.Query()
+	query.Del("key")
+	return query.Encode()
+}
+
+// retryable decides whether another channel deserves a shot. Genuine client
+// mistakes (400, 422) are the caller's problem and are surfaced as-is, while a
+// 404 usually means this particular upstream does not carry the model, so the
+// next channel is worth trying.
+func retryable(status int) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,
+		http.StatusRequestTimeout, http.StatusTooManyRequests,
+		http.StatusInternalServerError, http.StatusNotImplemented,
+		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout,
+		524, 529:
+		return true
+	}
+	return false
+}
+
+func upstreamErrorMessage(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil {
+		if payload.Error.Message != "" {
+			return payload.Error.Message
+		}
+		if payload.Message != "" {
+			return payload.Message
+		}
+	}
+	if len(body) > 500 {
+		body = body[:500]
+	}
+	return strings.TrimSpace(string(body))
+}
+
+// ------------------------------------------------------------- bookkeeping
+
+// maxRetryPause bounds the local backoff. Each attempt targets a different
+// channel, so waiting long here only delays a request that another upstream
+// could already be serving; the real cooldown lives in the breaker.
+const maxRetryPause = 2 * time.Second
+
+// pauseBeforeRetry spaces out attempts so a struggling provider is not hit by a
+// tight retry loop. It reports false when the caller disconnected while waiting.
+func (rl *Relay) pauseBeforeRetry(ctx context.Context, attempt int) bool {
+	delay := rl.cfg.RetryBackoff * time.Duration(attempt)
+	if delay <= 0 {
+		return ctx.Err() == nil
+	}
+	if delay > maxRetryPause {
+		delay = maxRetryPause
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (rl *Relay) noteFailure(ctx context.Context, ch *model.Channel, out attemptOutcome) {
+	detach := context.WithoutCancel(ctx)
+	failures := rl.breaker.fail(ch.ID, out.retryAfter)
+
+	reason := fmt.Sprintf("HTTP %d: %s", out.status, out.message)
+	rl.st.RecordChannelResult(detach, ch.ID, 0, reason)
+
+	// Bad credentials never fix themselves; take the channel out of rotation
+	// so it stops burning retries on every request.
+	if out.authFail && failures >= 3 {
+		if err := rl.st.SetChannelStatus(detach, ch.ID, model.StatusAutoDisabled,
+			"auto-disabled after repeated authentication failures: "+out.message); err == nil {
+			slog.Warn("channel auto-disabled", "channel", ch.Name, "channel_id", ch.ID)
+			rl.breaker.reset(ch.ID)
+		}
+	}
+}
+
+// settle prices the request, debits the caller and writes the log entry.
+func (rl *Relay) settle(p *principal, entry *model.RequestLog, captured *capturedRequest,
+	ch *model.Channel, out attemptOutcome, started time.Time) {
+
+	entry.StatusCode = int32(out.status)
+	entry.TTFBMS = int32(out.ttfb.Milliseconds())
+	entry.DurationMS = int32(time.Since(started).Milliseconds())
+	entry.Error = out.message
+	entry.PromptTokens = int32(out.usage.PromptTokens)
+	entry.CompletionTokens = int32(out.usage.CompletionTokens)
+	entry.CachedTokens = int32(out.usage.CachedTokens)
+	entry.CacheCreationTokens = int32(out.usage.CacheCreationTokens)
+	entry.TotalTokens = int32(out.usage.TotalTokens)
+
+	if out.status < 400 && out.hasUsage {
+		var status billing.PriceStatus
+		// The same group that chose the channel has to price the request;
+		// routing by one group and billing by another would let a key reach a
+		// pool at someone else's rate.
+		entry.Cost, status = rl.pricer.Cost(entry.Model, out.usage, p.group(), ch.PriceRatio)
+		// Reachable when the operator runs the "free" policy, or when a price
+		// was deleted mid-flight. Never let it pass unnoticed.
+		if status == billing.PriceMissing && !out.usage.IsZero() {
+			slog.Warn("relayed an unpriced model for free — add a price entry",
+				"model", entry.Model, "user", p.user.Username,
+				"total_tokens", out.usage.TotalTokens)
+		}
+	}
+	applyResponseDetails(captured, out)
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 10*time.Second)
+	go func() {
+		defer cancel()
+		if entry.Cost > 0 {
+			if err := rl.st.ConsumeQuota(ctx, p.user.ID, p.token.ID, entry.Cost); err != nil {
+				slog.Error("quota settlement failed", "user", p.user.ID, "error", err)
+			}
+		}
+		failure := ""
+		if out.status >= 400 {
+			failure = entry.Error
+		}
+		rl.st.RecordChannelResult(ctx, ch.ID, entry.Cost, failure)
+		if err := rl.st.InsertLog(ctx, entry); err != nil {
+			slog.Error("request log insert failed", "error", err)
+		} else {
+			// Detail first, then the announcement. A console that is told about
+			// a row immediately opens it, and converting the bodies takes long
+			// enough for a large request that the reverse order would show
+			// "no longer retained" for a detail that was still being written.
+			rl.recordDetail(ctx, entry.ID, captured)
+			rl.publishLog(entry)
+		}
+	}()
+}
+
+// finish logs a request that never reached an upstream.
+func (rl *Relay) finish(entry *model.RequestLog, captured *capturedRequest,
+	started time.Time, status int, message string) {
+	entry.StatusCode = int32(status)
+	entry.DurationMS = int32(time.Since(started).Milliseconds())
+	entry.Error = message
+	if captured.responseBody == "" {
+		body, _ := json.MarshalIndent(map[string]any{
+			"error": map[string]any{"message": message, "status": status},
+		}, "", "  ")
+		captured.responseHeaders = map[string][]string{
+			"Content-Type": {"application/json; charset=utf-8"},
+		}
+		captured.responseBody = string(body)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	go func() {
+		defer cancel()
+		if err := rl.st.InsertLog(ctx, entry); err != nil {
+			slog.Error("request log insert failed", "error", err)
+		} else {
+			// Detail first, then the announcement. A console that is told about
+			// a row immediately opens it, and converting the bodies takes long
+			// enough for a large request that the reverse order would show
+			// "no longer retained" for a detail that was still being written.
+			rl.recordDetail(ctx, entry.ID, captured)
+			rl.publishLog(entry)
+		}
+	}()
+}
+
+// recordDetail converts the captured request and stores it. This runs on the
+// detached logging goroutine, which is the whole point: the conversion is the
+// expensive part and the caller has already been answered.
+func (rl *Relay) recordDetail(ctx context.Context, logID int64, captured *capturedRequest) {
+	if logID == 0 {
+		return
+	}
+	// Nothing is retained when the window is closed, so there is no reason to
+	// pay for the conversion. The store still needs the call: turning the
+	// setting off is what clears whatever was kept before.
+	if !rl.st.LogDetailEnabled() {
+		if err := rl.st.InsertLogDetail(ctx, &model.RequestLogDetail{LogID: logID}); err != nil {
+			slog.Error("request detail clear failed", "log", logID, "error", err)
+		}
+		return
+	}
+
+	detail := captured.detail(rl.captureLimit())
+	detail.LogID = logID
+	if err := rl.st.InsertLogDetail(ctx, detail); err != nil {
+		// A missing diagnostic body must never surface to the caller, whose
+		// request has already been answered.
+		slog.Error("request detail insert failed", "log", logID, "error", err)
+	}
+}
+
+func applyResponseDetails(captured *capturedRequest, out attemptOutcome) {
+	if out.responseHeaders != nil {
+		captured.responseHeaders = out.responseHeaders
+	}
+	captured.responseBody = out.responseBody
+	captured.responseTruncated = out.responseTruncated
+}
+
+// ----------------------------------------------------------------- headers
+
+// hopByHop headers are connection-scoped and must never be forwarded.
+var hopByHop = map[string]struct{}{
+	"Connection":          {},
+	"Proxy-Connection":    {},
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"Te":                  {},
+	"Trailer":             {},
+	"Transfer-Encoding":   {},
+	"Upgrade":             {},
+}
+
+// stripped headers are either rewritten by the relay or would leak the
+// caller's own credentials/session to the upstream.
+var stripped = map[string]struct{}{
+	"Host":             {},
+	"Content-Length":   {},
+	"Authorization":    {},
+	"X-Api-Key":        {},
+	"X-Goog-Api-Key":   {},
+	"Cookie":           {},
+	"Accept-Encoding":  {}, // let the transport negotiate so usage stays readable
+	"X-Forwarded-For":  {},
+	"X-Forwarded-Host": {},
+	"X-Real-Ip":        {},
+}
+
+func copyRequestHeaders(dst, src http.Header) {
+	skip := connectionTokens(src)
+	for key, values := range src {
+		canonical := http.CanonicalHeaderKey(key)
+		if _, bad := hopByHop[canonical]; bad {
+			continue
+		}
+		if _, bad := stripped[canonical]; bad {
+			continue
+		}
+		if _, bad := skip[canonical]; bad {
+			continue
+		}
+		for _, v := range values {
+			dst.Add(canonical, v)
+		}
+	}
+}
+
+func copyResponseHeaders(dst, src http.Header) {
+	skip := connectionTokens(src)
+	for key, values := range src {
+		canonical := http.CanonicalHeaderKey(key)
+		if _, bad := hopByHop[canonical]; bad {
+			continue
+		}
+		if _, bad := skip[canonical]; bad {
+			continue
+		}
+		// The body length can change when the transport transparently
+		// decompresses, so let net/http recompute it.
+		if canonical == "Content-Length" {
+			continue
+		}
+		for _, v := range values {
+			dst.Add(canonical, v)
+		}
+	}
+}
+
+// connectionTokens returns the headers named by the Connection header, which
+// RFC 9110 also marks as single-hop.
+func connectionTokens(h http.Header) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, value := range h.Values("Connection") {
+		for _, token := range strings.Split(value, ",") {
+			if token = strings.TrimSpace(token); token != "" {
+				out[http.CanonicalHeaderKey(token)] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.IndexByte(xff, ','); idx > 0 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if ip := r.Header.Get("X-Real-Ip"); ip != "" {
+		return ip
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}

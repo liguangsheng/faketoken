@@ -1,0 +1,42 @@
+CREATE TABLE session_logs (
+    id                 BIGSERIAL PRIMARY KEY,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    session_id         TEXT        NOT NULL,
+    session_source     TEXT        NOT NULL DEFAULT '',
+    user_id            BIGINT      NOT NULL DEFAULT 0,
+    username           TEXT        NOT NULL DEFAULT '',
+    token_id           BIGINT      NOT NULL DEFAULT 0,
+    token_name         TEXT        NOT NULL DEFAULT '',
+    channel_id         BIGINT      NOT NULL DEFAULT 0,
+    channel_name       TEXT        NOT NULL DEFAULT '',
+    model              TEXT        NOT NULL DEFAULT '',
+    upstream_model     TEXT        NOT NULL DEFAULT '',
+    endpoint           TEXT        NOT NULL DEFAULT '',
+    method             TEXT        NOT NULL DEFAULT '',
+    status_code        INTEGER     NOT NULL DEFAULT 0,
+    stream             BOOLEAN     NOT NULL DEFAULT FALSE,
+    request_count      BIGINT      NOT NULL DEFAULT 0,
+    prompt_tokens      BIGINT      NOT NULL DEFAULT 0,
+    completion_tokens  BIGINT      NOT NULL DEFAULT 0,
+    cached_tokens      BIGINT      NOT NULL DEFAULT 0,
+    total_tokens       BIGINT      NOT NULL DEFAULT 0,
+    cost               BIGINT      NOT NULL DEFAULT 0,
+    total_duration_ms  BIGINT      NOT NULL DEFAULT 0,
+    last_duration_ms   INTEGER     NOT NULL DEFAULT 0,
+    ttfb_ms            INTEGER     NOT NULL DEFAULT 0,
+    retries            BIGINT      NOT NULL DEFAULT 0,
+    client_ip          TEXT        NOT NULL DEFAULT '',
+    error              TEXT        NOT NULL DEFAULT '',
+    request_headers    JSONB       NOT NULL DEFAULT '{}',
+    request_body       TEXT        NOT NULL DEFAULT '',
+    request_truncated  BOOLEAN     NOT NULL DEFAULT FALSE,
+    response_headers   JSONB       NOT NULL DEFAULT '{}',
+    response_body      TEXT        NOT NULL DEFAULT '',
+    response_truncated BOOLEAN     NOT NULL DEFAULT FALSE,
+    UNIQUE (user_id, session_id)
+);
+
+CREATE INDEX idx_session_logs_updated ON session_logs (updated_at DESC);
+CREATE INDEX idx_session_logs_user ON session_logs (user_id, updated_at DESC);
+CREATE INDEX idx_session_logs_model ON session_logs (model, updated_at DESC);

@@ -1,0 +1,177 @@
+package relay
+
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+)
+
+// requestInfo is everything the router needs to know about a client payload.
+// Anything not listed here is forwarded untouched.
+type requestInfo struct {
+	Model  string
+	Stream bool
+	IsJSON bool
+}
+
+func inspect(path, contentType string, body []byte) requestInfo {
+	info := requestInfo{
+		IsJSON: strings.Contains(strings.ToLower(contentType), "json"),
+	}
+
+	// Gemini carries the model in the URL: /v1beta/models/<model>:generateContent
+	if strings.Contains(path, "/models/") && strings.Contains(path, ":") {
+		info.Model = geminiModelFromPath(path)
+		info.Stream = strings.Contains(path, ":streamGenerateContent") ||
+			strings.Contains(path, ":streamGenerateAnswer")
+	}
+
+	if info.IsJSON && len(body) > 0 {
+		var probe struct {
+			Model  string `json:"model"`
+			Stream *bool  `json:"stream"`
+		}
+		if err := json.Unmarshal(body, &probe); err == nil {
+			if probe.Model != "" {
+				info.Model = probe.Model
+			}
+			if probe.Stream != nil {
+				info.Stream = *probe.Stream
+			}
+		}
+	}
+
+	// Multipart uploads (audio transcriptions) keep the model in a form field.
+	if info.Model == "" && strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
+		info.Model = multipartModel(body)
+	}
+	return info
+}
+
+func geminiModelFromPath(path string) string {
+	idx := strings.Index(path, "/models/")
+	if idx < 0 {
+		return ""
+	}
+	rest := path[idx+len("/models/"):]
+	if colon := strings.IndexByte(rest, ':'); colon >= 0 {
+		rest = rest[:colon]
+	}
+	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+		rest = rest[:slash]
+	}
+	return rest
+}
+
+// multipartModel does a cheap scan for the `model` form field rather than
+// parsing (and thereby buffering a second copy of) the whole upload.
+func multipartModel(body []byte) string {
+	marker := []byte(`name="model"`)
+	idx := bytes.Index(body, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := body[idx+len(marker):]
+	sep := []byte("\r\n\r\n")
+	start := bytes.Index(rest, sep)
+	if start < 0 {
+		sep = []byte("\n\n")
+		if start = bytes.Index(rest, sep); start < 0 {
+			return ""
+		}
+	}
+	rest = rest[start+len(sep):]
+	end := bytes.IndexByte(rest, '\r')
+	if end < 0 {
+		if end = bytes.IndexByte(rest, '\n'); end < 0 {
+			end = len(rest)
+		}
+	}
+	return strings.TrimSpace(string(rest[:end]))
+}
+
+// rewriteModel swaps the top-level "model" value while leaving every other
+// byte of the payload exactly as the client sent it. Falls back to a
+// re-encode only if the splice is not possible.
+func rewriteModel(body []byte, newModel string) []byte {
+	if spliced, ok := spliceTopLevelString(body, "model", newModel); ok {
+		return spliced
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	encoded, err := json.Marshal(newModel)
+	if err != nil {
+		return body
+	}
+	obj["model"] = encoded
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// spliceTopLevelString locates the byte range of a top-level key's value and
+// replaces just those bytes, preserving key order, whitespace and the exact
+// formatting of every other field.
+func spliceTopLevelString(body []byte, key, value string) ([]byte, bool) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, false
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return nil, false
+	}
+
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, false
+		}
+		name, ok := keyTok.(string)
+		if !ok {
+			return nil, false
+		}
+		afterKey := dec.InputOffset()
+
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, false
+		}
+		end := dec.InputOffset()
+
+		if name != key {
+			continue
+		}
+		// Skip the colon and any padding between key and value.
+		start := afterKey
+		for start < end && isJSONSpace(body[start]) {
+			start++
+		}
+		if start >= end || body[start] != ':' {
+			return nil, false
+		}
+		start++
+		for start < end && isJSONSpace(body[start]) {
+			start++
+		}
+
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, false
+		}
+		out := make([]byte, 0, len(body)-int(end-start)+len(encoded))
+		out = append(out, body[:start]...)
+		out = append(out, encoded...)
+		out = append(out, body[end:]...)
+		return out, true
+	}
+	return nil, false
+}
+
+func isJSONSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}

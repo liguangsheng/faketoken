@@ -1,0 +1,10 @@
+/bin/
+/.env
+*.log
+
+# frontend
+/web/node_modules/
+/web/dist/
+
+# typescript incremental build cache
+/web/tsconfig.tsbuildinfo

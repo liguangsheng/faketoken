@@ -1,0 +1,64 @@
+# Pinned so the stack keeps its identity regardless of what the checkout
+# directory is called: the project name prefixes the volume (faketoken_pgdata),
+# and letting it follow the folder would silently start on an empty database.
+name: faketoken
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: faketoken-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-llmproxy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-llmproxy}
+      POSTGRES_DB: ${POSTGRES_DB:-llmproxy}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      # Postgres 18 images expect the mount one level above PGDATA so that
+      # future pg_upgrade --link runs stay inside a single mount point.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-llmproxy} -d ${POSTGRES_DB:-llmproxy}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  server:
+    build: .
+    container_name: faketoken
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LISTEN: ":3200"
+      DATABASE_URL: postgres://${POSTGRES_USER:-llmproxy}:${POSTGRES_PASSWORD:-llmproxy}@postgres:5432/${POSTGRES_DB:-llmproxy}?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
+      INIT_ADMIN_USER: ${INIT_ADMIN_USER:-admin}
+      INIT_ADMIN_PASS: ${INIT_ADMIN_PASS:-admin123}
+      ALLOW_REGISTER: ${ALLOW_REGISTER:-true}
+      RELAY_TIMEOUT: ${RELAY_TIMEOUT:-10m}
+      MAX_RETRIES: ${MAX_RETRIES:-3}
+      BILLING_UNPRICED_POLICY: ${BILLING_UNPRICED_POLICY:-reject}
+      BILLING_FALLBACK_INPUT_PRICE: ${BILLING_FALLBACK_INPUT_PRICE:-0}
+      BILLING_FALLBACK_OUTPUT_PRICE: ${BILLING_FALLBACK_OUTPUT_PRICE:-0}
+      BILLING_FALLBACK_CACHED_PRICE: ${BILLING_FALLBACK_CACHED_PRICE:-0}
+      BILLING_FALLBACK_PER_REQUEST_PRICE: ${BILLING_FALLBACK_PER_REQUEST_PRICE:-0}
+      WEB_DIR: /app/web
+    ports:
+      - "${SERVER_PORT:-3200}:3200"
+    # Lets a channel target a service the host publishes on its own ports
+    # (including other compose stacks), e.g. http://host.docker.internal:3001
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3200/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  pgdata:
