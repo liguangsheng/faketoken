@@ -175,6 +175,21 @@ func TestExtractUsage(t *testing.T) {
 			        "thoughtsTokenCount":3,"totalTokenCount":40,"cachedContentTokenCount":11}}`,
 			prompt: 30, completion: 10, cached: 11,
 		},
+		{
+			name: "anthropic responses completed",
+			body: `{"type":"response.completed","response":{"usage":{"input_tokens":84559,
+			        "input_tokens_details":{"cache_write_tokens":103349,"cached_tokens":0},
+			        "output_tokens":123,"output_tokens_details":{"reasoning_tokens":0},
+			        "total_tokens":84682}}}`,
+			prompt: 84559, completion: 123, cached: 0, create: 103349,
+		},
+		{
+			name: "anthropic responses cached read",
+			body: `{"type":"response.completed","response":{"usage":{"input_tokens":83637,
+			        "input_tokens_details":{"cache_write_tokens":0,"cached_tokens":102224},
+			        "output_tokens":33,"total_tokens":83670}}}`,
+			prompt: 83637, completion: 33, cached: 102224, create: 0,
+		},
 	}
 
 	for _, tc := range tests {
@@ -210,6 +225,36 @@ func TestUsageAccumulatorKeepsCacheCreation(t *testing.T) {
 	}
 	if usage.CachedTokens != 3 || usage.CompletionTokens != 25 {
 		t.Fatalf("unexpected totals: %+v", usage)
+	}
+}
+
+func TestUsageAccumulatorAnthropicResponses(t *testing.T) {
+	var acc UsageAccumulator
+	acc.Feed([]byte(`{"type":"response.created","response":{"usage":null}}`))
+	acc.Feed([]byte(`{"type":"response.in_progress","response":{"usage":null}}`))
+	acc.Feed([]byte(`{"type":"response.output_text.delta","delta":"hello"}`))
+	acc.Feed([]byte(`{"type":"response.completed","response":{"usage":{
+		"input_tokens":100,"input_tokens_details":{"cache_write_tokens":50,"cached_tokens":10},
+		"output_tokens":25,"total_tokens":125}}}`))
+
+	usage, seen := acc.Result()
+	if !seen {
+		t.Fatal("no usage accumulated")
+	}
+	if usage.PromptTokens != 100 {
+		t.Fatalf("prompt = %d, want 100", usage.PromptTokens)
+	}
+	if usage.CompletionTokens != 25 {
+		t.Fatalf("completion = %d, want 25", usage.CompletionTokens)
+	}
+	if usage.TotalTokens != 125 {
+		t.Fatalf("total = %d, want 125", usage.TotalTokens)
+	}
+	if usage.CachedTokens != 10 {
+		t.Fatalf("cached = %d, want 10", usage.CachedTokens)
+	}
+	if usage.CacheCreationTokens != 50 {
+		t.Fatalf("cache creation = %d, want 50", usage.CacheCreationTokens)
 	}
 }
 

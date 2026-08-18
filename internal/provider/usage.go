@@ -33,7 +33,7 @@ type rawUsage struct {
 		CachedContentTokenCount int `json:"cachedContentTokenCount"`
 	} `json:"usageMetadata"`
 
-	// Anthropic wraps usage inside message_start events.
+	// Anthropic Messages API wraps usage inside message_start events.
 	Message *struct {
 		Usage *struct {
 			InputTokens              int `json:"input_tokens"`
@@ -42,6 +42,19 @@ type rawUsage struct {
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 		} `json:"usage"`
 	} `json:"message"`
+
+	// Anthropic Responses API wraps usage inside response.completed events.
+	Response *struct {
+		Usage *struct {
+			InputTokens      int `json:"input_tokens"`
+			OutputTokens     int `json:"output_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+			InputTokensDetails *struct {
+				CacheWriteTokens int `json:"cache_write_tokens"`
+				CachedTokens     int `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+		} `json:"usage"`
+	} `json:"response"`
 }
 
 // ExtractUsage returns the token counts carried by a single JSON payload,
@@ -77,6 +90,20 @@ func ExtractUsage(payload []byte) (model.Usage, bool) {
 		u.CompletionTokens = max(u.CompletionTokens, r.OutputTokens)
 		u.CachedTokens = max(u.CachedTokens, r.CacheReadInputTokens)
 		u.CacheCreationTokens = max(u.CacheCreationTokens, r.CacheCreationInputTokens)
+	}
+
+	if resp := raw.Response; resp != nil && resp.Usage != nil {
+		found = true
+		r := resp.Usage
+		// In the Responses API input_tokens already includes cache write and
+		// cached tokens, so no arithmetic is needed on the prompt side.
+		u.PromptTokens = max(u.PromptTokens, r.InputTokens)
+		u.CompletionTokens = max(u.CompletionTokens, r.OutputTokens)
+		u.TotalTokens = max(u.TotalTokens, r.TotalTokens)
+		if r.InputTokensDetails != nil {
+			u.CachedTokens = max(u.CachedTokens, r.InputTokensDetails.CachedTokens)
+			u.CacheCreationTokens = max(u.CacheCreationTokens, r.InputTokensDetails.CacheWriteTokens)
+		}
 	}
 
 	if g := raw.UsageMetadata; g != nil {
