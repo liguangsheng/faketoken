@@ -64,19 +64,9 @@ export const formatDuration = (ms: number) => {
   return `${(ms / 1000).toFixed(2)} s`
 }
 
-export const CHANNEL_TYPES = [
-  { value: 'openai', label: 'OpenAI 兼容' },
-  { value: 'anthropic', label: 'Anthropic' },
-  { value: 'gemini', label: 'Google Gemini' },
-]
-
-export const channelTypeLabel = (type: string) =>
-  CHANNEL_TYPES.find((t) => t.value === type)?.label ?? type
-
 export const STATUS = {
   ENABLED: 1,
   DISABLED: 2,
-  AUTO_DISABLED: 3,
 }
 
 /** Splits a textarea into a trimmed, de-duplicated list. */

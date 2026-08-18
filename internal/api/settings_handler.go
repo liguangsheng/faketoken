@@ -12,6 +12,7 @@ import (
 	"github.com/faketoken/faketoken/internal/billing"
 	"github.com/faketoken/faketoken/internal/relay"
 	"github.com/faketoken/faketoken/internal/store"
+	"time"
 )
 
 // Console preferences live in the options table alongside the billing policy,
@@ -29,6 +30,8 @@ const (
 	optionRequireInvite   = "console.require_invite_code"
 	optionBlockedStatus   = "console.blocked_status"
 	optionBlockedReply    = "console.blocked_reply"
+	optionMaxRetries      = "relay.max_retries"
+	optionRetryBackoff    = "relay.retry_backoff_ms"
 )
 
 const (
@@ -65,6 +68,16 @@ const (
 	maxLogDetailKeep = 20_000
 	// Zero is meaningful: it stops recording bodies and clears what is stored.
 	minLogDetailKeep = 0
+
+	// Retry budget bounds: at least one attempt, at most a generous ceiling
+	// so an operator cannot accidentally disable relaying entirely.
+	maxMaxRetries = 20
+	minMaxRetries = 1
+
+	// Retry backoff bounds, expressed in milliseconds. A few seconds between
+	// retries is as long as a caller will reasonably wait; zero means no pause.
+	maxRetryBackoffMS = 10_000
+	minRetryBackoffMS = 0
 )
 
 // consoleSettings is what the console needs before it can render a table, plus
@@ -99,6 +112,12 @@ type consoleSettings struct {
 	// text; anything else is an error carrying it as the message.
 	BlockedStatus int    `json:"blocked_status"`
 	BlockedReply  string `json:"blocked_reply"`
+	// MaxRetries is the max number of upstream attempts. Each attempt targets
+	// a different channel rather than hammering the one that just failed.
+	MaxRetries int `json:"max_retries"`
+	// RetryBackoffMS is the base delay between retries, in milliseconds. It
+	// scales with the attempt number and is capped at 2 seconds by the relay.
+	RetryBackoffMS int `json:"retry_backoff_ms"`
 }
 
 func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
@@ -113,6 +132,8 @@ func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
 		LogDetailKeep:   store.DefaultLogDetailKeep,
 		BlockedStatus:   relay.DefaultBlockedStatus,
 		BlockedReply:    relay.DefaultBlockedReply,
+		MaxRetries:      s.cfg.MaxRetries,
+		RetryBackoffMS:  int(s.cfg.RetryBackoff / time.Millisecond),
 	}
 
 	options, err := s.store.AllOptions(ctx)
@@ -155,6 +176,12 @@ func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
 	}
 	if value := options[optionBlockedReply]; strings.TrimSpace(value) != "" {
 		settings.BlockedReply = value
+	}
+	if value, err := strconv.Atoi(options[optionMaxRetries]); err == nil && validMaxRetries(value) {
+		settings.MaxRetries = value
+	}
+	if value, err := strconv.Atoi(options[optionRetryBackoff]); err == nil && validRetryBackoffMS(value) {
+		settings.RetryBackoffMS = value
 	}
 	return settings
 }
@@ -212,6 +239,14 @@ func validLogDetailKeep(value int) bool {
 	return value >= minLogDetailKeep && value <= maxLogDetailKeep
 }
 
+func validMaxRetries(value int) bool {
+	return value >= minMaxRetries && value <= maxMaxRetries
+}
+
+func validRetryBackoffMS(value int) bool {
+	return value >= minRetryBackoffMS && value <= maxRetryBackoffMS
+}
+
 // initQuota resolves the balance a new account starts with, preferring the
 // stored option over the boot-time environment variable.
 func (s *Server) initQuota(ctx context.Context) int64 {
@@ -236,10 +271,13 @@ func (s *Server) LoadRuntimeOptions(ctx context.Context) {
 	s.store.SetLogDetailKeep(settings.LogDetailKeep)
 	keywords := relay.ParseKeywords(settings.BlockedKeywords)
 	s.relay.SetBlockPolicy(keywords, settings.BlockedStatus, settings.BlockedReply)
+	s.relay.SetRetryConfig(settings.MaxRetries, time.Duration(settings.RetryBackoffMS)*time.Millisecond)
 	slog.Info("runtime options loaded",
 		"log_body_limit", settings.LogBodyLimit,
 		"log_detail_keep", settings.LogDetailKeep,
-		"blocked_keywords", len(keywords))
+		"blocked_keywords", len(keywords),
+		"max_retries", settings.MaxRetries,
+		"retry_backoff_ms", settings.RetryBackoffMS)
 }
 
 // handleGetSettings is readable by any signed-in user: a regular account still
@@ -296,6 +334,16 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			"完整日志保留条数需在 %d 和 %d 之间", minLogDetailKeep, maxLogDetailKeep))
 		return
 	}
+	if !validMaxRetries(in.MaxRetries) {
+		fail(w, http.StatusBadRequest, fmt.Sprintf(
+			"重试次数需在 %d 和 %d 之间", minMaxRetries, maxMaxRetries))
+		return
+	}
+	if !validRetryBackoffMS(in.RetryBackoffMS) {
+		fail(w, http.StatusBadRequest, fmt.Sprintf(
+			"重试间隔需在 %d 和 %d 毫秒之间", minRetryBackoffMS, maxRetryBackoffMS))
+		return
+	}
 
 	for key, value := range map[string]string{
 		optionDefaultPageSize: strconv.Itoa(in.DefaultPageSize),
@@ -309,6 +357,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		optionRequireInvite:   strconv.FormatBool(in.RequireInviteCode),
 		optionBlockedStatus:   strconv.Itoa(in.BlockedStatus),
 		optionBlockedReply:    in.BlockedReply,
+		optionMaxRetries:      strconv.Itoa(in.MaxRetries),
+		optionRetryBackoff:    strconv.Itoa(in.RetryBackoffMS),
 	} {
 		if err := s.store.SetOption(r.Context(), key, value); err != nil {
 			failErr(w, err)
@@ -322,6 +372,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	s.store.SetLogDetailKeep(in.LogDetailKeep)
 	s.relay.SetBlockPolicy(relay.ParseKeywords(in.BlockedKeywords),
 		in.BlockedStatus, in.BlockedReply)
+	s.relay.SetRetryConfig(in.MaxRetries, time.Duration(in.RetryBackoffMS)*time.Millisecond)
 
 	slog.Info("console settings updated",
 		"default_page_size", in.DefaultPageSize,
@@ -333,6 +384,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"log_detail_keep", in.LogDetailKeep,
 		"blocked_keywords", len(relay.ParseKeywords(in.BlockedKeywords)),
 		"require_invite_code", in.RequireInviteCode,
-		"blocked_status", in.BlockedStatus)
+		"blocked_status", in.BlockedStatus,
+		"max_retries", in.MaxRetries,
+		"retry_backoff_ms", in.RetryBackoffMS)
 	ok(w, s.consoleSettings(r.Context()))
 }

@@ -44,8 +44,8 @@ export interface TokenKeyInput {
 export interface Channel {
   id: number
   name: string
-  type: string
   base_url: string
+  auth_style: 'auto' | 'bearer' | 'x-api-key' | 'x-goog-api-key'
   api_key?: string
   status: number
   priority: number
@@ -152,7 +152,7 @@ export interface BatchTestResult extends ChannelTestResult {
 export interface ChannelImportPreview {
   base_url: string
   api_key: string
-  type: string
+  auth_style: 'auto' | 'bearer' | 'x-api-key' | 'x-goog-api-key'
   suggested_name: string
   models: string[]
   model_error?: string
@@ -242,6 +242,10 @@ export interface ConsoleSettings {
    *  model answer, anything else as an error message. */
   blocked_status: number
   blocked_reply: string
+  /** Max upstream attempts per request. Each retry picks a different channel. */
+  max_retries: number
+  /** Base delay between retries, in milliseconds. */
+  retry_backoff_ms: number
 }
 
 /** The full request and reply for one call, kept only for recent ones. */
@@ -469,7 +473,12 @@ export const api = {
       request<Channel>('PUT', `/api/admin/channels/${id}/routing`, { priority, weight }),
     testChannel: (
       id: number,
-      body: { model?: string; prompt?: string; prompt_template?: string } = {},
+      body: {
+        model?: string
+        protocol?: 'responses' | 'chat_completions' | 'messages'
+        prompt?: string
+        prompt_template?: string
+      } = {},
     ) => request<ChannelTestResult>('POST', `/api/admin/channels/${id}/test`, body),
     promptTemplates: () =>
       request<{ data: PromptTemplate[] }>('GET', '/api/admin/prompt-templates'),
@@ -477,7 +486,7 @@ export const api = {
       text?: string
       base_url?: string
       api_key?: string
-      type?: string
+      auth_style?: 'auto' | 'bearer' | 'x-api-key' | 'x-goog-api-key'
       /** Lets the server reuse a saved credential instead of re-sending it. */
       channel_id?: number
       skip_models?: boolean
@@ -488,6 +497,8 @@ export const api = {
       }),
     channelBalance: (id: number) =>
       request<ChannelBalance>('POST', `/api/admin/channels/${id}/balance`),
+    channelSub2APIBalance: (id: number) =>
+      request<ChannelBalance>('POST', `/api/admin/channels/${id}/balance/sub2api`),
     batchChannelStatus: (ids: number[], status: number) =>
       request<{ updated: number }>('POST', '/api/admin/channels/batch/status', {
         ids,

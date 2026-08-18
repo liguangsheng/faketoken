@@ -11,16 +11,17 @@ const (
 
 // Status values shared by users, tokens and channels.
 const (
-	StatusEnabled      = 1
-	StatusDisabled     = 2
-	StatusAutoDisabled = 3 // channels only: disabled by the health checker
+	StatusEnabled  = 1
+	StatusDisabled = 2
 )
 
-// Channel types (upstream protocol dialects).
+// Channel authentication styles. Auto derives the credential header from the
+// request endpoint; the explicit values cover unusual compatible gateways.
 const (
-	ChannelOpenAI    = "openai"
-	ChannelAnthropic = "anthropic"
-	ChannelGemini    = "gemini"
+	AuthStyleAuto        = "auto"
+	AuthStyleBearer      = "bearer"
+	AuthStyleXAPIKey     = "x-api-key"
+	AuthStyleXGoogAPIKey = "x-goog-api-key"
 )
 
 type User struct {
@@ -78,15 +79,15 @@ type Token struct {
 }
 
 type Channel struct {
-	ID       int64    `json:"id"`
-	Name     string   `json:"name"`
-	Type     string   `json:"type"`
-	BaseURL  string   `json:"base_url"`
-	Status   int16    `json:"status"`
-	Priority int32    `json:"priority"`
-	Weight   int32    `json:"weight"`
-	Groups   []string `json:"groups"`
-	Models   []string `json:"models"`
+	ID        int64    `json:"id"`
+	Name      string   `json:"name"`
+	BaseURL   string   `json:"base_url"`
+	AuthStyle string   `json:"auth_style"`
+	Status    int16    `json:"status"`
+	Priority  int32    `json:"priority"`
+	Weight    int32    `json:"weight"`
+	Groups    []string `json:"groups"`
+	Models    []string `json:"models"`
 	// ModelPrefixes route a whole family ("gpt-4") without enumerating every
 	// snapshot name. They are only consulted when no exact model matches.
 	ModelPrefixes  []string          `json:"model_prefixes"`

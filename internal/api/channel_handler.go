@@ -17,9 +17,12 @@ import (
 )
 
 type channelInput struct {
-	Name          string            `json:"name"`
-	Type          string            `json:"type"`
+	Name string `json:"name"`
+	// Type is accepted as an ignored compatibility field for older API
+	// clients. It is neither stored nor returned.
+	Type          string            `json:"type,omitempty"`
 	BaseURL       string            `json:"base_url"`
+	AuthStyle     string            `json:"auth_style"`
 	APIKey        string            `json:"api_key"`
 	Status        int16             `json:"status"`
 	Priority      int32             `json:"priority"`
@@ -40,8 +43,8 @@ func (in channelInput) toModel(id int64) *model.Channel {
 	ch := &model.Channel{
 		ID:            id,
 		Name:          strings.TrimSpace(in.Name),
-		Type:          defaultString(in.Type, model.ChannelOpenAI),
 		BaseURL:       strings.TrimSpace(in.BaseURL),
+		AuthStyle:     defaultString(in.AuthStyle, model.AuthStyleAuto),
 		APIKey:        strings.TrimSpace(in.APIKey),
 		Status:        normaliseChannelStatus(in.Status),
 		Priority:      in.Priority,
@@ -83,7 +86,6 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	channels, total, err := s.store.ListChannels(r.Context(), store.ChannelFilter{
 		Keyword: r.URL.Query().Get("keyword"),
 		Status:  queryInt(r, "status", 0),
-		Type:    r.URL.Query().Get("type"),
 		Group:   r.URL.Query().Get("group"),
 		Model:   r.URL.Query().Get("model"),
 		Offset:  offset,
@@ -124,17 +126,10 @@ func (s *Server) handleChannelCredential(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// The stored value is empty when the channel rides on the provider's
-	// default host, which is not what anyone wants pasted into a config.
-	baseURL := strings.TrimSpace(ch.BaseURL)
-	if baseURL == "" {
-		baseURL = provider.For(ch.Type).DefaultBaseURL()
-	}
-
 	slog.Info("channel credential revealed",
 		"channel", ch.ID, "name", ch.Name, "by", userFrom(r.Context()).Username)
 	ok(w, map[string]string{
-		"base_url": baseURL,
+		"base_url": ch.BaseURL,
 		"api_key":  ch.APIKey,
 	})
 }
@@ -148,8 +143,12 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "the channel name is required")
 		return
 	}
-	if !validChannelType(in.Type) {
-		fail(w, http.StatusBadRequest, "unsupported channel type: "+in.Type)
+	if strings.TrimSpace(in.BaseURL) == "" {
+		fail(w, http.StatusBadRequest, "the channel base URL is required")
+		return
+	}
+	if !validAuthStyle(in.AuthStyle) {
+		fail(w, http.StatusBadRequest, "unsupported authentication style: "+in.AuthStyle)
 		return
 	}
 
@@ -177,8 +176,12 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "the channel name is required")
 		return
 	}
-	if !validChannelType(in.Type) {
-		fail(w, http.StatusBadRequest, "unsupported channel type: "+in.Type)
+	if strings.TrimSpace(in.BaseURL) == "" {
+		fail(w, http.StatusBadRequest, "the channel base URL is required")
+		return
+	}
+	if !validAuthStyle(in.AuthStyle) {
+		fail(w, http.StatusBadRequest, "unsupported authentication style: "+in.AuthStyle)
 		return
 	}
 
@@ -265,13 +268,19 @@ func (s *Server) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Model string `json:"model"`
+		Model    string `json:"model"`
+		Protocol string `json:"protocol"`
 		// Prompt turns the probe into a real inference request; PromptTemplate
 		// names one of the built-ins instead of repeating its text.
 		Prompt         string `json:"prompt"`
 		PromptTemplate string `json:"prompt_template"`
 	}
 	if r.ContentLength > 0 && !decode(w, r, &in) {
+		return
+	}
+	if !relay.ValidTestProtocol(in.Protocol) {
+		fail(w, http.StatusBadRequest,
+			"protocol must be responses, chat_completions, or messages")
 		return
 	}
 
@@ -288,7 +297,9 @@ func (s *Server) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 
-	result := s.relay.TestChannelWith(ctx, ch, relay.TestOptions{Model: in.Model, Prompt: prompt})
+	result := s.relay.TestChannelWith(ctx, ch, relay.TestOptions{
+		Model: in.Model, Protocol: in.Protocol, Prompt: prompt,
+	})
 	// Detached from the request context: the probe already finished, and the
 	// browser navigating away must not lose the record of what it cost.
 	logCtx := context.WithoutCancel(ctx)
@@ -600,15 +611,24 @@ func (s *Server) handleCloneChannel(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusCreated, mask(clone))
 }
 
-// handleChannelBalance asks the upstream what credit is left. Aggregators are
-// the only ones exposing this, so "not supported" is a normal 200 answer.
+// handleChannelBalance queries the new-api billing endpoints.
 func (s *Server) handleChannelBalance(w http.ResponseWriter, r *http.Request) {
 	ch, err := s.channelFromPath(r)
 	if err != nil {
 		failErr(w, err)
 		return
 	}
-	ok(w, s.relay.FetchBalance(r.Context(), ch))
+	ok(w, s.relay.FetchNewAPIBalance(r.Context(), ch))
+}
+
+// handleChannelSub2APIBalance queries sub2api's independent /usage endpoint.
+func (s *Server) handleChannelSub2APIBalance(w http.ResponseWriter, r *http.Request) {
+	ch, err := s.channelFromPath(r)
+	if err != nil {
+		failErr(w, err)
+		return
+	}
+	ok(w, s.relay.FetchSub2APIBalance(r.Context(), ch))
 }
 
 func (s *Server) handleRebuildAbilities(w http.ResponseWriter, r *http.Request) {
@@ -629,12 +649,12 @@ func (s *Server) channelFromPath(r *http.Request) (*model.Channel, error) {
 	return s.store.GetChannel(r.Context(), id)
 }
 
-func validChannelType(t string) bool {
-	if t == "" {
+func validAuthStyle(style string) bool {
+	if style == "" {
 		return true
 	}
-	for _, known := range provider.Types() {
-		if known == t {
+	for _, known := range provider.AuthStyles() {
+		if known == style {
 			return true
 		}
 	}
@@ -643,8 +663,10 @@ func validChannelType(t string) bool {
 
 func normaliseChannelStatus(status int16) int16 {
 	switch status {
-	case model.StatusDisabled, model.StatusAutoDisabled:
-		return status
+	case model.StatusDisabled, 3:
+		// Treat the retired auto-disabled value as manually disabled when an
+		// older client sends it back, but never create that state again.
+		return model.StatusDisabled
 	default:
 		return model.StatusEnabled
 	}

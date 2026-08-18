@@ -1,10 +1,6 @@
 package api
 
-import (
-	"testing"
-
-	"github.com/faketoken/faketoken/internal/model"
-)
+import "testing"
 
 func TestParseImportText(t *testing.T) {
 	tests := []struct {
@@ -12,7 +8,6 @@ func TestParseImportText(t *testing.T) {
 		text        string
 		wantBaseURL string
 		wantKey     string
-		wantType    string
 		wantName    string
 	}{
 		{
@@ -20,7 +15,6 @@ func TestParseImportText(t *testing.T) {
 			text:        "接口地址：https://api.example.com/v1\nAPI Key: sk-abcdefghijklmnop1234\n祝使用愉快",
 			wantBaseURL: "https://api.example.com/v1",
 			wantKey:     "sk-abcdefghijklmnop1234",
-			wantType:    model.ChannelOpenAI,
 			wantName:    "example.com",
 		},
 		{
@@ -29,7 +23,6 @@ func TestParseImportText(t *testing.T) {
 				-H "Authorization: Bearer sk-0123456789abcdefghij"`,
 			wantBaseURL: "https://gateway.test/openai/v1",
 			wantKey:     "sk-0123456789abcdefghij",
-			wantType:    model.ChannelOpenAI,
 			wantName:    "gateway.test",
 		},
 		{
@@ -37,7 +30,6 @@ func TestParseImportText(t *testing.T) {
 			text:        "https://relay.example.org sk-ant-api03-abcdefghijklmnopqrst",
 			wantBaseURL: "https://relay.example.org",
 			wantKey:     "sk-ant-api03-abcdefghijklmnopqrst",
-			wantType:    model.ChannelAnthropic,
 			wantName:    "relay.example.org",
 		},
 		{
@@ -45,7 +37,6 @@ func TestParseImportText(t *testing.T) {
 			text:        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent key=AIzaSyA1234567890abcdefghij",
 			wantBaseURL: "https://generativelanguage.googleapis.com/v1beta",
 			wantKey:     "AIzaSyA1234567890abcdefghij",
-			wantType:    model.ChannelGemini,
 			wantName:    "generativelanguage.googleapis.com",
 		},
 		{
@@ -53,7 +44,6 @@ func TestParseImportText(t *testing.T) {
 			text:        "地址 https://api.vendor.cn/v1 密钥：ak_live_7f3d9c2b1e",
 			wantBaseURL: "https://api.vendor.cn/v1",
 			wantKey:     "ak_live_7f3d9c2b1e",
-			wantType:    model.ChannelOpenAI,
 			wantName:    "vendor.cn",
 		},
 		{
@@ -61,7 +51,6 @@ func TestParseImportText(t *testing.T) {
 			text:        "请使用 https://api.example.com/v1，密钥是 sk-punctuation1234567890。",
 			wantBaseURL: "https://api.example.com/v1",
 			wantKey:     "sk-punctuation1234567890",
-			wantType:    model.ChannelOpenAI,
 			wantName:    "example.com",
 		},
 		{
@@ -69,7 +58,6 @@ func TestParseImportText(t *testing.T) {
 			text:        "文档见 http://docs.example.com/guide ，接口 https://api.example.com/v1",
 			wantBaseURL: "https://api.example.com/v1",
 			wantKey:     "",
-			wantType:    model.ChannelOpenAI,
 			wantName:    "example.com",
 		},
 		{
@@ -77,7 +65,6 @@ func TestParseImportText(t *testing.T) {
 			text:        "old sk-shortkey123456789 new sk-thefullkey0123456789abcdef https://api.example.com",
 			wantBaseURL: "https://api.example.com",
 			wantKey:     "sk-thefullkey0123456789abcdef",
-			wantType:    model.ChannelOpenAI,
 			wantName:    "example.com",
 		},
 		{
@@ -85,7 +72,6 @@ func TestParseImportText(t *testing.T) {
 			text:        "api key: https://api.example.com/v1",
 			wantBaseURL: "https://api.example.com/v1",
 			wantKey:     "",
-			wantType:    model.ChannelOpenAI,
 			wantName:    "example.com",
 		},
 		{
@@ -93,7 +79,6 @@ func TestParseImportText(t *testing.T) {
 			text:        "请联系管理员开通",
 			wantBaseURL: "",
 			wantKey:     "",
-			wantType:    model.ChannelOpenAI,
 			wantName:    "",
 		},
 	}
@@ -106,9 +91,6 @@ func TestParseImportText(t *testing.T) {
 			}
 			if got.APIKey != tc.wantKey {
 				t.Errorf("api key = %q, want %q", got.APIKey, tc.wantKey)
-			}
-			if got.Type != tc.wantType {
-				t.Errorf("type = %q, want %q", got.Type, tc.wantType)
 			}
 			if got.Name != tc.wantName {
 				t.Errorf("name = %q, want %q", got.Name, tc.wantName)

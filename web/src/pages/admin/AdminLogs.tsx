@@ -50,7 +50,7 @@ export default function AdminLogs() {
         title="全局日志"
         description="全部用户的逐次调用记录，可按用户名、模型、时间范围筛选；点开任意一行可查看完整请求与响应。"
       />
-      <LogTable key={`requests-${refreshKey}`} admin fetcher={api.admin.logs} extra={purgeButton} />
+      <LogTable key={`requests-${refreshKey}`} admin showRate fetcher={api.admin.logs} extra={purgeButton} />
     </>
   )
 }

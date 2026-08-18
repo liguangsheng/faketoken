@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS channels (
     type           TEXT        NOT NULL DEFAULT 'openai',  -- openai | anthropic | gemini
     base_url       TEXT        NOT NULL DEFAULT '',
     api_key_enc    TEXT        NOT NULL DEFAULT '',        -- AES-GCM encrypted upstream key
-    status         SMALLINT    NOT NULL DEFAULT 1,         -- 1 = enabled, 2 = disabled, 3 = auto-disabled
+    status         SMALLINT    NOT NULL DEFAULT 1,         -- 1 = enabled, 2 = disabled
     priority       INTEGER     NOT NULL DEFAULT 0,         -- higher wins
     weight         INTEGER     NOT NULL DEFAULT 1,         -- weighted random within a priority tier
     channel_groups TEXT[]      NOT NULL DEFAULT '{default}',

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/faketoken/faketoken/internal/model"
 )
@@ -31,6 +32,43 @@ func (rl *Relay) captureLimit() int {
 func (rl *Relay) SetCaptureLimit(bytes int) {
 	if bytes > 0 {
 		rl.capture.Store(int64(bytes))
+	}
+}
+
+// DefaultRetryBudget is the fallback max retry count when no stored option
+// exists. Matches the environment default for MAX_RETRIES.
+const DefaultRetryBudget = 3
+
+// DefaultRetryBackoff is the fallback inter-retry base delay when no stored
+// option exists. Matches the environment default for RETRY_BACKOFF.
+const DefaultRetryBackoff = 200 * time.Millisecond
+
+// retryBudget reads the operator-configured max retry count. Consulted per
+// request, so it lives in memory rather than in the options table.
+func (rl *Relay) retryBudgetValue() int {
+	if n := int(rl.retryBudget.Load()); n > 0 {
+		return n
+	}
+	return DefaultRetryBudget
+}
+
+// retryBackoffValue reads the operator-configured inter-retry base delay.
+func (rl *Relay) retryBackoffValue() time.Duration {
+	if d := time.Duration(rl.retryBackoff.Load()); d > 0 {
+		return d
+	}
+	return DefaultRetryBackoff
+}
+
+// SetRetryConfig updates the retry attempt cap and the inter-retry backoff
+// base without a restart.
+func (rl *Relay) SetRetryConfig(maxRetries int, backoff time.Duration) {
+	if maxRetries < 1 {
+		maxRetries = 1
+	}
+	rl.retryBudget.Store(int64(maxRetries))
+	if backoff > 0 {
+		rl.retryBackoff.Store(int64(backoff))
 	}
 }
 

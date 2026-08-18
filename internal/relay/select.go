@@ -144,5 +144,3 @@ func (b *breaker) succeed(id int64) {
 	delete(b.until, id)
 	delete(b.fails, id)
 }
-
-func (b *breaker) reset(id int64) { b.succeed(id) }

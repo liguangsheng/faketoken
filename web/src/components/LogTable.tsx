@@ -1,17 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   Alert,
   App,
   Badge,
   Button,
+  Col,
   DatePicker,
   Descriptions,
   Drawer,
   Input,
+  Row,
   Select,
   Skeleton,
   Space,
+  Statistic,
   Switch,
   Table,
   Tabs,
@@ -20,17 +23,20 @@ import {
   Typography,
 } from 'antd'
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import type { TableRef } from 'antd/es/table'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 
 import { api, type Page, type RequestLog, type RequestLogDetail } from '../api/client'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import { useLiveRate } from '../hooks/useLiveRate'
 import { useLogStream } from '../hooks/useLogStream'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 import { useSettings } from '../settings/SettingsContext'
 import EmptyState from './EmptyState'
 import {
   formatBytes,
+  formatCompact,
   formatDuration,
   formatNumber,
   formatPercent,
@@ -45,6 +51,8 @@ interface Props {
   admin?: boolean
   fetcher: (params: Record<string, unknown>) => Promise<Page<RequestLog>>
   extra?: ReactNode
+  /** Show a live RPM/TPM pulse bar above the table (admin first-page only). */
+  showRate?: boolean
 }
 
 const statusTone = (code: number) => (code < 400 ? 'green' : code < 500 ? 'orange' : 'red')
@@ -58,11 +66,22 @@ const REASONING_TONE: Record<string, string> = {
   high: 'red',
 }
 
+// Keep the class around until the highlight has fully faded. The CSS motion is
+// shorter, but the small cushion also covers its per-cell stagger.
+const LIVE_ROW_ANIMATION_MS = 1000
+const LIVE_ROW_SHIFT_MS = 620
+const LIVE_ROW_SHIFT_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)'
+
+interface LiveRowLayout {
+  entryID: number
+  tops: Map<string, number>
+}
+
 /** Share of the input that came from cache. Zero input means zero rate. */
 const cacheRate = (entry: RequestLog) =>
   entry.prompt_tokens > 0 ? entry.cached_tokens / entry.prompt_tokens : 0
 
-export default function LogTable({ admin, fetcher, extra }: Props) {
+export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
   const { message } = App.useApp()
   // A Drawer is not clamped to the viewport the way a Modal is.
   const narrow = useMediaQuery('(max-width: 768px)')
@@ -84,6 +103,141 @@ export default function LogTable({ admin, fetcher, extra }: Props) {
   // are fetched when a row is opened and may legitimately be gone.
   const [bodies, setBodies] = useState<RequestLogDetail | null>(null)
   const [bodiesState, setBodiesState] = useState<'idle' | 'loading' | 'expired' | 'failed'>('idle')
+  const [enteringRowIDs, setEnteringRowIDs] = useState<ReadonlySet<number>>(() => new Set())
+  const enteringRowTimers = useRef(new Map<number, number>())
+  const liveTableRoot = useRef<TableRef>(null)
+  const pendingLiveLayout = useRef<LiveRowLayout | null>(null)
+  const rowShiftAnimations = useRef(new Map<string, Animation>())
+
+  // FLIP starts before React inserts the new record: remember where every
+  // visible row is right now. getBoundingClientRect includes any in-flight
+  // transform, which lets a busy feed continue smoothly from the exact visual
+  // position reached by the previous push.
+  const captureLiveLayout = useCallback(
+    (entryID: number) => {
+      const root = liveTableRoot.current?.nativeElement
+      if (
+        !admin ||
+        !root ||
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      ) {
+        pendingLiveLayout.current = null
+        return
+      }
+
+      const tops = new Map<string, number>()
+      root.querySelectorAll<HTMLElement>('.ant-table-tbody > tr[data-row-key]').forEach((row) => {
+        const key = row.dataset.rowKey
+        if (key) tops.set(key, row.getBoundingClientRect().top)
+      })
+      pendingLiveLayout.current = { entryID, tops }
+    },
+    [admin],
+  )
+
+  const animateLiveRow = useCallback(
+    (id: number) => {
+      // This treatment is intentionally reserved for the high-traffic global
+      // feed. Historical loads and the regular user's log page stay still.
+      if (!admin) return
+
+      setEnteringRowIDs((current) => new Set(current).add(id))
+
+      const previousTimer = enteringRowTimers.current.get(id)
+      if (previousTimer !== undefined) window.clearTimeout(previousTimer)
+
+      const timer = window.setTimeout(() => {
+        enteringRowTimers.current.delete(id)
+        setEnteringRowIDs((current) => {
+          if (!current.has(id)) return current
+          const next = new Set(current)
+          next.delete(id)
+          return next
+        })
+      }, LIVE_ROW_ANIMATION_MS)
+      enteringRowTimers.current.set(id, timer)
+    },
+    [admin],
+  )
+
+  useEffect(
+    () => () => {
+      enteringRowTimers.current.forEach((timer) => window.clearTimeout(timer))
+      enteringRowTimers.current.clear()
+      pendingLiveLayout.current = null
+      const animations = [...rowShiftAnimations.current.values()]
+      rowShiftAnimations.current.clear()
+      animations.forEach((animation) => animation.cancel())
+    },
+    [],
+  )
+
+  // React has committed the new table layout, but the browser has not painted
+  // it yet. Move every old row back to its captured position, then animate to
+  // the new one. Visually, the incoming row now pushes the whole list down.
+  useLayoutEffect(() => {
+    const snapshot = pendingLiveLayout.current
+    const root = liveTableRoot.current?.nativeElement
+    if (!snapshot || !root) return
+
+    const visibleRows = [
+      ...root.querySelectorAll<HTMLElement>('.ant-table-tbody > tr[data-row-key]'),
+    ]
+    const entryKey = String(snapshot.entryID)
+    const entryExists = visibleRows.some((row) => row.dataset.rowKey === entryKey)
+
+    // State updates are normally batched. If React happens to commit the
+    // animation marker first, wait for the following rows commit; an entry
+    // already present in the snapshot is merely an SSE/list race (no shift).
+    if (!entryExists && !snapshot.tops.has(entryKey)) return
+    pendingLiveLayout.current = null
+
+    // Cancel after capturing the old visual positions, so the next delta is
+    // measured against each row's clean, final layout position.
+    const previousAnimations = [...rowShiftAnimations.current.values()]
+    rowShiftAnimations.current.clear()
+    previousAnimations.forEach((animation) => animation.cancel())
+
+    visibleRows.forEach((row) => {
+      const key = row.dataset.rowKey
+      if (!key) return
+      const previousTop = snapshot.tops.get(key)
+      if (previousTop === undefined) return
+
+      const deltaY = previousTop - row.getBoundingClientRect().top
+      if (Math.abs(deltaY) < 0.5) return
+
+      const animation = row.animate(
+        [
+          { transform: `translate3d(0, ${deltaY}px, 0)` },
+          { transform: 'translate3d(0, 0, 0)' },
+        ],
+        { duration: LIVE_ROW_SHIFT_MS, easing: LIVE_ROW_SHIFT_EASING },
+      )
+      rowShiftAnimations.current.set(key, animation)
+
+      const release = () => {
+        if (rowShiftAnimations.current.get(key) === animation) {
+          rowShiftAnimations.current.delete(key)
+        }
+      }
+      animation.onfinish = release
+      animation.oncancel = release
+    })
+  }, [enteringRowIDs, rows])
+
+  // The rate pulse only makes sense on page 1, in the live window, on the
+  // admin surface — for a regular user it would reflect their own traffic
+  // only and read as a low, useless number.
+  const rateActive = Boolean(showRate && admin && page === 1 && live && !range)
+  const rate = useLiveRate(rateActive)
+  // Seed whenever the first page finishes loading; the SSE additions pile on
+  // top. Not seeded on other pages — the bar is hidden there anyway.
+  useEffect(() => {
+    if (rateActive) rate.seed(rows)
+    // rows is intentional: re-seed on every load. rate.seed is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rateActive, rows])
 
   const openDetail = (row: RequestLog) => {
     setDetail(row)
@@ -190,6 +344,8 @@ export default function LogTable({ admin, fetcher, extra }: Props) {
         setPending((count) => count + 1)
         return
       }
+      captureLiveLayout(entry.id)
+      animateLiveRow(entry.id)
       setRows((current) => {
         // The list request may already have returned this row; the stream and
         // the initial fetch race by design.
@@ -197,6 +353,7 @@ export default function LogTable({ admin, fetcher, extra }: Props) {
         return [entry, ...current].slice(0, pageSize)
       })
       setTotal((count) => count + 1)
+      rate.add(entry)
     },
   })
 
@@ -224,6 +381,41 @@ export default function LogTable({ admin, fetcher, extra }: Props) {
 
   return (
     <>
+      {showRate && admin && page === 1 && (
+        <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
+          <Col xs={12} sm={8} md={6}>
+            <Statistic
+              title="RPM"
+              value={rateActive ? rate.rpm : 0}
+              suffix={
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  / min
+                </Typography.Text>
+              }
+              valueStyle={{ fontFamily: 'var(--app-font-mono, monospace)' }}
+            />
+          </Col>
+          <Col xs={12} sm={8} md={6}>
+            <Statistic
+              title="Tokens / min"
+              value={rateActive ? formatCompact(rate.tpm) : 0}
+              suffix={
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  / min
+                </Typography.Text>
+              }
+              valueStyle={{ fontFamily: 'var(--app-font-mono, monospace)' }}
+            />
+          </Col>
+          <Col xs={24} md={12} style={{ display: 'flex', alignItems: 'flex-end' }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              滚动 60 秒窗口 · 仅统计当前首页可见记录
+              {!rateActive && live && '（非首页或已选时间范围，已暂停）'}
+              {!live && '（实时推送已关闭）'}
+            </Typography.Text>
+          </Col>
+        </Row>
+      )}
       <Space wrap style={{ marginBottom: 12 }} size={8}>
         <Input
           allowClear
@@ -327,11 +519,13 @@ export default function LogTable({ admin, fetcher, extra }: Props) {
       </Space>
 
       <Table
+        ref={liveTableRoot}
         rowKey="id"
         size="small"
-        className="table-clickable"
+        className={`table-clickable${admin ? ' log-table--live' : ''}`}
         loading={loading}
         dataSource={rows}
+        rowClassName={(row) => (enteringRowIDs.has(row.id) ? 'log-row--enter' : '')}
         // Must cover the sum of the column widths below, taking the admin view
         // (which adds the 用户 column) as the widest case. A smaller value makes
         // the browser shrink every column to fit, and the crushed cells collide
@@ -496,33 +690,51 @@ export default function LogTable({ admin, fetcher, extra }: Props) {
             ),
           },
           {
-            // Total and time-to-first-byte side by side: for a streamed reply
-            // the wait before the first token is what the caller actually
-            // feels, while the total is mostly a function of answer length.
+            // Total above, first-byte below, with a vertical progress bar that
+            // fills with the fraction of time-to-first-byte of the total — the
+            // longer the bar, the more the caller waited before anything came
+            // back. Clamped to a 30s ceiling so a single slow outlier does
+            // not flatten everyone else into a sliver.
             title: (
               <Tooltip title="总耗时 / 首字时间">
                 <span>耗时 / 首字</span>
               </Tooltip>
             ),
             dataIndex: 'duration_ms',
-            width: 150,
-            align: 'right',
-            render: (value: number, row: RequestLog) => (
-              <Tooltip
-                title={
-                  row.ttfb_ms > 0
-                    ? `总耗时 ${formatDuration(value)} · 首字 ${formatDuration(row.ttfb_ms)}`
-                    : `总耗时 ${formatDuration(value)}`
-                }
-              >
-                <span className="mono">
-                  {formatDuration(value)}
-                  {row.ttfb_ms > 0 && (
-                    <span className="text-muted"> / {formatDuration(row.ttfb_ms)}</span>
-                  )}
-                </span>
-              </Tooltip>
-            ),
+            width: 160,
+            align: 'left',
+            render: (value: number, row: RequestLog) => {
+              const ratio = value > 0 && row.ttfb_ms > 0 ? Math.min(row.ttfb_ms / value, 1) : 0
+              return (
+                <Tooltip
+                  title={
+                    row.ttfb_ms > 0
+                      ? `总耗时 ${formatDuration(value)} · 首字 ${formatDuration(row.ttfb_ms)}`
+                      : `总耗时 ${formatDuration(value)}`
+                  }
+                >
+                  <div className="duration-cell">
+                    <span
+                      className="duration-bar"
+                      style={{
+                        background: `linear-gradient(to top, var(--app-brand) ${ratio * 100}%, var(--app-warning) ${ratio * 100}%)`,
+                      }}
+                      aria-hidden
+                    />
+                    <div className="cell-stack">
+                      <span className="mono">{formatDuration(value)}</span>
+                      {row.ttfb_ms > 0 ? (
+                        <span className="mono text-muted cell-stack__sub">
+                          {formatDuration(row.ttfb_ms)}
+                        </span>
+                      ) : (
+                        <span className="text-muted cell-stack__sub">-</span>
+                      )}
+                    </div>
+                  </div>
+                </Tooltip>
+              )
+            },
           },
           {
             // Input / output / total spelled out. The cache breakdown lives in

@@ -2,10 +2,7 @@ package relay
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
-
-	"github.com/faketoken/faketoken/internal/model"
 )
 
 func TestPromptTemplatesAreUsable(t *testing.T) {
@@ -49,8 +46,8 @@ func TestPromptTemplatesAreImmutableFromOutside(t *testing.T) {
 func TestProbeRequestSizesTheReplyBudget(t *testing.T) {
 	// Without a prompt the probe only proves the credential works, so one
 	// token keeps it nearly free.
-	for _, channelType := range []string{model.ChannelOpenAI, model.ChannelAnthropic} {
-		_, payload := probeRequest(channelType, "m", "")
+	for _, protocol := range []string{TestProtocolChatCompletions, TestProtocolMessages} {
+		_, payload := probeRequest(protocol, "m", "")
 		var decoded struct {
 			MaxTokens int `json:"max_tokens"`
 		}
@@ -58,11 +55,11 @@ func TestProbeRequestSizesTheReplyBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 		if decoded.MaxTokens != 1 {
-			t.Fatalf("%s: unprompted probe asks for %d tokens", channelType, decoded.MaxTokens)
+			t.Fatalf("%s: unprompted probe asks for %d tokens", protocol, decoded.MaxTokens)
 		}
 	}
 
-	path, payload := probeRequest(model.ChannelOpenAI, "m", "讲个笑话")
+	path, payload := probeRequest(TestProtocolChatCompletions, "m", "讲个笑话")
 	if path != "/v1/chat/completions" {
 		t.Fatalf("path = %q", path)
 	}
@@ -82,13 +79,19 @@ func TestProbeRequestSizesTheReplyBudget(t *testing.T) {
 		t.Fatalf("prompt was not carried: %s", payload)
 	}
 
-	// Gemini uses a different field name for the same budget.
-	_, payload = probeRequest(model.ChannelGemini, "m", "讲个笑话")
-	if !strings.Contains(string(payload), `"maxOutputTokens":1024`) {
-		t.Fatalf("gemini budget missing: %s", payload)
+	responsePath, responsePayload := probeRequest(TestProtocolResponses, "m", "讲个笑话")
+	if responsePath != "/v1/responses" {
+		t.Fatalf("responses path = %q", responsePath)
 	}
-	if !strings.Contains(string(payload), "讲个笑话") {
-		t.Fatalf("gemini prompt missing: %s", payload)
+	var responses struct {
+		Input           string `json:"input"`
+		MaxOutputTokens int    `json:"max_output_tokens"`
+	}
+	if err := json.Unmarshal(responsePayload, &responses); err != nil {
+		t.Fatal(err)
+	}
+	if responses.Input != "讲个笑话" || responses.MaxOutputTokens != 1024 {
+		t.Fatalf("unexpected responses payload: %s", responsePayload)
 	}
 }
 
@@ -112,6 +115,11 @@ func TestExtractReply(t *testing.T) {
 			name: "anthropic messages joins text blocks and skips others",
 			body: `{"content":[{"type":"thinking","thinking":"..."},{"type":"text","text":"第一段"},{"type":"text","text":"第二段"}]}`,
 			want: "第一段\n第二段",
+		},
+		{
+			name: "openai responses output content",
+			body: `{"output":[{"content":[{"type":"output_text","text":"你好"}]}]}`,
+			want: "你好",
 		},
 		{
 			name: "gemini candidates",

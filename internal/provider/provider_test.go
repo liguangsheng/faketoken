@@ -1,6 +1,12 @@
 package provider
 
-import "testing"
+import (
+	"net/http"
+	"slices"
+	"testing"
+
+	"github.com/faketoken/faketoken/internal/model"
+)
 
 func TestJoinURL(t *testing.T) {
 	tests := []struct {
@@ -32,6 +38,108 @@ func TestGeminiModelInPath(t *testing.T) {
 	want := "/v1beta/models/gemini-2.5-pro-preview:streamGenerateContent"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestAuthStyleForRequestPath(t *testing.T) {
+	tests := map[string]string{
+		"/v1/messages":              "x-api-key",
+		"/v1/messages/count_tokens": "x-api-key",
+		"/v1/chat/completions":      "bearer",
+		"/v1/responses":             "bearer",
+		"/v1/embeddings":            "bearer",
+		"/v1beta/models/gemini-2.5-pro:generateContent":       "x-goog-api-key",
+		"/v1beta/models/gemini-2.5-pro:streamGenerateContent": "x-goog-api-key",
+		"/v1beta/models/gemini-2.5-pro:countTokens":           "x-goog-api-key",
+		"/v1/models/gemini-2.5-pro:generateContent":           "x-goog-api-key",
+	}
+	for path, want := range tests {
+		if got := AuthStyleForRequestPath(path); got != want {
+			t.Errorf("AuthStyleForRequestPath(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestApplyAuthHonoursExplicitOverrides(t *testing.T) {
+	tests := []struct {
+		name, path, style    string
+		wantAuthorization    string
+		wantXAPIKey          string
+		wantXGoogAPIKey      string
+		wantAnthropicVersion bool
+	}{
+		{name: "auto messages", path: "/v1/messages", style: model.AuthStyleAuto,
+			wantXAPIKey: "channel-secret", wantAnthropicVersion: true},
+		{name: "bearer overrides messages", path: "/v1/messages", style: model.AuthStyleBearer,
+			wantAuthorization: "Bearer channel-secret"},
+		{name: "x-api-key overrides chat", path: "/v1/chat/completions", style: model.AuthStyleXAPIKey,
+			wantXAPIKey: "channel-secret", wantAnthropicVersion: true},
+		{name: "google overrides chat", path: "/v1/chat/completions", style: model.AuthStyleXGoogAPIKey,
+			wantXGoogAPIKey: "channel-secret"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, "https://upstream.test"+tc.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Every client credential must be removed before the channel's
+			// selected form is installed.
+			req.Header.Set("Authorization", "Bearer caller-secret")
+			req.Header.Set("X-Api-Key", "caller-secret")
+			req.Header.Set("X-Goog-Api-Key", "caller-secret")
+
+			ApplyAuth(req, "channel-secret", tc.style)
+
+			if got := req.Header.Get("Authorization"); got != tc.wantAuthorization {
+				t.Errorf("Authorization = %q, want %q", got, tc.wantAuthorization)
+			}
+			if got := req.Header.Get("X-Api-Key"); got != tc.wantXAPIKey {
+				t.Errorf("X-Api-Key = %q, want %q", got, tc.wantXAPIKey)
+			}
+			if got := req.Header.Get("X-Goog-Api-Key"); got != tc.wantXGoogAPIKey {
+				t.Errorf("X-Goog-Api-Key = %q, want %q", got, tc.wantXGoogAPIKey)
+			}
+			if got := req.Header.Get("Anthropic-Version") != ""; got != tc.wantAnthropicVersion {
+				t.Errorf("Anthropic-Version present = %v, want %v", got, tc.wantAnthropicVersion)
+			}
+		})
+	}
+}
+
+func TestParseModelsAcceptsCommonShapes(t *testing.T) {
+	tests := map[string]struct {
+		body string
+		want []string
+	}{
+		"data objects": {
+			body: `{"data":[{"id":"gpt-5"},{"id":"gpt-5"}]}`,
+			want: []string{"gpt-5"},
+		},
+		"models names": {
+			body: `{"models":[{"name":"models/gemini-2.5-pro"}]}`,
+			want: []string{"gemini-2.5-pro"},
+		},
+		"bare strings": {
+			body: `["a","b"]`,
+			want: []string{"a", "b"},
+		},
+		"mixed objects": {
+			body: `[{"model":"m1"},{"id":"m2"},"m3"]`,
+			want: []string{"m1", "m2", "m3"},
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			models, err := ParseModels([]byte(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(models, tc.want) {
+				t.Fatalf("models = %v, want %v", models, tc.want)
+			}
+		})
 	}
 }
 

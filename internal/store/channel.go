@@ -21,7 +21,7 @@ func nameConflict(err error, name string) error {
 	return err
 }
 
-const channelColumns = `id, name, type, base_url, api_key_enc, status, priority, weight,
+const channelColumns = `id, name, base_url, auth_style, api_key_enc, status, priority, weight,
 	channel_groups, models, model_mapping, headers, timeout_secs, proxy_url, price_ratio,
 	used_quota, request_count, error_count, last_error, last_error_at, tested_at,
 	models_synced_at, note, created_at, updated_at, model_prefixes, test_model`
@@ -29,7 +29,7 @@ const channelColumns = `id, name, type, base_url, api_key_enc, status, priority,
 func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 	var c model.Channel
 	var enc string
-	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.BaseURL, &enc, &c.Status, &c.Priority,
+	err := row.Scan(&c.ID, &c.Name, &c.BaseURL, &c.AuthStyle, &enc, &c.Status, &c.Priority,
 		&c.Weight, &c.Groups, &c.Models, &c.ModelMapping, &c.Headers, &c.TimeoutSecs,
 		&c.ProxyURL, &c.PriceRatio, &c.UsedQuota, &c.RequestCount, &c.ErrorCount,
 		&c.LastError, &c.LastErrorAt, &c.TestedAt, &c.ModelsSyncedAt, &c.Note,
@@ -73,11 +73,11 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
 
 	row := tx.QueryRow(ctx, `INSERT INTO channels
-		(name, type, base_url, api_key_enc, status, priority, weight, channel_groups,
+		(name, base_url, auth_style, api_key_enc, status, priority, weight, channel_groups,
 		 models, model_mapping, headers, timeout_secs, proxy_url, price_ratio, note,
 		 model_prefixes, test_model)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING `+channelColumns,
-		c.Name, c.Type, strings.TrimRight(c.BaseURL, "/"), enc, c.Status, c.Priority, c.Weight,
+		c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, enc, c.Status, c.Priority, c.Weight,
 		c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL, c.PriceRatio, c.Note,
 		c.ModelPrefixes, c.TestModel)
 	created, err := s.scanChannel(row)
@@ -103,7 +103,7 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	// An empty api_key means "keep the stored one" so the UI never has to
 	// round-trip the secret back to the browser.
 	keyClause := "api_key_enc"
-	args := []any{c.ID, c.Name, c.Type, strings.TrimRight(c.BaseURL, "/"), c.Status, c.Priority,
+	args := []any{c.ID, c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, c.Status, c.Priority,
 		c.Weight, c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL,
 		c.PriceRatio, c.Note, c.ModelPrefixes, c.TestModel}
 	if c.APIKey != "" {
@@ -116,7 +116,7 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	}
 
 	row := tx.QueryRow(ctx, fmt.Sprintf(`UPDATE channels SET
-		name = $2, type = $3, base_url = $4, status = $5, priority = $6, weight = $7,
+		name = $2, base_url = $3, auth_style = $4, status = $5, priority = $6, weight = $7,
 		channel_groups = $8, models = $9, model_mapping = $10, headers = $11,
 		timeout_secs = $12, proxy_url = $13, price_ratio = $14, note = $15,
 		model_prefixes = $16, test_model = $17,
@@ -188,7 +188,6 @@ func (s *Store) GetChannelByName(ctx context.Context, name string) (*model.Chann
 type ChannelFilter struct {
 	Keyword string
 	Status  int
-	Type    string
 	Group   string
 	Model   string
 	Offset  int
@@ -215,7 +214,7 @@ func (s *Store) ListChannels(ctx context.Context, f ChannelFilter) ([]*model.Cha
 	if kw := strings.TrimSpace(f.Keyword); kw != "" {
 		add(`(strpos(lower(name), lower($%[1]d)) > 0
 			OR strpos(lower(base_url), lower($%[1]d)) > 0
-			OR strpos(lower(type), lower($%[1]d)) > 0
+			OR strpos(lower(auth_style), lower($%[1]d)) > 0
 			OR strpos(lower(note), lower($%[1]d)) > 0
 			OR strpos(lower(test_model), lower($%[1]d)) > 0
 			OR EXISTS (SELECT 1 FROM unnest(models) m WHERE strpos(lower(m), lower($%[1]d)) > 0)
@@ -227,9 +226,6 @@ func (s *Store) ListChannels(ctx context.Context, f ChannelFilter) ([]*model.Cha
 	}
 	if f.Status > 0 {
 		add("status = $%d", f.Status)
-	}
-	if f.Type != "" {
-		add("type = $%d", f.Type)
 	}
 	if f.Group != "" {
 		add("$%d = ANY(channel_groups)", f.Group)
@@ -513,19 +509,27 @@ func rebuildAbilities(ctx context.Context, tx pgx.Tx, c *model.Channel) error {
 	if err := rebuildAbilityPrefixes(ctx, tx, c); err != nil {
 		return err
 	}
-	if len(c.Groups) == 0 || len(c.Models) == 0 {
+	// A model_mapping key is an alias the caller can request by; the channel
+	// has to be routable under that name so the mapping actually takes effect.
+	models := make([]string, 0, len(c.Models)+len(c.ModelMapping))
+	models = append(models, c.Models...)
+	for m := range c.ModelMapping {
+		models = append(models, m)
+	}
+
+	if len(c.Groups) == 0 || len(models) == 0 {
 		return nil
 	}
 
 	enabled := c.Status == model.StatusEnabled
-	seen := make(map[string]struct{}, len(c.Groups)*len(c.Models))
-	rows := make([][]any, 0, len(c.Groups)*len(c.Models))
+	seen := make(map[string]struct{}, len(c.Groups)*len(models))
+	rows := make([][]any, 0, len(c.Groups)*len(models))
 	for _, g := range c.Groups {
 		g = strings.TrimSpace(g)
 		if g == "" {
 			continue
 		}
-		for _, m := range c.Models {
+		for _, m := range models {
 			m = strings.TrimSpace(m)
 			if m == "" {
 				continue
@@ -639,7 +643,7 @@ func (s *Store) RebuildAllAbilities(ctx context.Context) error {
 // leave the table it just reported as repaired missing entries.
 func routingSources(ctx context.Context, tx pgx.Tx) ([]*model.Channel, error) {
 	rows, err := tx.Query(ctx, `SELECT id, status, priority, weight,
-		channel_groups, models, model_prefixes FROM channels ORDER BY id`)
+		channel_groups, models, model_prefixes, model_mapping FROM channels ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -649,7 +653,7 @@ func routingSources(ctx context.Context, tx pgx.Tx) ([]*model.Channel, error) {
 	for rows.Next() {
 		var c model.Channel
 		if err := rows.Scan(&c.ID, &c.Status, &c.Priority, &c.Weight,
-			&c.Groups, &c.Models, &c.ModelPrefixes); err != nil {
+			&c.Groups, &c.Models, &c.ModelPrefixes, &c.ModelMapping); err != nil {
 			return nil, err
 		}
 		channels = append(channels, &c)

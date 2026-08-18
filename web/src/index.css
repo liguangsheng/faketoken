@@ -154,15 +154,9 @@ body {
 }
 
 .app-brand__mark {
-  align-items: center;
-  background: linear-gradient(135deg, #4f46e5, #0ea5e9);
-  border-radius: 9px;
-  color: #fff;
-  display: flex;
+  display: block;
   flex: none;
-  font-size: 15px;
   height: 28px;
-  justify-content: center;
   width: 28px;
 }
 
@@ -565,6 +559,87 @@ body {
   cursor: pointer;
 }
 
+/* The old rows are moved down with a FLIP animation in LogTable. The incoming
+   row unfolds independently at cell level, leaving the tr transform available
+   for another push when several records arrive in quick succession. */
+.log-table--live .ant-table-tbody > tr.log-row--enter > td {
+  animation: log-row-unfold 0.76s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: top center;
+  will-change: background-color, clip-path, opacity, transform;
+}
+
+.log-table--live .ant-table-tbody > tr.log-row--enter > td:nth-child(2) {
+  animation-delay: 12ms;
+}
+
+.log-table--live .ant-table-tbody > tr.log-row--enter > td:nth-child(3) {
+  animation-delay: 24ms;
+}
+
+.log-table--live .ant-table-tbody > tr.log-row--enter > td:nth-child(4) {
+  animation-delay: 36ms;
+}
+
+.log-table--live .ant-table-tbody > tr.log-row--enter > td:nth-child(5) {
+  animation-delay: 48ms;
+}
+
+.log-table--live .ant-table-tbody > tr.log-row--enter > td:nth-child(n + 6) {
+  animation-delay: 60ms;
+}
+
+.log-table--live .ant-table-tbody > tr.log-row--enter > td:first-child {
+  position: relative;
+}
+
+.log-table--live .ant-table-tbody > tr.log-row--enter > td:first-child::before {
+  animation: log-row-accent 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
+  background: var(--app-brand);
+  border-radius: 999px;
+  box-shadow: 0 0 12px var(--app-brand);
+  content: '';
+  inset-block: 7px;
+  inset-inline-start: 0;
+  pointer-events: none;
+  position: absolute;
+  width: 3px;
+}
+
+@keyframes log-row-unfold {
+  0% {
+    background-color: var(--app-brand-soft);
+    clip-path: inset(0 0 92% 0);
+    opacity: 0;
+    transform: translate3d(0, -7px, 0);
+  }
+  36% {
+    background-color: var(--app-brand-soft);
+    clip-path: inset(0);
+    opacity: 1;
+  }
+  100% {
+    background-color: transparent;
+    clip-path: inset(0);
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes log-row-accent {
+  from {
+    opacity: 0;
+    transform: scaleY(0.25);
+  }
+  22% {
+    opacity: 0.9;
+    transform: scaleY(1);
+  }
+  to {
+    opacity: 0;
+    transform: scaleY(0.7);
+  }
+}
+
 /* Keep long tag lists from exploding row height. */
 /* A two-line table cell: the value, with a quieter qualifier under it.
    nowrap keeps a narrow column from breaking a timestamp mid-way, which is
@@ -578,6 +653,25 @@ body {
 .cell-stack__sub {
   font-size: 12px;
   line-height: 1.3;
+}
+
+/* Duration cell: a vertical bar with total / TTFB stacked to its right.
+   The bar fills from the bottom with the TTFB fraction of the total —
+   a taller filled segment means the caller waited longer before the
+   first byte. The muted portion above is streaming/output time. */
+.duration-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-start;
+}
+
+.duration-bar {
+  width: 4px;
+  height: 28px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  background: var(--app-surface-sunken);
 }
 
 .tag-list {

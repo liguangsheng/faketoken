@@ -48,6 +48,12 @@ type Relay struct {
 	// blocked holds the keyword list a request body is refused for. Same
 	// treatment as capture: pushed from the console, read per request.
 	blocked blockedStore
+	// retryBudget is the max attempt count, updated from the console without
+	// a restart and read on every relayed request.
+	retryBudget atomic.Int64
+	// retryBackoff is the base delay between retries (as nanoseconds), same
+	// treatment as retryBudget.
+	retryBackoff atomic.Int64
 }
 
 func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config) *Relay {
@@ -59,6 +65,8 @@ func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config) *Relay {
 		breaker: newBreaker(),
 	}
 	rl.capture.Store(DefaultCaptureLimit)
+	rl.retryBudget.Store(int64(cfg.MaxRetries))
+	rl.retryBackoff.Store(int64(cfg.RetryBackoff))
 	return rl
 }
 
@@ -388,7 +396,7 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 	candidates []model.Candidate, started time.Time) {
 
 	ctx := r.Context()
-	budget := min(rl.cfg.MaxRetries, len(candidates))
+	budget := min(rl.retryBudgetValue(), len(candidates))
 
 	var (
 		lastStatus  int
@@ -472,7 +480,6 @@ type attemptOutcome struct {
 	usage             model.Usage
 	hasUsage          bool
 	ttfb              time.Duration
-	authFail          bool
 	retryAfter        time.Duration
 	responseHeaders   map[string][]string
 	responseBody      string
@@ -485,18 +492,14 @@ type attemptOutcome struct {
 func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Channel,
 	entry *model.RequestLog, info requestInfo, body []byte) attemptOutcome {
 
-	adaptor := provider.For(ch.Type)
 	baseURL := ch.BaseURL
-	if baseURL == "" {
-		baseURL = adaptor.DefaultBaseURL()
-	}
 
 	upstreamModel := ch.UpstreamModel(info.Model)
 	path := r.URL.Path
 	outBody := body
 
 	if upstreamModel != info.Model {
-		if adaptor.ModelInPath() {
+		if provider.ModelInPath(path) {
 			path = provider.ReplaceGeminiModelInPath(path, info.Model, upstreamModel)
 		}
 		if info.IsJSON && len(body) > 0 {
@@ -525,10 +528,13 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 		return attemptOutcome{kind: outcomeRetry, status: http.StatusBadGateway, message: err.Error()}
 	}
 	copyRequestHeaders(req.Header, r.Header)
+	provider.ApplyAuth(req, ch.APIKey, ch.AuthStyle)
+	// Channel headers merge last by design: operators can override an unusual
+	// upstream's authentication header without storing the key in plaintext a
+	// second time, and can replace defaults such as anthropic-version.
 	for k, v := range ch.Headers {
 		req.Header.Set(k, v)
 	}
-	adaptor.ApplyAuth(req, ch.APIKey)
 	req.ContentLength = int64(len(outBody))
 
 	client, err := rl.clients.get(ch.ProxyURL)
@@ -560,7 +566,6 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 			kind:            outcomeRetry,
 			status:          resp.StatusCode,
 			message:         upstreamErrorMessage(snippet),
-			authFail:        resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden,
 			retryAfter:      parseRetryAfter(resp.Header),
 			responseHeaders: sanitizeHeaders(resp.Header), responseBody: responseBody,
 			responseTruncated: responseTruncated,
@@ -667,7 +672,7 @@ const maxRetryPause = 2 * time.Second
 // pauseBeforeRetry spaces out attempts so a struggling provider is not hit by a
 // tight retry loop. It reports false when the caller disconnected while waiting.
 func (rl *Relay) pauseBeforeRetry(ctx context.Context, attempt int) bool {
-	delay := rl.cfg.RetryBackoff * time.Duration(attempt)
+	delay := rl.retryBackoffValue() * time.Duration(attempt)
 	if delay <= 0 {
 		return ctx.Err() == nil
 	}
@@ -687,20 +692,10 @@ func (rl *Relay) pauseBeforeRetry(ctx context.Context, attempt int) bool {
 
 func (rl *Relay) noteFailure(ctx context.Context, ch *model.Channel, out attemptOutcome) {
 	detach := context.WithoutCancel(ctx)
-	failures := rl.breaker.fail(ch.ID, out.retryAfter)
+	rl.breaker.fail(ch.ID, out.retryAfter)
 
 	reason := fmt.Sprintf("HTTP %d: %s", out.status, out.message)
 	rl.st.RecordChannelResult(detach, ch.ID, 0, reason)
-
-	// Bad credentials never fix themselves; take the channel out of rotation
-	// so it stops burning retries on every request.
-	if out.authFail && failures >= 3 {
-		if err := rl.st.SetChannelStatus(detach, ch.ID, model.StatusAutoDisabled,
-			"auto-disabled after repeated authentication failures: "+out.message); err == nil {
-			slog.Warn("channel auto-disabled", "channel", ch.Name, "channel_id", ch.ID)
-			rl.breaker.reset(ch.ID)
-		}
-	}
 }
 
 // settle prices the request, debits the caller and writes the log entry.

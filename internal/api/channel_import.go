@@ -35,7 +35,6 @@ var (
 type importGuess struct {
 	BaseURL string
 	APIKey  string
-	Type    string
 	Name    string
 }
 
@@ -45,7 +44,6 @@ func parseImportText(text string) importGuess {
 		BaseURL: pickBaseURL(text),
 		APIKey:  pickAPIKey(text),
 	}
-	guess.Type = guessChannelType(guess.BaseURL, guess.APIKey)
 	guess.Name = suggestChannelName(guess.BaseURL)
 	return guess
 }
@@ -139,32 +137,6 @@ func normaliseBaseURL(raw string) string {
 	return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: path}).String()
 }
 
-// guessChannelType reads the dialect off the credential first, since a key
-// shape is unambiguous, then off the host.
-func guessChannelType(baseURL, apiKey string) string {
-	switch {
-	case strings.HasPrefix(strings.ToLower(apiKey), "sk-ant-"):
-		return model.ChannelAnthropic
-	case strings.HasPrefix(apiKey, "AIza"):
-		return model.ChannelGemini
-	}
-
-	parsed, err := url.Parse(baseURL)
-	if err != nil {
-		return model.ChannelOpenAI
-	}
-	host := strings.ToLower(parsed.Host)
-	switch {
-	case strings.Contains(host, "anthropic"):
-		return model.ChannelAnthropic
-	case strings.Contains(host, "generativelanguage"), strings.Contains(host, "googleapis"):
-		return model.ChannelGemini
-	case strings.Contains(strings.ToLower(parsed.Path), "/v1beta"):
-		return model.ChannelGemini
-	}
-	return model.ChannelOpenAI
-}
-
 // suggestChannelName turns the host into something readable, dropping the
 // prefixes that carry no information.
 func suggestChannelName(baseURL string) string {
@@ -185,7 +157,9 @@ type channelImportInput struct {
 	Text    string `json:"text"`
 	BaseURL string `json:"base_url"`
 	APIKey  string `json:"api_key"`
-	Type    string `json:"type"`
+	// Deprecated compatibility input; endpoint and auth_style replace it.
+	Type      string `json:"type,omitempty"`
+	AuthStyle string `json:"auth_style"`
 	// ChannelID lets the edit form probe an already saved channel without
 	// re-typing its credential: the console shows an empty key field to mean
 	// "keep the stored one", so there is nothing to send.
@@ -203,7 +177,7 @@ type existingChannelRef struct {
 type channelImportPreview struct {
 	BaseURL       string              `json:"base_url"`
 	APIKey        string              `json:"api_key"`
-	Type          string              `json:"type"`
+	AuthStyle     string              `json:"auth_style"`
 	SuggestedName string              `json:"suggested_name"`
 	Models        []string            `json:"models"`
 	ModelError    string              `json:"model_error,omitempty"`
@@ -224,21 +198,18 @@ func (s *Server) handleImportChannel(w http.ResponseWriter, r *http.Request) {
 	// operator can correct a bad guess without rewriting the pasted text.
 	if v := strings.TrimSpace(in.BaseURL); v != "" {
 		guess.BaseURL = normaliseBaseURL(v)
-		guess.Type = guessChannelType(guess.BaseURL, guess.APIKey)
 		guess.Name = suggestChannelName(guess.BaseURL)
 	}
 	if v := strings.TrimSpace(in.APIKey); v != "" {
 		guess.APIKey = v
-		if strings.TrimSpace(in.Type) == "" {
-			guess.Type = guessChannelType(guess.BaseURL, guess.APIKey)
-		}
 	}
-	if v := strings.TrimSpace(in.Type); v != "" {
-		if !validChannelType(v) {
-			fail(w, http.StatusBadRequest, "unsupported channel type: "+v)
-			return
-		}
-		guess.Type = v
+	authStyle := strings.TrimSpace(in.AuthStyle)
+	if authStyle == "" {
+		authStyle = model.AuthStyleAuto
+	}
+	if !validAuthStyle(authStyle) {
+		fail(w, http.StatusBadRequest, "unsupported authentication style: "+authStyle)
+		return
 	}
 
 	if guess.BaseURL == "" {
@@ -251,6 +222,7 @@ func (s *Server) handleImportChannel(w http.ResponseWriter, r *http.Request) {
 	// send it. probeKey stays local: echoing a stored secret back to the
 	// browser would undo the masking every other channel response applies.
 	probeKey := guess.APIKey
+	probeAuthStyle := authStyle
 	if probeKey == "" && in.ChannelID > 0 {
 		saved, err := s.store.GetChannel(r.Context(), in.ChannelID)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -259,13 +231,16 @@ func (s *Server) handleImportChannel(w http.ResponseWriter, r *http.Request) {
 		}
 		if err == nil {
 			probeKey = saved.APIKey
+			if strings.TrimSpace(in.AuthStyle) == "" {
+				probeAuthStyle = saved.AuthStyle
+			}
 		}
 	}
 
 	preview := channelImportPreview{
 		BaseURL:       guess.BaseURL,
 		APIKey:        guess.APIKey,
-		Type:          guess.Type,
+		AuthStyle:     authStyle,
 		SuggestedName: guess.Name,
 		Models:        []string{},
 	}
@@ -287,7 +262,7 @@ func (s *Server) handleImportChannel(w http.ResponseWriter, r *http.Request) {
 	// still worth keeping, and the model list can be filled in by hand.
 	if !in.SkipModels {
 		models, err := s.relay.FetchModels(r.Context(), &model.Channel{
-			Type: guess.Type, BaseURL: guess.BaseURL, APIKey: probeKey,
+			BaseURL: guess.BaseURL, APIKey: probeKey, AuthStyle: probeAuthStyle,
 		})
 		if err != nil {
 			preview.ModelError = err.Error()

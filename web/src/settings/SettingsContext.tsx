@@ -20,6 +20,8 @@ const FALLBACK: ConsoleSettings = {
   require_invite_code: false,
   blocked_status: 200,
   blocked_reply: '',
+  max_retries: 3,
+  retry_backoff_ms: 200,
 }
 
 interface SettingsValue {

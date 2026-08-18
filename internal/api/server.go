@@ -97,6 +97,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/admin/channels/{id}/models", s.requireAdmin(s.handleSetChannelModels))
 	mux.HandleFunc("POST /api/admin/channels/{id}/clone", s.requireAdmin(s.handleCloneChannel))
 	mux.HandleFunc("POST /api/admin/channels/{id}/balance", s.requireAdmin(s.handleChannelBalance))
+	mux.HandleFunc("POST /api/admin/channels/{id}/balance/sub2api",
+		s.requireAdmin(s.handleChannelSub2APIBalance))
 	mux.HandleFunc("POST /api/admin/channels/rebuild", s.requireAdmin(s.handleRebuildAbilities))
 	mux.HandleFunc("POST /api/admin/channels/import", s.requireAdmin(s.handleImportChannel))
 	mux.HandleFunc("POST /api/admin/channels/batch/status", s.requireAdmin(s.handleBatchChannelStatus))

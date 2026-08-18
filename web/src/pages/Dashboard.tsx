@@ -39,8 +39,9 @@ import {
 
 const UsageChart = lazy(() => import('../components/UsageChart'))
 
-// The backend windows on "now minus N days", so 1 really is a rolling 24h.
+// Zero represents today; the other values are rolling backend windows.
 const RANGES = [
+  { value: 0, label: '今日' },
   { value: 1, label: '24 小时' },
   { value: 7, label: '7 天' },
   { value: 30, label: '30 天' },
@@ -58,7 +59,10 @@ export default function Dashboard() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const params = { days, interval: days <= 2 ? 'hour' : 'day' }
+      const params =
+        days === 0
+          ? { start: dayjs().startOf('day').toISOString(), interval: 'hour' }
+          : { days, interval: days <= 2 ? 'hour' : 'day' }
       setStats(isAdmin ? await api.admin.stats(params) : await api.stats(params))
     } catch (error) {
       message.error(error instanceof Error ? error.message : '加载失败')

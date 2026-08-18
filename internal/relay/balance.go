@@ -27,23 +27,30 @@ type Balance struct {
 	Message   string   `json:"message,omitempty"`
 }
 
-// FetchBalance probes the two billing dialects that gateway aggregators
-// actually ship: the new-api dashboard pair and the sub2api usage endpoint.
-// Neither is part of any provider spec, so a failure is reported as data rather
-// than as an error — "this upstream does not expose a balance" is a normal answer.
+// FetchBalance is kept as a compatibility alias for the original route, which
+// now has the unambiguous new-api meaning.
 func (rl *Relay) FetchBalance(ctx context.Context, ch *model.Channel) Balance {
+	return rl.FetchNewAPIBalance(ctx, ch)
+}
+
+func (rl *Relay) FetchNewAPIBalance(ctx context.Context, ch *model.Channel) Balance {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	if balance, ok := rl.newAPIBalance(ctx, ch); ok {
 		return balance
 	}
+	return Balance{Provider: "new-api", Message: "the upstream did not expose new-api billing endpoints"}
+}
+
+func (rl *Relay) FetchSub2APIBalance(ctx context.Context, ch *model.Channel) Balance {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	if balance, ok := rl.sub2APIBalance(ctx, ch); ok {
 		return balance
 	}
-	return Balance{
-		Message: "no supported balance endpoint answered; the upstream may not expose one",
-	}
+	return Balance{Provider: "sub2api", Message: "the upstream did not expose a sub2api usage endpoint"}
 }
 
 // newAPIBalance reads the OpenAI-shaped dashboard endpoints that new-api and
@@ -117,13 +124,7 @@ func (rl *Relay) sub2APIBalance(ctx context.Context, ch *model.Channel) (Balance
 // billingJSON performs one authenticated GET and decodes a JSON object,
 // reporting false for anything that is not a 2xx JSON object.
 func (rl *Relay) billingJSON(ctx context.Context, ch *model.Channel, path, query string) (map[string]any, bool) {
-	adaptor := provider.For(ch.Type)
-	baseURL := ch.BaseURL
-	if baseURL == "" {
-		baseURL = adaptor.DefaultBaseURL()
-	}
-
-	target := provider.JoinURL(baseURL, path)
+	target := provider.JoinURL(ch.BaseURL, path)
 	if query != "" {
 		target += "?" + query
 	}
@@ -131,10 +132,10 @@ func (rl *Relay) billingJSON(ctx context.Context, ch *model.Channel, path, query
 	if err != nil {
 		return nil, false
 	}
+	provider.ApplyAuth(req, ch.APIKey, ch.AuthStyle)
 	for k, v := range ch.Headers {
 		req.Header.Set(k, v)
 	}
-	adaptor.ApplyAuth(req, ch.APIKey)
 
 	client, err := rl.clients.get(ch.ProxyURL)
 	if err != nil {

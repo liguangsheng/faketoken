@@ -1,5 +1,6 @@
-// Package provider knows the dialect-specific bits of each upstream: where the
-// credentials go, where the model list lives, and how a model name is carried.
+// Package provider knows the protocol-specific parts of upstream requests:
+// where credentials go, how model lists are shaped, and when a model name is
+// carried in the URL.
 package provider
 
 import (
@@ -12,172 +13,127 @@ import (
 	"github.com/faketoken/faketoken/internal/model"
 )
 
-// Adaptor abstracts one upstream dialect. Everything else about a request is
-// forwarded verbatim, so adaptors stay deliberately small.
-type Adaptor interface {
-	Name() string
-	// ApplyAuth swaps the caller's credentials for the channel's own.
-	ApplyAuth(req *http.Request, apiKey string)
-	// ModelsRequest builds the upstream model-catalogue call.
-	ModelsRequest(baseURL, apiKey string) (*http.Request, error)
-	// ParseModels extracts model ids from the catalogue response.
-	ParseModels(body []byte) ([]string, error)
-	// ModelInPath reports whether the model name travels in the URL (Gemini).
-	ModelInPath() bool
-	// DefaultBaseURL is used when a channel leaves base_url empty.
-	DefaultBaseURL() string
-	// HealthCheck returns a minimal request that proves the credentials work.
-	HealthCheckPath() string
-}
-
-func For(channelType string) Adaptor {
-	switch strings.ToLower(strings.TrimSpace(channelType)) {
-	case model.ChannelAnthropic:
-		return anthropic{}
-	case model.ChannelGemini:
-		return gemini{}
-	default:
-		return openai{}
+// AuthStyles lists the stored overrides accepted by the channel API.
+func AuthStyles() []string {
+	return []string{
+		model.AuthStyleAuto,
+		model.AuthStyleBearer,
+		model.AuthStyleXAPIKey,
+		model.AuthStyleXGoogAPIKey,
 	}
 }
 
-// Types lists the dialects the admin UI may pick from.
-func Types() []string {
-	return []string{model.ChannelOpenAI, model.ChannelAnthropic, model.ChannelGemini}
+// AuthStyleForRequestPath derives the credential header from the protocol the
+// client actually called. Messages is a prefix match so count_tokens receives
+// the same Anthropic authentication as message creation.
+func AuthStyleForRequestPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "/v1/messages" || strings.HasPrefix(path, "/v1/messages/") {
+		return model.AuthStyleXAPIKey
+	}
+	if ModelInPath(path) {
+		return model.AuthStyleXGoogAPIKey
+	}
+	return model.AuthStyleBearer
 }
 
-// ---------------------------------------------------------------- OpenAI
-
-type openai struct{}
-
-func (openai) Name() string           { return model.ChannelOpenAI }
-func (openai) ModelInPath() bool      { return false }
-func (openai) DefaultBaseURL() string { return "https://api.openai.com" }
-func (openai) HealthCheckPath() string {
-	return "/v1/models"
+// EffectiveAuthStyle resolves auto (and the legacy empty value) for one
+// request. Explicit overrides deliberately win over endpoint inference.
+func EffectiveAuthStyle(authStyle, path string) string {
+	authStyle = strings.ToLower(strings.TrimSpace(authStyle))
+	if authStyle == "" || authStyle == model.AuthStyleAuto {
+		return AuthStyleForRequestPath(path)
+	}
+	return authStyle
 }
 
-func (openai) ApplyAuth(req *http.Request, apiKey string) {
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+// ApplyAuth replaces any caller credential with the channel credential.
+func ApplyAuth(req *http.Request, apiKey, authStyle string) {
+	req.Header.Del("Authorization")
 	req.Header.Del("X-Api-Key")
 	req.Header.Del("X-Goog-Api-Key")
+
+	switch EffectiveAuthStyle(authStyle, req.URL.Path) {
+	case model.AuthStyleXAPIKey:
+		req.Header.Set("X-Api-Key", apiKey)
+		if req.Header.Get("Anthropic-Version") == "" {
+			req.Header.Set("Anthropic-Version", "2023-06-01")
+		}
+	case model.AuthStyleXGoogAPIKey:
+		req.Header.Set("X-Goog-Api-Key", apiKey)
+		// Gemini SDKs often put their key in the query string. It must not
+		// survive alongside the selected channel credential.
+		if q := req.URL.Query(); q.Has("key") {
+			q.Del("key")
+			req.URL.RawQuery = q.Encode()
+		}
+	default:
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 }
 
-func (o openai) ModelsRequest(baseURL, apiKey string) (*http.Request, error) {
-	req, err := http.NewRequest(http.MethodGet, JoinURL(baseURL, "/v1/models"), nil)
-	if err != nil {
-		return nil, err
-	}
-	o.ApplyAuth(req, apiKey)
-	return req, nil
+// ModelInPath reports Gemini-style endpoints where the model is part of the
+// URL. Recognising all model actions also covers countTokens and embeddings,
+// not only generateContent.
+func ModelInPath(path string) bool {
+	return strings.Contains(path, "/models/") && strings.Contains(path, ":")
 }
 
-func (openai) ParseModels(body []byte) ([]string, error) {
-	var payload struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
+// ParseModels accepts the catalogue shapes used by OpenAI-compatible,
+// Anthropic, Gemini, and lightweight third-party gateways: {data:[]},
+// {models:[]}, or a bare array containing strings or objects.
+func ParseModels(body []byte) ([]string, error) {
+	var source []json.RawMessage
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(body, &object); err == nil && object != nil {
+		found := false
+		for _, key := range []string{"data", "models"} {
+			raw, ok := object[key]
+			if !ok {
+				continue
+			}
+			found = true
+			if err := json.Unmarshal(raw, &source); err != nil {
+				return nil, fmt.Errorf("decode model list field %q: %w", key, err)
+			}
+			break
+		}
+		if !found {
+			return nil, fmt.Errorf("model list response has neither data nor models")
+		}
+	} else if err := json.Unmarshal(body, &source); err != nil {
 		return nil, fmt.Errorf("decode model list: %w", err)
 	}
-	out := make([]string, 0, len(payload.Data))
-	for _, m := range payload.Data {
-		if m.ID != "" {
-			out = append(out, m.ID)
+
+	out := make([]string, 0, len(source))
+	seen := make(map[string]struct{}, len(source))
+	for _, item := range source {
+		var id string
+		if err := json.Unmarshal(item, &id); err != nil {
+			var entry struct {
+				ID    string `json:"id"`
+				Name  string `json:"name"`
+				Model string `json:"model"`
+			}
+			if err := json.Unmarshal(item, &entry); err != nil {
+				continue
+			}
+			for _, value := range []string{entry.ID, entry.Name, entry.Model} {
+				if strings.TrimSpace(value) != "" {
+					id = value
+					break
+				}
+			}
 		}
-	}
-	return out, nil
-}
-
-// -------------------------------------------------------------- Anthropic
-
-type anthropic struct{}
-
-func (anthropic) Name() string            { return model.ChannelAnthropic }
-func (anthropic) ModelInPath() bool       { return false }
-func (anthropic) DefaultBaseURL() string  { return "https://api.anthropic.com" }
-func (anthropic) HealthCheckPath() string { return "/v1/models" }
-
-func (anthropic) ApplyAuth(req *http.Request, apiKey string) {
-	req.Header.Set("X-Api-Key", apiKey)
-	req.Header.Del("Authorization")
-	if req.Header.Get("Anthropic-Version") == "" {
-		req.Header.Set("Anthropic-Version", "2023-06-01")
-	}
-}
-
-func (a anthropic) ModelsRequest(baseURL, apiKey string) (*http.Request, error) {
-	req, err := http.NewRequest(http.MethodGet, JoinURL(baseURL, "/v1/models")+"?limit=1000", nil)
-	if err != nil {
-		return nil, err
-	}
-	a.ApplyAuth(req, apiKey)
-	return req, nil
-}
-
-func (anthropic) ParseModels(body []byte) ([]string, error) {
-	var payload struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("decode model list: %w", err)
-	}
-	out := make([]string, 0, len(payload.Data))
-	for _, m := range payload.Data {
-		if m.ID != "" {
-			out = append(out, m.ID)
+		id = strings.TrimPrefix(strings.TrimSpace(id), "models/")
+		if id == "" {
+			continue
 		}
-	}
-	return out, nil
-}
-
-// ----------------------------------------------------------------- Gemini
-
-type gemini struct{}
-
-func (gemini) Name() string            { return model.ChannelGemini }
-func (gemini) ModelInPath() bool       { return true }
-func (gemini) DefaultBaseURL() string  { return "https://generativelanguage.googleapis.com" }
-func (gemini) HealthCheckPath() string { return "/v1beta/models" }
-
-func (gemini) ApplyAuth(req *http.Request, apiKey string) {
-	req.Header.Set("X-Goog-Api-Key", apiKey)
-	req.Header.Del("Authorization")
-	req.Header.Del("X-Api-Key")
-	// Callers often put the key in the query string; drop it so the channel
-	// credential is the only one that reaches Google.
-	if q := req.URL.Query(); q.Has("key") {
-		q.Del("key")
-		req.URL.RawQuery = q.Encode()
-	}
-}
-
-func (g gemini) ModelsRequest(baseURL, apiKey string) (*http.Request, error) {
-	req, err := http.NewRequest(http.MethodGet, JoinURL(baseURL, "/v1beta/models")+"?pageSize=1000", nil)
-	if err != nil {
-		return nil, err
-	}
-	g.ApplyAuth(req, apiKey)
-	return req, nil
-}
-
-func (gemini) ParseModels(body []byte) ([]string, error) {
-	var payload struct {
-		Models []struct {
-			Name string `json:"name"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("decode model list: %w", err)
-	}
-	out := make([]string, 0, len(payload.Models))
-	for _, m := range payload.Models {
-		if m.Name != "" {
-			out = append(out, strings.TrimPrefix(m.Name, "models/"))
+		if _, duplicate := seen[id]; duplicate {
+			continue
 		}
+		seen[id] = struct{}{}
+		out = append(out, id)
 	}
 	return out, nil
 }

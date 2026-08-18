@@ -188,6 +188,46 @@ func TestBillingEndpointsAreReadableByTheBalanceProbe(t *testing.T) {
 	}
 }
 
+func TestSub2APIBalanceUsesItsDedicatedEndpoint(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/usage" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sub2-key" {
+			t.Errorf("Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"quota":    map[string]any{"remaining": "7.5", "total": 10, "unit": "USD"},
+			"usage":    map[string]any{"total": map[string]any{"actual_cost": "2.5"}},
+			"planName": "Pro",
+		})
+	})
+	id := h.createChannel(channelInput{
+		Name: "sub2api", BaseURL: up.URL, APIKey: "sub2-key",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+
+	var balance relay.Balance
+	resp := h.do(http.MethodPost,
+		fmt.Sprintf("/api/admin/channels/%d/balance/sub2api", id), h.admin, nil, &balance)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !balance.OK {
+		t.Fatalf("HTTP %d, balance %+v", resp.StatusCode, balance)
+	}
+	if balance.Provider != "sub2api" || balance.PlanName != "Pro" {
+		t.Fatalf("unexpected identity: %+v", balance)
+	}
+	if balance.Remaining == nil || *balance.Remaining != 7.5 ||
+		balance.Used == nil || *balance.Used != 2.5 ||
+		balance.Total == nil || *balance.Total != 10 {
+		t.Fatalf("unexpected amounts: %+v", balance)
+	}
+}
+
 // The two amounts use different units — dollars in one call, cents in the
 // other — and getting that backwards is invisible until a caller reports a
 // balance a hundred times too large.
@@ -263,8 +303,9 @@ func TestChannelSearchSpansEveryDescriptiveField(t *testing.T) {
 
 	h.createChannel(channelInput{
 		Name: "north-gateway", Type: "anthropic", BaseURL: "https://relay.example.test",
-		APIKey: "sk-upstream-secret",
-		Models: []string{"claude-opus-5"}, ModelPrefixes: []string{"gemini-"},
+		AuthStyle: model.AuthStyleXAPIKey,
+		APIKey:    "sk-upstream-secret",
+		Models:    []string{"claude-opus-5"}, ModelPrefixes: []string{"gemini-"},
 		Groups: []string{"vip"}, TestModel: "claude-haiku",
 		ModelMapping: map[string]string{"gpt-4o": "claude-sonnet-4"},
 		Note:         "备用线路",
@@ -278,7 +319,7 @@ func TestChannelSearchSpansEveryDescriptiveField(t *testing.T) {
 	for _, tc := range []struct{ name, keyword string }{
 		{"name", "north"},
 		{"base url", "relay.example"},
-		{"type", "anthropic"},
+		{"auth style", "x-api-key"},
 		{"note", "备用"},
 		{"test model", "haiku"},
 		{"served model", "opus"},
@@ -374,24 +415,59 @@ func TestChannelCredentialIsRevealedToAdminsOnly(t *testing.T) {
 	}
 }
 
-// A channel with no base URL rides on the provider's default host. Copying an
-// empty string would produce a config that points nowhere.
-func TestChannelCredentialResolvesTheDefaultHost(t *testing.T) {
+func TestChannelRequiresABaseURL(t *testing.T) {
 	h := newHarness(t)
 
-	id := h.createChannel(channelInput{
+	resp := h.do(http.MethodPost, "/api/admin/channels", h.admin, channelInput{
 		Name: "default-host", Type: "anthropic", APIKey: "k",
 		Models: []string{"claude-3"}, Groups: []string{"default"},
-	})
-
-	var cred struct {
-		BaseURL string `json:"base_url"`
-	}
-	resp := h.do(http.MethodGet, fmt.Sprintf("/api/admin/channels/%d/credential", id),
-		h.admin, nil, &cred)
+	}, nil)
 	resp.Body.Close()
-	if cred.BaseURL != "https://api.anthropic.com" {
-		t.Fatalf("base url = %q, want the provider default", cred.BaseURL)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestChannelTypeIsCompatibilityInputOnly(t *testing.T) {
+	h := newHarness(t)
+
+	resp := h.do(http.MethodPost, "/api/admin/channels", h.admin, map[string]any{
+		"name": "type-free", "type": "anthropic", "base_url": "https://upstream.test",
+		"api_key": "k", "models": []string{"gpt-4o"}, "groups": []string{"default"},
+	}, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("HTTP %d: %s", resp.StatusCode, raw)
+	}
+
+	var created map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := created["type"]; exists {
+		t.Fatalf("channel response still contains type: %v", created)
+	}
+	var authStyle string
+	if err := json.Unmarshal(created["auth_style"], &authStyle); err != nil {
+		t.Fatal(err)
+	}
+	if authStyle != model.AuthStyleAuto {
+		t.Fatalf("auth_style = %q, want auto", authStyle)
+	}
+
+	var hasType, hasAuthStyle bool
+	err := h.pool.QueryRow(context.Background(), `SELECT
+		EXISTS (SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'channels' AND column_name = 'type'),
+		EXISTS (SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = 'channels' AND column_name = 'auth_style')`).
+		Scan(&hasType, &hasAuthStyle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasType || !hasAuthStyle {
+		t.Fatalf("schema columns: type=%v auth_style=%v", hasType, hasAuthStyle)
 	}
 }
 
@@ -910,6 +986,30 @@ func TestRelayForwardsClientHeadersButStripsCredentials(t *testing.T) {
 	}
 }
 
+func TestChannelHeadersOverrideGeneratedAuthentication(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1, 1)
+	})
+	h.createChannel(channelInput{
+		Name: "custom-auth", Type: "openai", BaseURL: up.URL, APIKey: "generated-key",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+		Headers: map[string]string{"Authorization": "Token channel-override"},
+	})
+
+	resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", h.createKey(),
+		`{"model":"gpt-4o"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("HTTP %d: %s", resp.StatusCode, raw)
+	}
+	if got := up.auth(); got != "Token channel-override" {
+		t.Fatalf("Authorization = %q, want the channel override", got)
+	}
+}
+
 func TestRelayStreamsSSEAndBillsUsage(t *testing.T) {
 	h := newHarness(t)
 
@@ -1129,6 +1229,32 @@ func TestClientErrorsAreNotRetriedAndPassThrough(t *testing.T) {
 	}
 }
 
+func TestAuthenticationFailuresDoNotAutoDisableAChannel(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":{"message":"bad upstream key"}}`)
+	})
+	id := h.createChannel(channelInput{
+		Name: "keeps-running", BaseURL: up.URL, APIKey: "wrong-key",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	for attempt := 0; attempt < 3; attempt++ {
+		resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key, `{"model":"gpt-4o"}`)
+		resp.Body.Close()
+	}
+	channel, err := h.store.GetChannel(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if channel.Status != model.StatusEnabled {
+		t.Fatalf("channel status = %d after authentication failures, want enabled", channel.Status)
+	}
+}
+
 func TestAnthropicAndGeminiDialects(t *testing.T) {
 	h := newHarness(t)
 
@@ -1149,11 +1275,13 @@ func TestAnthropicAndGeminiDialects(t *testing.T) {
 	})
 
 	h.createChannel(channelInput{
-		Name: "anthropic", Type: "anthropic", BaseURL: anthropicUp.URL, APIKey: "ant-key",
+		// Deliberately wrong legacy types: the client endpoint, not this field,
+		// must select authentication for relayed requests.
+		Name: "anthropic", Type: "openai", BaseURL: anthropicUp.URL, APIKey: "ant-key",
 		Models: []string{"claude-sonnet-4-5"}, Groups: []string{"default"},
 	})
 	h.createChannel(channelInput{
-		Name: "gemini", Type: "gemini", BaseURL: geminiUp.URL, APIKey: "goog-key",
+		Name: "gemini", Type: "anthropic", BaseURL: geminiUp.URL, APIKey: "goog-key",
 		Models:       []string{"gemini-2.5-pro"},
 		ModelMapping: map[string]string{"gemini-2.5-pro": "gemini-2.5-pro-preview"},
 		Groups:       []string{"default"},
@@ -1176,6 +1304,23 @@ func TestAnthropicAndGeminiDialects(t *testing.T) {
 		}
 		if got := hdrs.Get("Anthropic-Version"); got == "" {
 			t.Error("anthropic-version header was not supplied")
+		}
+	})
+
+	t.Run("anthropic count_tokens uses the same path-derived auth", func(t *testing.T) {
+		resp := h.relayRequest(http.MethodPost, "/v1/messages/count_tokens", key,
+			`{"model":"claude-sonnet-4-5","messages":[]}`)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			t.Fatalf("HTTP %d: %s", resp.StatusCode, raw)
+		}
+		hdrs := anthropicUp.headers()
+		if got := hdrs.Get("X-Api-Key"); got != "ant-key" {
+			t.Errorf("x-api-key = %q", got)
+		}
+		if got := hdrs.Get("Authorization"); got != "" {
+			t.Errorf("the caller's bearer token leaked upstream: %q", got)
 		}
 	})
 
@@ -1316,6 +1461,44 @@ func TestFetchModelsFromUpstream(t *testing.T) {
 	}
 	if len(models) != 3 {
 		t.Fatalf("routing table not refreshed, got %v", models)
+	}
+}
+
+func TestFetchModelsAutoTriesGoogleCatalogueAuthentication(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1beta/models" ||
+			r.Header.Get("X-Goog-Api-Key") != "opaque-key" {
+			http.Error(w, `{"error":"wrong catalogue authentication"}`, http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"models":[{"name":"models/gemini-2.5-pro"}]}`)
+	})
+	id := h.createChannel(channelInput{
+		Name: "google-catalogue", BaseURL: up.URL, AuthStyle: model.AuthStyleAuto,
+		APIKey: "opaque-key", Groups: []string{"default"},
+	})
+
+	var pulled struct {
+		Models []string `json:"models"`
+		Count  int      `json:"count"`
+	}
+	resp := h.do(http.MethodPost,
+		fmt.Sprintf("/api/admin/channels/%d/fetch-models", id), h.admin, nil, &pulled)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("HTTP %d", resp.StatusCode)
+	}
+	if pulled.Count != 1 || !slices.Equal(pulled.Models, []string{"gemini-2.5-pro"}) {
+		t.Fatalf("unexpected pull result: %+v", pulled)
+	}
+	if got := up.requests.Load(); got != 3 {
+		t.Fatalf("catalogue attempts = %d, want bearer, x-api-key, then Google", got)
+	}
+	if got := up.path(); got != "/v1beta/models?pageSize=1000" {
+		t.Fatalf("last catalogue path = %q", got)
 	}
 }
 
@@ -3180,8 +3363,8 @@ func TestRebuildKeepsAChannelWrittenWhileItRuns(t *testing.T) {
 
 	var racerID int64
 	if err := tx.QueryRow(ctx, `INSERT INTO channels
-		(name, type, base_url, status, priority, weight, channel_groups, models)
-		VALUES ('racer', 'openai', 'http://upstream.test', 1, 0, 1,
+		(name, base_url, auth_style, status, priority, weight, channel_groups, models)
+		VALUES ('racer', 'http://upstream.test', 'auto', 1, 0, 1,
 		        ARRAY['default'], ARRAY['racer-model'])
 		RETURNING id`).Scan(&racerID); err != nil {
 		t.Fatal(err)
@@ -4287,6 +4470,63 @@ func TestPromptedChannelTestReturnsTheModelReply(t *testing.T) {
 	}
 }
 
+func TestChannelTestCanChooseEachRequestProtocol(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/responses":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"output": []map[string]any{{"content": []map[string]string{{
+					"type": "output_text", "text": "responses-ok",
+				}}}},
+			})
+		case "/v1/messages":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"content": []map[string]string{{"type": "text", "text": "messages-ok"}},
+			})
+		case "/v1/chat/completions":
+			chatResponse(w, "chat-ok", 1, 1)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	id := h.createChannel(channelInput{
+		Name: "protocol-probe", BaseURL: up.URL, APIKey: "upstream-key",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+
+	tests := []struct {
+		protocol, endpoint, reply, auth, xAPIKey string
+	}{
+		{protocol: relay.TestProtocolResponses, endpoint: "/v1/responses", reply: "responses-ok", auth: "Bearer upstream-key"},
+		{protocol: relay.TestProtocolChatCompletions, endpoint: "/v1/chat/completions", reply: "chat-ok", auth: "Bearer upstream-key"},
+		{protocol: relay.TestProtocolMessages, endpoint: "/v1/messages", reply: "messages-ok", xAPIKey: "upstream-key"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.protocol, func(t *testing.T) {
+			var result relay.TestResult
+			resp := h.do(http.MethodPost, fmt.Sprintf("/api/admin/channels/%d/test", id), h.admin,
+				map[string]any{"model": "gpt-4o", "protocol": tc.protocol, "prompt": "ping"}, &result)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK || !result.OK {
+				t.Fatalf("HTTP %d, result %+v", resp.StatusCode, result)
+			}
+			if result.Endpoint != tc.endpoint || result.Reply != tc.reply {
+				t.Fatalf("endpoint/reply = %q/%q, want %q/%q", result.Endpoint, result.Reply, tc.endpoint, tc.reply)
+			}
+			hdrs := up.headers()
+			if got := up.auth(); got != tc.auth {
+				t.Errorf("Authorization = %q, want %q", got, tc.auth)
+			}
+			if got := hdrs.Get("X-Api-Key"); got != tc.xAPIKey {
+				t.Errorf("X-Api-Key = %q, want %q", got, tc.xAPIKey)
+			}
+		})
+	}
+}
+
 func TestPromptedChannelTestFlagsAnEmptyReply(t *testing.T) {
 	h := newHarness(t)
 
@@ -4375,8 +4615,8 @@ func TestQuickImportParsesPastedTextAndPullsModels(t *testing.T) {
 	if !strings.HasSuffix(preview.BaseURL, "/v1") {
 		t.Fatalf("base url kept the endpoint path: %q", preview.BaseURL)
 	}
-	if preview.Type != model.ChannelOpenAI {
-		t.Fatalf("type = %q", preview.Type)
+	if preview.AuthStyle != model.AuthStyleAuto {
+		t.Fatalf("auth style = %q", preview.AuthStyle)
 	}
 	if len(preview.Models) != 2 || preview.ModelError != "" {
 		t.Fatalf("models = %v, error = %q", preview.Models, preview.ModelError)
@@ -4437,7 +4677,7 @@ func TestImportPreviewReusesTheStoredKeyWithoutEchoingIt(t *testing.T) {
 	// probe has to reach for it server-side.
 	var preview channelImportPreview
 	h.do(http.MethodPost, "/api/admin/channels/import", h.admin, channelImportInput{
-		ChannelID: id, BaseURL: up.URL, Type: "openai",
+		ChannelID: id, BaseURL: up.URL,
 	}, &preview)
 
 	if len(preview.Models) != 1 || preview.ModelError != "" {
@@ -4470,6 +4710,7 @@ func TestQuickImportHonoursExplicitOverrides(t *testing.T) {
 		Text:       "https://api.wrong.test/v1 sk-wrong-key-0123456789",
 		BaseURL:    "https://api.right.test/v1/chat/completions",
 		APIKey:     "sk-ant-corrected-0123456789",
+		AuthStyle:  model.AuthStyleXAPIKey,
 		SkipModels: true,
 	}, &preview)
 
@@ -4479,8 +4720,8 @@ func TestQuickImportHonoursExplicitOverrides(t *testing.T) {
 	if preview.APIKey != "sk-ant-corrected-0123456789" {
 		t.Fatalf("key override ignored: %q", preview.APIKey)
 	}
-	if preview.Type != model.ChannelAnthropic {
-		t.Fatalf("type not re-derived from the corrected key: %q", preview.Type)
+	if preview.AuthStyle != model.AuthStyleXAPIKey {
+		t.Fatalf("auth style override ignored: %q", preview.AuthStyle)
 	}
 	if preview.SuggestedName != "right.test" {
 		t.Fatalf("name = %q", preview.SuggestedName)

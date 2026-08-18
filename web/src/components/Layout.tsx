@@ -49,9 +49,7 @@ const THEME_OPTIONS: { key: ThemeMode; label: string; icon: ReactNode }[] = [
 function Brand({ collapsed }: { collapsed: boolean }) {
   return (
     <div className="app-brand">
-      <span className="app-brand__mark" aria-hidden>
-        ⇄
-      </span>
+      <img className="app-brand__mark" src="/favicon.svg" alt="" />
       {!collapsed && (
         <span className="app-brand__text">
           <span className="app-brand__title">FakeToken</span>

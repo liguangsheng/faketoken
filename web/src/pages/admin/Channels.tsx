@@ -37,7 +37,6 @@ import {
   SearchOutlined,
   ThunderboltOutlined,
   WalletOutlined,
-  WarningOutlined,
 } from '@ant-design/icons'
 
 import {
@@ -54,8 +53,6 @@ import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { useMediaQuery } from '../../hooks/useMediaQuery'
 import { useSettings } from '../../settings/SettingsContext'
 import {
-  CHANNEL_TYPES,
-  channelTypeLabel,
   formatDuration,
   formatMoney,
   formatNumber,
@@ -67,11 +64,20 @@ import {
   stringifyMapping,
 } from '../../utils/format'
 
-const DEFAULT_BASE_URL: Record<string, string> = {
-  openai: 'https://api.openai.com',
-  anthropic: 'https://api.anthropic.com',
-  gemini: 'https://generativelanguage.googleapis.com',
-}
+const AUTH_STYLES = [
+  { value: 'auto', label: '自动（按请求端点）' },
+  { value: 'bearer', label: 'Authorization: Bearer' },
+  { value: 'x-api-key', label: 'x-api-key' },
+  { value: 'x-goog-api-key', label: 'X-Goog-Api-Key' },
+]
+
+const TEST_PROTOCOLS = [
+  { value: 'responses', label: 'Responses' },
+  { value: 'chat_completions', label: 'Chat Completions' },
+  { value: 'messages', label: 'Messages' },
+] as const
+
+type TestProtocol = (typeof TEST_PROTOCOLS)[number]['value']
 
 // Wide enough not to get in the way, bounded so the value still fits the int32
 // columns it lands in. The weight floor is 1 because selection treats weight as
@@ -82,13 +88,8 @@ const MAX_PRIORITY = 1_000_000
 const MIN_WEIGHT = 1
 const MAX_WEIGHT = 1_000_000
 
-// statusHint explains what the switch will do, and why a channel is off when
-// the gateway turned it off rather than an operator.
 function statusHint(channel: Channel) {
   if (channel.status === STATUS.ENABLED) return '已启用，点击停止向该渠道转发'
-  if (channel.status === STATUS.AUTO_DISABLED) {
-    return `已被网关自动禁用：${channel.last_error || '连续鉴权失败'}。修复后点击可重新启用`
-  }
   return '已禁用，点击恢复转发'
 }
 
@@ -226,7 +227,6 @@ export default function Channels() {
   const [pageSize, setPageSize] = useState(defaultPageSize)
   const [keywordInput, setKeywordInput] = useState('')
   const [statusFilter, setStatusFilter] = useState<number>()
-  const [typeFilter, setTypeFilter] = useState<string>()
   const [groupFilter, setGroupFilter] = useState<string>()
   const [modelFilterInput, setModelFilterInput] = useState('')
   const [groups, setGroups] = useState<UserGroup[]>([])
@@ -237,6 +237,8 @@ export default function Channels() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<Channel | null>(null)
   const [saving, setSaving] = useState(false)
+  const [loadingCredential, setLoadingCredential] = useState(false)
+  const credentialRequest = useRef(0)
   const [form] = Form.useForm()
 
   // channel is set when the picker saves straight to the server; toForm marks
@@ -254,6 +256,7 @@ export default function Channels() {
     null,
   )
   const [testModel, setTestModel] = useState('')
+  const [testProtocol, setTestProtocol] = useState<TestProtocol>('responses')
   const [testTemplate, setTestTemplate] = useState('')
   const [testPrompt, setTestPrompt] = useState('')
   const [testing, setTesting] = useState(false)
@@ -273,7 +276,7 @@ export default function Channels() {
 
   useEffect(() => {
     setPage(1)
-  }, [keyword, statusFilter, typeFilter, groupFilter, modelFilter])
+  }, [keyword, statusFilter, groupFilter, modelFilter])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -283,7 +286,6 @@ export default function Channels() {
         page_size: pageSize,
         keyword,
         status: statusFilter,
-        type: typeFilter,
         group: groupFilter,
         model: modelFilter || undefined,
       })
@@ -298,7 +300,7 @@ export default function Channels() {
     } finally {
       setLoading(false)
     }
-  }, [groupFilter, keyword, message, modelFilter, page, pageSize, statusFilter, typeFilter])
+  }, [groupFilter, keyword, message, modelFilter, page, pageSize, statusFilter])
 
   useEffect(() => {
     void load()
@@ -325,7 +327,12 @@ export default function Channels() {
   // overrides let the quick import seed the form in one write, instead of
   // opening the drawer and then racing a second setFieldsValue against it.
   const openDrawer = (channel?: Channel, overrides?: Record<string, unknown>) => {
+    const requestID = ++credentialRequest.current
+    const overrideKey = typeof overrides?.api_key === 'string' ? overrides.api_key : ''
+    const shouldRevealCredential = Boolean(channel && !overrideKey)
+
     setEditing(channel ?? null)
+    setLoadingCredential(shouldRevealCredential)
     form.setFieldsValue({
       ...(channel
         ? {
@@ -338,8 +345,8 @@ export default function Channels() {
           }
         : {
             name: '',
-            type: 'openai',
-            base_url: DEFAULT_BASE_URL.openai,
+            base_url: '',
+            auth_style: 'auto',
             api_key: '',
             status: STATUS.ENABLED,
             priority: 0,
@@ -358,14 +365,40 @@ export default function Channels() {
       ...overrides,
     })
     setDrawerOpen(true)
+
+    if (channel && shouldRevealCredential) {
+      void api.admin
+        .channelCredential(channel.id)
+        .then((credential) => {
+          if (credentialRequest.current === requestID) {
+            form.setFieldValue('api_key', credential.api_key)
+          }
+        })
+        .catch((error) => {
+          if (credentialRequest.current === requestID) {
+            message.error(error instanceof Error ? error.message : '读取上游密钥失败')
+          }
+        })
+        .finally(() => {
+          if (credentialRequest.current === requestID) {
+            setLoadingCredential(false)
+          }
+        })
+    }
+  }
+
+  const closeDrawer = () => {
+    credentialRequest.current++
+    setLoadingCredential(false)
+    setDrawerOpen(false)
   }
 
   const submit = async () => {
     const values = await form.validateFields()
     const payload = {
       name: values.name,
-      type: values.type,
       base_url: values.base_url ?? '',
+      auth_style: values.auth_style ?? 'auto',
       api_key: values.api_key ?? '',
       status: values.status ?? STATUS.ENABLED,
       priority: Number(values.priority ?? 0),
@@ -424,8 +457,7 @@ export default function Channels() {
   // stored one", which the server resolves from channel_id.
   const fetchModelsForForm = async () => {
     const values = form.getFieldsValue()
-    const type = values.type || 'openai'
-    const baseURL = (values.base_url ?? '').trim() || DEFAULT_BASE_URL[type] || ''
+    const baseURL = (values.base_url ?? '').trim()
     if (!baseURL) {
       message.warning('请先填写接口地址')
       return
@@ -437,7 +469,7 @@ export default function Channels() {
         channel_id: editing?.id,
         base_url: baseURL,
         api_key: (values.api_key ?? '').trim() || undefined,
-        type,
+        auth_style: values.auth_style ?? 'auto',
       })
       if (result.model_error) {
         message.error(`拉取失败：${result.model_error}`)
@@ -489,6 +521,7 @@ export default function Channels() {
   const openTest = (channel: Channel) => {
     setTester({ channel })
     setTestModel(channel.test_model || channel.models[0] || '')
+    setTestProtocol('responses')
     // Start from a random built-in prompt: it makes a meaningful probe one
     // click away, and varying the question stops a channel from looking
     // healthy just because it caches one familiar answer.
@@ -538,6 +571,7 @@ export default function Channels() {
       // the probe is exactly what the operator sees.
       const result = await api.admin.testChannel(tester.channel.id, {
         model: testModel || undefined,
+        protocol: testProtocol,
         prompt: testPrompt.trim() || undefined,
       })
       setTester({ channel: tester.channel, result })
@@ -666,8 +700,8 @@ export default function Channels() {
     const existing = preview.existing_channel
 
     const overrides = {
-      type: preview.type,
       base_url: preview.base_url,
+      auth_style: preview.auth_style,
       api_key: preview.api_key,
       ...(preview.models.length ? { models: preview.models } : {}),
     }
@@ -732,10 +766,14 @@ export default function Channels() {
     }
   }
 
-  const showBalance = async (channel: Channel) => {
-    const hide = message.loading(`正在查询「${channel.name}」的余额…`, 0)
+  const showBalance = async (channel: Channel, kind: 'new-api' | 'sub2api') => {
+    const label = kind === 'new-api' ? 'new-api' : 'sub2api'
+    const hide = message.loading(`正在通过 ${label} 查询「${channel.name}」的余额…`, 0)
     try {
-      const balance = await api.admin.channelBalance(channel.id)
+      const balance =
+        kind === 'new-api'
+          ? await api.admin.channelBalance(channel.id)
+          : await api.admin.channelSub2APIBalance(channel.id)
       hide()
       if (!balance.ok) {
         message.warning(balance.message || '该上游未提供余额接口')
@@ -828,14 +866,11 @@ export default function Channels() {
   const clearFilters = () => {
     setKeywordInput('')
     setStatusFilter(undefined)
-    setTypeFilter(undefined)
     setGroupFilter(undefined)
     setModelFilterInput('')
   }
 
-  const filtered = Boolean(
-    keywordInput || statusFilter || typeFilter || groupFilter || modelFilterInput,
-  )
+  const filtered = Boolean(keywordInput || statusFilter || groupFilter || modelFilterInput)
 
   const visiblePickerModels = (picker?.models ?? []).filter((item) =>
     item.toLowerCase().includes(pickerFilter.toLowerCase()),
@@ -893,16 +928,7 @@ export default function Channels() {
           options={[
             { value: STATUS.ENABLED, label: '启用' },
             { value: STATUS.DISABLED, label: '已禁用' },
-            { value: STATUS.AUTO_DISABLED, label: '自动禁用' },
           ]}
-        />
-        <Select
-          allowClear
-          placeholder="类型"
-          style={{ width: 130 }}
-          value={typeFilter}
-          onChange={setTypeFilter}
-          options={CHANNEL_TYPES}
         />
         <Select
           allowClear
@@ -991,6 +1017,14 @@ export default function Channels() {
         }}
         columns={[
            {
+             // The id is what the logs show, so it has to be findable here too.
+             title: 'ID',
+             dataIndex: 'id',
+             width: 72,
+            sorter: (a, b) => a.id - b.id,
+            render: (id: number) => <Tag className="mono" style={{ marginInlineEnd: 0 }}>#{id}</Tag>,
+          },
+          {
              // Keep this column compact instead of letting it absorb all remaining
              // table width. Long names and addresses still use ellipsis + Tooltip.
              title: '渠道',
@@ -1000,11 +1034,6 @@ export default function Channels() {
             render: (name: string, row) => (
               <div style={{ display: 'grid', gap: 2, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                  {/* The id is what the logs show, so it has to be findable
-                      here too. */}
-                  <Tag className="mono" style={{ flex: 'none', marginInlineEnd: 0 }}>
-                    #{row.id}
-                  </Tag>
                   <Tooltip title={name}>
                     <strong
                       style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
@@ -1013,13 +1042,8 @@ export default function Channels() {
                     </strong>
                   </Tooltip>
                 </div>
-                {/* The type tag sits with the address, not the name: sharing a
-                    line with a fixed-width tag was what cut names short. */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                  <Tag style={{ flex: 'none', marginInlineEnd: 0 }}>
-                    {channelTypeLabel(row.type)}
-                  </Tag>
-                  <Tooltip title={row.base_url || '使用官方默认地址'}>
+                <div style={{ minWidth: 0 }}>
+                  <Tooltip title={row.base_url}>
                     <span
                       className="mono text-muted"
                       style={{
@@ -1029,7 +1053,7 @@ export default function Channels() {
                         whiteSpace: 'nowrap',
                       }}
                     >
-                      {row.base_url || '官方默认地址'}
+                      {row.base_url}
                     </span>
                   </Tooltip>
                 </div>
@@ -1195,14 +1219,6 @@ export default function Channels() {
                     />
                   </span>
                 </Tooltip>
-                {/* Auto-disabled is not the same as "someone turned it off":
-                    re-enabling without fixing the credential just trips it
-                    again, so the reason stays visible next to the switch. */}
-                {row.status === STATUS.AUTO_DISABLED && (
-                  <Tooltip title={`自动禁用：${row.last_error || '连续鉴权失败'}`}>
-                    <WarningOutlined style={{ color: 'var(--app-danger)' }} />
-                  </Tooltip>
-                )}
               </Space>
             ),
           },
@@ -1216,7 +1232,8 @@ export default function Channels() {
                   items: [
                     { key: 'test', icon: <ThunderboltOutlined />, label: '模型测试' },
                     { key: 'models', icon: <CloudDownloadOutlined />, label: '拉取模型' },
-                    { key: 'balance', icon: <WalletOutlined />, label: '查询余额' },
+                    { key: 'balance-new-api', icon: <WalletOutlined />, label: 'new-api 余额' },
+                    { key: 'balance-sub2api', icon: <WalletOutlined />, label: 'sub2api 余额' },
                     { key: 'edit', icon: <EditOutlined />, label: '编辑渠道' },
                     { key: 'credential', icon: <LinkOutlined />, label: '复制地址与密钥' },
                     { key: 'clone', icon: <CopyOutlined />, label: '复制渠道' },
@@ -1226,7 +1243,8 @@ export default function Channels() {
                   onClick: ({ key }) => {
                     if (key === 'test') openTest(row)
                     else if (key === 'models') void fetchModels(row)
-                    else if (key === 'balance') void showBalance(row)
+                    else if (key === 'balance-new-api') void showBalance(row, 'new-api')
+                    else if (key === 'balance-sub2api') void showBalance(row, 'sub2api')
                     else if (key === 'edit') openDrawer(row)
                     else if (key === 'credential') void copyCredential(row)
                     else if (key === 'clone') void cloneChannel(row)
@@ -1244,6 +1262,7 @@ export default function Channels() {
               </Dropdown>
             ),
           },
+          Table.EXPAND_COLUMN,
         ]}
         expandable={{
           expandedRowRender: (row) => (
@@ -1252,13 +1271,16 @@ export default function Channels() {
                 <Card size="small" title="连接">
                   <Space direction="vertical" size={4} style={{ width: '100%' }}>
                     <Typography.Text className="mono" copyable>
-                      {row.base_url || DEFAULT_BASE_URL[row.type] || '（官方默认地址）'}
+                      {row.base_url}
                     </Typography.Text>
                     <span className="mono text-muted">密钥 {row.api_key || '未设置'}</span>
                     {row.proxy_url && <span className="mono text-muted">代理 {row.proxy_url}</span>}
                     <span className="text-muted" style={{ fontSize: 12 }}>
                       超时 {row.timeout_secs ? `${row.timeout_secs}s` : '全局默认'} · 计费倍率 ×
                       {row.price_ratio}
+                    </span>
+                    <span className="text-muted" style={{ fontSize: 12 }}>
+                      鉴权 {AUTH_STYLES.find((item) => item.value === row.auth_style)?.label ?? row.auth_style}
                     </span>
                   </Space>
                 </Card>
@@ -1291,11 +1313,11 @@ export default function Channels() {
         open={drawerOpen}
         width={narrow ? '100%' : 640}
         title={editing ? `编辑渠道：${editing.name}` : '新建渠道'}
-        onClose={() => setDrawerOpen(false)}
+        onClose={closeDrawer}
         extra={
           <Space>
-            <Button onClick={() => setDrawerOpen(false)}>取消</Button>
-            <Button type="primary" loading={saving} onClick={submit}>
+            <Button onClick={closeDrawer}>取消</Button>
+            <Button type="primary" loading={saving} disabled={loadingCredential} onClick={submit}>
               保存
             </Button>
           </Space>
@@ -1306,34 +1328,19 @@ export default function Channels() {
             基本信息
           </Divider>
 
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                name="name"
-                label="名称"
-                rules={[{ required: true, message: '请输入名称' }]}
-              >
-                <Input placeholder="例如：OpenAI 官方" />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="type" label="类型">
-                <Select
-                  options={CHANNEL_TYPES}
-                  onChange={(type) => {
-                    if (!form.getFieldValue('base_url') || !editing) {
-                      form.setFieldValue('base_url', DEFAULT_BASE_URL[type] ?? '')
-                    }
-                  }}
-                />
-              </Form.Item>
-            </Col>
-          </Row>
+          <Form.Item
+            name="name"
+            label="名称"
+            rules={[{ required: true, message: '请输入名称' }]}
+          >
+            <Input placeholder="例如：主渠道" />
+          </Form.Item>
 
           <Form.Item
             name="base_url"
             label="接口地址"
             tooltip="填到域名即可，例如 https://api.openai.com；末尾带 /v1 也能正确识别"
+            rules={[{ required: true, whitespace: true, message: '请输入接口地址' }]}
           >
             <Input placeholder="https://api.openai.com" />
           </Form.Item>
@@ -1341,10 +1348,16 @@ export default function Channels() {
           <Form.Item
             name="api_key"
             label="上游密钥"
-            tooltip={editing ? '留空表示保持原密钥不变' : '会以 AES-256-GCM 加密后落库'}
+            tooltip={editing ? '当前显示已存储的明文密钥，修改后会覆盖原密钥' : '会以 AES-256-GCM 加密后落库'}
             rules={editing ? [] : [{ required: true, message: '请输入上游密钥' }]}
           >
-            <Input.Password placeholder={editing ? '留空则不修改' : 'sk-...'} />
+            <Input
+              className="mono"
+              autoComplete="off"
+              disabled={loadingCredential}
+              suffix={loadingCredential ? <ReloadOutlined spin /> : undefined}
+              placeholder={loadingCredential ? '正在读取密钥' : editing ? '未设置' : 'sk-...'}
+            />
           </Form.Item>
 
           <Divider orientation="left" orientationMargin={0}>
@@ -1451,12 +1464,12 @@ export default function Channels() {
           </Divider>
 
           <Row gutter={16}>
-            <Col span={12}>
+            <Col xs={24} md={8}>
               <Form.Item name="timeout_secs" label="超时（秒）" tooltip="0 表示使用全局默认">
                 <InputNumber min={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col xs={24} md={8}>
               <Form.Item name="status" label="状态">
                 <Select
                   options={[
@@ -1464,6 +1477,15 @@ export default function Channels() {
                     { value: STATUS.DISABLED, label: '禁用' },
                   ]}
                 />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item
+                name="auth_style"
+                label="鉴权方式"
+                tooltip="自动会根据客户端请求端点选择；仅在兼容网关要求特殊鉴权头时覆盖"
+              >
+                <Select options={AUTH_STYLES} />
               </Form.Item>
             </Col>
           </Row>
@@ -1506,7 +1528,7 @@ export default function Channels() {
       >
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Row gutter={12}>
-            <Col span={12}>
+            <Col xs={24} md={8}>
               <Typography.Text strong style={{ fontSize: 13 }}>
                 模型
               </Typography.Text>
@@ -1526,7 +1548,18 @@ export default function Channels() {
                 options={(tester?.channel.models ?? []).map((item) => ({ value: item }))}
               />
             </Col>
-            <Col span={12}>
+            <Col xs={24} md={8}>
+              <Typography.Text strong style={{ fontSize: 13 }}>
+                请求协议
+              </Typography.Text>
+              <Select
+                style={{ width: '100%' }}
+                value={testProtocol}
+                onChange={setTestProtocol}
+                options={TEST_PROTOCOLS.map((item) => ({ ...item }))}
+              />
+            </Col>
+            <Col xs={24} md={8}>
               <Typography.Text strong style={{ fontSize: 13 }}>
                 提示词模板
               </Typography.Text>
@@ -1692,9 +1725,6 @@ export default function Channels() {
                 />
               )}
               <Descriptions column={1} size="small" bordered>
-                <Descriptions.Item label="渠道类型">
-                  <Tag>{channelTypeLabel(preview.type)}</Tag>
-                </Descriptions.Item>
                 <Descriptions.Item label="建议名称">
                   {preview.suggested_name || '未识别'}
                 </Descriptions.Item>
