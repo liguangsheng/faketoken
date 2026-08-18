@@ -603,6 +603,19 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
             ),
           },
           {
+            title: '客户端',
+            dataIndex: 'client_type',
+            width: 110,
+            responsive: ['lg'],
+            ellipsis: true,
+            render: (type: string) =>
+              type && type !== 'unknown' ? (
+                <Tag>{type}</Tag>
+              ) : (
+                <span className="text-muted">未知</span>
+              ),
+          },
+          {
             // A mapped model is shown as "asked → sent". Collapsing the two
             // into one name hides the rewrite, which is exactly the thing you
             // are looking for when a model behaves unlike its name.
@@ -638,19 +651,6 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
                 </Tooltip>
               )
             },
-          },
-          {
-            title: '客户端',
-            dataIndex: 'client_type',
-            width: 110,
-            responsive: ['lg'],
-            ellipsis: true,
-            render: (type: string) =>
-              type && type !== 'unknown' ? (
-                <Tag>{type}</Tag>
-              ) : (
-                <span className="text-muted">未知</span>
-              ),
           },
           {
             title: '来源 IP',
