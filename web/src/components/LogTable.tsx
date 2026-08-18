@@ -740,11 +740,11 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
             // Input / output / total spelled out. The cache breakdown lives in
             // the detail drawer, where there is room to explain it.
             title: 'Tokens',
-            width: 170,
+            width: 150,
             render: (_: unknown, row: RequestLog) => (
-              <span className="mono">
-                {formatNumber(row.prompt_tokens)} → {formatNumber(row.completion_tokens)}
-                <span className="text-muted"> / {formatNumber(row.total_tokens)}</span>
+              <span className="mono" style={{ whiteSpace: 'nowrap' }}>
+                {formatCompact(row.prompt_tokens)}→{formatCompact(row.completion_tokens)}
+                <span className="text-muted"> · {formatCompact(row.total_tokens)}</span>
               </span>
             ),
           },
@@ -945,7 +945,8 @@ function LogMeta({ detail, admin }: { detail: RequestLog; admin?: boolean }) {
       </Descriptions.Item>
       <Descriptions.Item label="Token 用量">
         输入 {formatNumber(detail.prompt_tokens)} · 输出{' '}
-        {formatNumber(detail.completion_tokens)} · 合计 {formatNumber(detail.total_tokens)}
+        {formatNumber(detail.completion_tokens)} · 合计{' '}
+        {formatNumber(detail.total_tokens || detail.prompt_tokens + detail.completion_tokens)}
       </Descriptions.Item>
       <Descriptions.Item label="缓存命中">
         {formatNumber(detail.cached_tokens)}

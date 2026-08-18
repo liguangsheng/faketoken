@@ -1638,11 +1638,13 @@ export default function Channels() {
                 <Descriptions.Item label="耗时">
                   {formatDuration(tester.result.latency_ms)}
                 </Descriptions.Item>
-                {tester.result.usage && tester.result.usage.total_tokens > 0 && (
+                {tester.result.usage && (tester.result.usage.total_tokens > 0 ||
+                  tester.result.usage.prompt_tokens > 0 || tester.result.usage.completion_tokens > 0) && (
                   <Descriptions.Item label="Token 用量" span={2}>
                     输入 {formatNumber(tester.result.usage.prompt_tokens)} · 输出{' '}
                     {formatNumber(tester.result.usage.completion_tokens)} · 合计{' '}
-                    {formatNumber(tester.result.usage.total_tokens)}
+                    {formatNumber(tester.result.usage.total_tokens ||
+                      tester.result.usage.prompt_tokens + tester.result.usage.completion_tokens)}
                   </Descriptions.Item>
                 )}
               </Descriptions>
