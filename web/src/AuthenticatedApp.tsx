@@ -15,6 +15,7 @@ import NotFound from './pages/NotFound'
 // Split out of the authenticated chunk too: the playground is rarely the entry
 // point and the admin section is dead weight for regular users.
 const Playground = lazy(() => import('./pages/Playground'))
+const Plaza = lazy(() => import('./pages/Plaza'))
 const Channels = lazy(() => import('./pages/admin/Channels'))
 const Users = lazy(() => import('./pages/admin/Users'))
 const Prices = lazy(() => import('./pages/admin/Prices'))
@@ -62,6 +63,7 @@ function Console() {
             <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="/" element={<Dashboard />} />
             <Route path="/tokens" element={<Tokens />} />
+            <Route path="/models" element={<Plaza />} />
             <Route path="/logs" element={<Logs />} />
             <Route path="/playground" element={<Playground />} />
             <Route path="/profile" element={<Profile />} />

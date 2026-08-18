@@ -207,6 +207,54 @@ func (s *Server) handleMyModels(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"data": models})
 }
 
+// plazaModel is one entry in the model plaza: a reachable model plus the base
+// price it would be billed at. Prices are USD per 1M tokens before the group
+// rate; the rate ships alongside so the console can show the effective number.
+type plazaModel struct {
+	Model           string  `json:"model"`
+	InputPrice      float64 `json:"input_price"`
+	OutputPrice     float64 `json:"output_price"`
+	CachedPrice     float64 `json:"cached_price"`
+	PerRequestPrice float64 `json:"per_request_price"`
+	// PriceStatus says where the numbers came from: "exact" is a configured
+	// entry, "fallback" the operator's default rate, "missing" no price at all.
+	PriceStatus string `json:"price_status"`
+}
+
+// handleModelPlaza backs the console's model plaza: every model the caller's
+// group can reach, priced the way the caller would actually be billed.
+func (s *Server) handleModelPlaza(w http.ResponseWriter, r *http.Request) {
+	me := userFrom(r.Context())
+	models, err := s.store.GroupModels(r.Context(), me.Group)
+	if err != nil {
+		failErr(w, err)
+		return
+	}
+
+	entries := make([]plazaModel, 0, len(models))
+	for _, name := range models {
+		entry := plazaModel{Model: name}
+		price, status := s.pricer.Resolve(name)
+		entry.PriceStatus = status.String()
+		if price != nil {
+			entry.InputPrice = price.InputPrice
+			entry.OutputPrice = price.OutputPrice
+			entry.CachedPrice = price.CachedPrice
+			entry.PerRequestPrice = price.PerRequestPrice
+		}
+		entries = append(entries, entry)
+	}
+
+	ok(w, map[string]any{
+		"data":       entries,
+		"group":      me.Group,
+		"group_rate": s.pricer.GroupRate(me.Group),
+		// The policy tells the console what "missing" means for the caller:
+		// under reject the model is unusable, otherwise it relays for free.
+		"unpriced_policy": s.pricer.Settings().UnpricedPolicy,
+	})
+}
+
 func validateCredentials(in credentials) error {
 	username := strings.TrimSpace(in.Username)
 	if n := utf8.RuneCountInString(username); n < 3 || n > 32 {

@@ -1,0 +1,290 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { App, Button, Card, Input, Tag, Tooltip, Typography } from 'antd'
+import { CopyOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+
+import { api, type PlazaModel, type UnpricedPolicy } from '../api/client'
+import EmptyState from '../components/EmptyState'
+import PageHeader from '../components/PageHeader'
+
+/**
+ * Vendors are guessed from the model name, purely for grouping and filtering.
+ * Order matters: the first match wins, so the more specific patterns sit above
+ * the generic ones.
+ */
+const VENDORS: { key: string; label: string; color: string; test: RegExp }[] = [
+  { key: 'openai', label: 'OpenAI', color: 'green', test: /^(gpt|chatgpt|o[1345](-|$)|codex|davinci|babbage|text-embedding|dall-e|whisper|tts|sora)/i },
+  { key: 'anthropic', label: 'Anthropic', color: 'volcano', test: /claude/i },
+  { key: 'google', label: 'Google', color: 'blue', test: /^(gemini|gemma|imagen|veo|learnlm|models\/)/i },
+  { key: 'deepseek', label: 'DeepSeek', color: 'geekblue', test: /deepseek/i },
+  { key: 'qwen', label: '通义千问', color: 'purple', test: /^(qwen|qwq|qvq)/i },
+  { key: 'zhipu', label: '智谱', color: 'cyan', test: /^(glm|chatglm|cogview|cogvideo)/i },
+  { key: 'doubao', label: '豆包', color: 'magenta', test: /^doubao/i },
+  { key: 'moonshot', label: 'Kimi', color: 'gold', test: /^(kimi|moonshot)/i },
+  { key: 'xai', label: 'xAI', color: 'default', test: /grok/i },
+  { key: 'meta', label: 'Meta', color: 'blue', test: /llama/i },
+  { key: 'mistral', label: 'Mistral', color: 'orange', test: /(mistral|mixtral|codestral|ministral|magistral|devstral|pixtral)/i },
+  { key: 'baidu', label: '百度', color: 'blue', test: /ernie/i },
+  { key: 'tencent', label: '腾讯混元', color: 'cyan', test: /hunyuan/i },
+  { key: 'minimax', label: 'MiniMax', color: 'red', test: /(minimax|abab)/i },
+  { key: 'cohere', label: 'Cohere', color: 'lime', test: /^(command|c4ai|aya)/i },
+]
+
+const OTHER = { key: 'other', label: '其他', color: 'default' }
+
+const vendorOf = (model: string) => VENDORS.find((v) => v.test.test(model)) ?? OTHER
+
+/** Renders a dollar price without the float noise the rate multiply leaves. */
+const fmtMoney = (value: number) => `$${Number(value.toPrecision(6))}`
+
+interface Entry extends PlazaModel {
+  vendor: typeof OTHER
+  /** Effective prices, after the group rate. */
+  input: number
+  output: number
+  cached: number
+  perRequest: number
+  free: boolean
+  blocked: boolean
+}
+
+export default function Plaza() {
+  const { message } = App.useApp()
+  const [models, setModels] = useState<PlazaModel[]>([])
+  const [group, setGroup] = useState('')
+  const [rate, setRate] = useState(1)
+  const [policy, setPolicy] = useState<UnpricedPolicy>('reject')
+  const [loading, setLoading] = useState(true)
+  const [keyword, setKeyword] = useState('')
+  const [vendorKey, setVendorKey] = useState('all')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const result = await api.plaza()
+      setModels(result.data ?? [])
+      setGroup(result.group)
+      setRate(result.group_rate > 0 ? result.group_rate : 1)
+      setPolicy(result.unpriced_policy)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '加载失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [message])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const entries = useMemo<Entry[]>(
+    () =>
+      models.map((m) => {
+        const missing = m.price_status === 'missing'
+        return {
+          ...m,
+          vendor: vendorOf(m.model),
+          input: m.input_price * rate,
+          output: m.output_price * rate,
+          cached: m.cached_price * rate,
+          perRequest: m.per_request_price * rate,
+          // A missing price only bills nothing when the operator relays it;
+          // under the reject policy the model cannot be called at all.
+          free: missing
+            ? policy !== 'reject'
+            : m.input_price + m.output_price + m.cached_price + m.per_request_price === 0,
+          blocked: missing && policy === 'reject',
+        }
+      }),
+    [models, rate, policy],
+  )
+
+  const filtered = useMemo(() => {
+    const kw = keyword.trim().toLowerCase()
+    return entries.filter(
+      (e) =>
+        (vendorKey === 'all' || e.vendor.key === vendorKey) &&
+        (!kw || e.model.toLowerCase().includes(kw)),
+    )
+  }, [entries, keyword, vendorKey])
+
+  /** Vendors that actually have models, in declaration order, for the chips. */
+  const vendorChips = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const e of entries) counts.set(e.vendor.key, (counts.get(e.vendor.key) ?? 0) + 1)
+    return [...VENDORS, OTHER]
+      .filter((v) => counts.has(v.key))
+      .map((v) => ({ ...v, count: counts.get(v.key) ?? 0 }))
+  }, [entries])
+
+  /** Cards grouped into one section per vendor, keeping declaration order. */
+  const sections = useMemo(() => {
+    const byVendor = new Map<string, Entry[]>()
+    for (const e of filtered) {
+      const list = byVendor.get(e.vendor.key)
+      if (list) list.push(e)
+      else byVendor.set(e.vendor.key, [e])
+    }
+    return [...VENDORS, OTHER]
+      .filter((v) => byVendor.has(v.key))
+      .map((v) => ({
+        vendor: v,
+        models: (byVendor.get(v.key) ?? []).sort((a, b) => a.model.localeCompare(b.model)),
+      }))
+  }, [filtered])
+
+  const copy = async (text: string) => {
+    try {
+      // Needs a secure context, so it fails over plain HTTP.
+      await navigator.clipboard.writeText(text)
+      message.success(`已复制：${text}`)
+    } catch {
+      message.error('复制失败：浏览器不允许访问剪贴板，请手动选中复制')
+    }
+  }
+
+  return (
+    <>
+      <PageHeader
+        title="模型广场"
+        description={
+          <>
+            当前分组 <Typography.Text code>{group || '-'}</Typography.Text> 可用的全部模型。
+            价格单位为「美元 / 100 万 Token」
+            {rate !== 1 ? (
+              <>
+                ，已按分组倍率 <Typography.Text code>x{rate}</Typography.Text> 折算为实际计费单价
+              </>
+            ) : (
+              '，即实际计费单价'
+            )}
+            。
+          </>
+        }
+        extra={
+          <>
+            <Input
+              allowClear
+              prefix={<SearchOutlined />}
+              placeholder="搜索模型"
+              style={{ width: 220 }}
+              value={keyword}
+              onChange={(event) => setKeyword(event.target.value)}
+            />
+            <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
+              刷新
+            </Button>
+          </>
+        }
+      />
+
+      {entries.length > 0 && (
+        <div className="tag-list" style={{ marginBottom: 16 }}>
+          <Tag.CheckableTag checked={vendorKey === 'all'} onChange={() => setVendorKey('all')}>
+            全部（{entries.length}）
+          </Tag.CheckableTag>
+          {vendorChips.map((v) => (
+            <Tag.CheckableTag
+              key={v.key}
+              checked={vendorKey === v.key}
+              onChange={() => setVendorKey(vendorKey === v.key ? 'all' : v.key)}
+            >
+              {v.label}（{v.count}）
+            </Tag.CheckableTag>
+          ))}
+        </div>
+      )}
+
+      {!loading && entries.length === 0 && (
+        <EmptyState
+          title="当前分组暂无可用模型"
+          description="还没有渠道向这个分组提供模型，请联系管理员配置渠道。"
+        />
+      )}
+      {!loading && entries.length > 0 && filtered.length === 0 && (
+        <EmptyState title="没有匹配的模型" description="换个关键词或厂商筛选试试。" />
+      )}
+
+      {sections.map(({ vendor, models: list }) => (
+        <div key={vendor.key} style={{ marginBottom: 24 }}>
+          <Typography.Title level={5} style={{ marginBottom: 12 }}>
+            {vendor.label}
+            <Typography.Text type="secondary" style={{ fontSize: 13, marginLeft: 8 }}>
+              {list.length} 个模型
+            </Typography.Text>
+          </Typography.Title>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+              gap: 12,
+            }}
+          >
+            {list.map((entry) => (
+              <ModelCard key={entry.model} entry={entry} onCopy={copy} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </>
+  )
+}
+
+function ModelCard({ entry, onCopy }: { entry: Entry; onCopy: (text: string) => void }) {
+  return (
+    <Card size="small" hoverable style={entry.blocked ? { opacity: 0.55 } : undefined}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        <Typography.Text
+          strong
+          className="mono"
+          style={{ flex: 1, fontSize: 13, minWidth: 0 }}
+          ellipsis={{ tooltip: entry.model }}
+        >
+          {entry.model}
+        </Typography.Text>
+        <Tooltip title="复制模型名">
+          <Button
+            type="text"
+            size="small"
+            icon={<CopyOutlined />}
+            onClick={() => onCopy(entry.model)}
+          />
+        </Tooltip>
+      </div>
+
+      <div style={{ margin: '8px 0 10px' }}>
+        <Tag color={entry.vendor.color}>{entry.vendor.label}</Tag>
+        {entry.blocked && (
+          <Tooltip title="该模型未配置价格，当前计费策略会拒绝调用">
+            <Tag color="red">暂不可用</Tag>
+          </Tooltip>
+        )}
+        {!entry.blocked && entry.free && <Tag color="green">免费</Tag>}
+        {entry.price_status === 'fallback' && (
+          <Tooltip title="该模型未单独配价，按站点兜底价计费">
+            <Tag color="gold">兜底价</Tag>
+          </Tooltip>
+        )}
+      </div>
+
+      <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+        <PriceRow label="输入 / 1M" value={entry.blocked ? null : fmtMoney(entry.input)} />
+        <PriceRow label="输出 / 1M" value={entry.blocked ? null : fmtMoney(entry.output)} />
+        {entry.cached > 0 && <PriceRow label="缓存输入 / 1M" value={fmtMoney(entry.cached)} />}
+        {entry.perRequest > 0 && <PriceRow label="每次请求" value={fmtMoney(entry.perRequest)} />}
+      </div>
+    </Card>
+  )
+}
+
+function PriceRow({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+      <span className="text-muted">{label}</span>
+      {value === null ? (
+        <span className="text-muted">-</span>
+      ) : (
+        <span className="mono">{value}</span>
+      )}
+    </div>
+  )
+}

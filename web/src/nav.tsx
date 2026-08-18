@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import {
   ApiOutlined,
+  AppstoreOutlined,
   BarChartOutlined,
   DollarOutlined,
   ExperimentOutlined,
@@ -48,6 +49,12 @@ export const NAV_SECTIONS: NavSection[] = [
         label: 'API 密钥',
         icon: <KeyOutlined />,
         description: '创建密钥并把中转地址填给任意客户端',
+      },
+      {
+        key: '/models',
+        label: '模型广场',
+        icon: <AppstoreOutlined />,
+        description: '当前分组可用的模型与实际计费单价',
       },
       {
         key: '/playground',

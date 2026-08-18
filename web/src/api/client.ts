@@ -209,6 +209,25 @@ export interface PriceCatalog {
   generated_at: string
 }
 
+/** One model in the plaza: reachable by the caller's group, with base prices. */
+export interface PlazaModel {
+  model: string
+  input_price: number
+  output_price: number
+  cached_price: number
+  per_request_price: number
+  /** "exact" configured entry; "fallback" operator default; "missing" unpriced. */
+  price_status: 'exact' | 'fallback' | 'missing'
+}
+
+export interface PlazaResponse {
+  data: PlazaModel[]
+  group: string
+  /** Billing multiplier of the caller's group; prices above are before it. */
+  group_rate: number
+  unpriced_policy: UnpricedPolicy
+}
+
 export interface UserGroup {
   name: string
   rate: number
@@ -414,6 +433,8 @@ export const api = {
       new_password,
     }),
   myModels: () => request<{ data: string[] }>('GET', '/api/me/models'),
+  /** The model plaza: reachable models plus how they would be billed. */
+  plaza: () => request<PlazaResponse>('GET', '/api/me/plaza'),
   /** Groups the caller may point a key at, plus their own group. */
   myGroups: () => request<{ data: UserGroup[]; own: string }>('GET', '/api/me/groups'),
 
