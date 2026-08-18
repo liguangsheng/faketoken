@@ -175,13 +175,14 @@ type existingChannelRef struct {
 }
 
 type channelImportPreview struct {
-	BaseURL       string              `json:"base_url"`
-	APIKey        string              `json:"api_key"`
-	AuthStyle     string              `json:"auth_style"`
-	SuggestedName string              `json:"suggested_name"`
-	Models        []string            `json:"models"`
-	ModelError    string              `json:"model_error,omitempty"`
-	Existing      *existingChannelRef `json:"existing_channel,omitempty"`
+	BaseURL            string              `json:"base_url"`
+	APIKey             string              `json:"api_key"`
+	AuthStyle          string              `json:"auth_style"`
+	SuggestedName      string              `json:"suggested_name"`
+	SupportedProtocols []string            `json:"supported_protocols"`
+	Models             []string            `json:"models"`
+	ModelError         string              `json:"model_error,omitempty"`
+	Existing           *existingChannelRef `json:"existing_channel,omitempty"`
 }
 
 // handleImportChannel previews a channel built from pasted text. It never
@@ -238,11 +239,12 @@ func (s *Server) handleImportChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	preview := channelImportPreview{
-		BaseURL:       guess.BaseURL,
-		APIKey:        guess.APIKey,
-		AuthStyle:     authStyle,
-		SuggestedName: guess.Name,
-		Models:        []string{},
+		BaseURL:            guess.BaseURL,
+		APIKey:             guess.APIKey,
+		AuthStyle:          authStyle,
+		SuggestedName:      guess.Name,
+		SupportedProtocols: model.AllProtocols,
+		Models:             []string{},
 	}
 
 	if guess.Name != "" {

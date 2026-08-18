@@ -21,19 +21,39 @@ func nameConflict(err error, name string) error {
 	return err
 }
 
+// normaliseProtocols trims, dedupes and defaults. An empty slice means every
+// dialect — stored as NULL or an empty array so the default routing keeps
+// treating the channel as universally routable.
+func normaliseProtocols(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, p := range in {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
 const channelColumns = `id, name, base_url, auth_style, api_key_enc, status, priority, weight,
 	channel_groups, models, model_mapping, headers, timeout_secs, proxy_url, price_ratio,
-	used_quota, request_count, error_count, last_error, last_error_at, tested_at,
-	models_synced_at, note, created_at, updated_at, model_prefixes, test_model`
+	rpm_limit, used_quota, request_count, error_count, last_error, last_error_at, tested_at,
+	models_synced_at, note, created_at, updated_at, model_prefixes, test_model, supported_protocols`
 
 func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 	var c model.Channel
 	var enc string
 	err := row.Scan(&c.ID, &c.Name, &c.BaseURL, &c.AuthStyle, &enc, &c.Status, &c.Priority,
 		&c.Weight, &c.Groups, &c.Models, &c.ModelMapping, &c.Headers, &c.TimeoutSecs,
-		&c.ProxyURL, &c.PriceRatio, &c.UsedQuota, &c.RequestCount, &c.ErrorCount,
+		&c.ProxyURL, &c.PriceRatio, &c.RPMLimit, &c.UsedQuota, &c.RequestCount, &c.ErrorCount,
 		&c.LastError, &c.LastErrorAt, &c.TestedAt, &c.ModelsSyncedAt, &c.Note,
-		&c.CreatedAt, &c.UpdatedAt, &c.ModelPrefixes, &c.TestModel)
+		&c.CreatedAt, &c.UpdatedAt, &c.ModelPrefixes, &c.TestModel, &c.SupportedProtocols)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -57,6 +77,9 @@ func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 	if c.Headers == nil {
 		c.Headers = map[string]string{}
 	}
+	if c.SupportedProtocols == nil {
+		c.SupportedProtocols = []string{}
+	}
 	return &c, nil
 }
 
@@ -74,12 +97,12 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 
 	row := tx.QueryRow(ctx, `INSERT INTO channels
 		(name, base_url, auth_style, api_key_enc, status, priority, weight, channel_groups,
-		 models, model_mapping, headers, timeout_secs, proxy_url, price_ratio, note,
-		 model_prefixes, test_model)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING `+channelColumns,
+		 models, model_mapping, headers, timeout_secs, proxy_url, price_ratio, rpm_limit, note,
+		 model_prefixes, test_model, supported_protocols)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING `+channelColumns,
 		c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, enc, c.Status, c.Priority, c.Weight,
-		c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL, c.PriceRatio, c.Note,
-		c.ModelPrefixes, c.TestModel)
+		c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL, c.PriceRatio,
+		c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel, normaliseProtocols(c.SupportedProtocols))
 	created, err := s.scanChannel(row)
 	if err != nil {
 		return nil, nameConflict(err, c.Name)
@@ -105,7 +128,8 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	keyClause := "api_key_enc"
 	args := []any{c.ID, c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, c.Status, c.Priority,
 		c.Weight, c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL,
-		c.PriceRatio, c.Note, c.ModelPrefixes, c.TestModel}
+		c.PriceRatio, c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel,
+		normaliseProtocols(c.SupportedProtocols)}
 	if c.APIKey != "" {
 		enc, err := s.cipher.Encrypt(c.APIKey)
 		if err != nil {
@@ -118,8 +142,8 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	row := tx.QueryRow(ctx, fmt.Sprintf(`UPDATE channels SET
 		name = $2, base_url = $3, auth_style = $4, status = $5, priority = $6, weight = $7,
 		channel_groups = $8, models = $9, model_mapping = $10, headers = $11,
-		timeout_secs = $12, proxy_url = $13, price_ratio = $14, note = $15,
-		model_prefixes = $16, test_model = $17,
+		timeout_secs = $12, proxy_url = $13, price_ratio = $14, rpm_limit = $15, note = $16,
+		model_prefixes = $17, test_model = $18, supported_protocols = $19,
 		api_key_enc = %s, updated_at = now()
 		WHERE id = $1 RETURNING %s`, keyClause, channelColumns), args...)
 
@@ -420,28 +444,31 @@ func (s *Store) channelNameTaken(ctx context.Context, name string) (bool, error)
 // a deliberate configuration, while a prefix is a catch-all. Prefixes are only
 // consulted when nothing matched exactly, so adding one can never steal traffic
 // from an existing exact route.
-func (s *Store) Candidates(ctx context.Context, group, requestModel string) ([]model.Candidate, error) {
-	exact, err := s.queryCandidates(ctx, `SELECT channel_id, priority, weight
+//
+// protocol is the upstream dialect the caller is using ("chat_completions",
+// "responses" or "messages"); an empty value skips the filter so callers that
+// do not care (the models list, tests) keep seeing every channel.
+func (s *Store) Candidates(ctx context.Context, group, requestModel, protocol string) ([]model.Candidate, error) {
+	exact, err := s.queryCandidates(ctx, `SELECT channel_id, priority, weight, rpm_limit
 		FROM abilities
 		WHERE group_name = $1 AND model = $2 AND enabled = TRUE
-		ORDER BY priority DESC`, group, requestModel)
+			AND ($3 = '' OR supported_protocols = '{}' OR $3 = ANY(supported_protocols))
+		ORDER BY priority DESC`, group, requestModel, protocol)
 	if err != nil || len(exact) > 0 {
 		return exact, err
 	}
 
-	// starts_with is a literal comparison, so a prefix containing % or _ stays
-	// harmless (unlike LIKE). DISTINCT ON keeps a channel from appearing twice
-	// when several of its prefixes match the same request.
-	return s.queryCandidates(ctx, `SELECT channel_id, priority, weight FROM (
-			SELECT DISTINCT ON (channel_id) channel_id, priority, weight, length(prefix) AS depth
+	return s.queryCandidates(ctx, `SELECT channel_id, priority, weight, rpm_limit FROM (
+			SELECT DISTINCT ON (channel_id) channel_id, priority, weight, rpm_limit, length(prefix) AS depth
 			FROM ability_prefixes
 			WHERE group_name = $1 AND enabled = TRUE AND starts_with($2, prefix)
+				AND ($3 = '' OR supported_protocols = '{}' OR $3 = ANY(supported_protocols))
 			ORDER BY channel_id, length(prefix) DESC
-		) matched ORDER BY priority DESC, depth DESC`, group, requestModel)
+		) matched ORDER BY priority DESC, depth DESC`, group, requestModel, protocol)
 }
 
-func (s *Store) queryCandidates(ctx context.Context, sql, group, requestModel string) ([]model.Candidate, error) {
-	rows, err := s.pool.Query(ctx, sql, group, requestModel)
+func (s *Store) queryCandidates(ctx context.Context, sql, group, requestModel, protocol string) ([]model.Candidate, error) {
+	rows, err := s.pool.Query(ctx, sql, group, requestModel, protocol)
 	if err != nil {
 		return nil, err
 	}
@@ -450,7 +477,7 @@ func (s *Store) queryCandidates(ctx context.Context, sql, group, requestModel st
 	out := []model.Candidate{}
 	for rows.Next() {
 		var c model.Candidate
-		if err := rows.Scan(&c.ChannelID, &c.Priority, &c.Weight); err != nil {
+		if err := rows.Scan(&c.ChannelID, &c.Priority, &c.Weight, &c.RPMLimit); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -524,6 +551,7 @@ func rebuildAbilities(ctx context.Context, tx pgx.Tx, c *model.Channel) error {
 	enabled := c.Status == model.StatusEnabled
 	seen := make(map[string]struct{}, len(c.Groups)*len(models))
 	rows := make([][]any, 0, len(c.Groups)*len(models))
+	protocols := normaliseProtocols(c.SupportedProtocols)
 	for _, g := range c.Groups {
 		g = strings.TrimSpace(g)
 		if g == "" {
@@ -539,7 +567,7 @@ func rebuildAbilities(ctx context.Context, tx pgx.Tx, c *model.Channel) error {
 				continue
 			}
 			seen[key] = struct{}{}
-			rows = append(rows, []any{g, m, c.ID, c.Priority, c.Weight, enabled})
+			rows = append(rows, []any{g, m, c.ID, c.Priority, c.Weight, enabled, c.RPMLimit, protocols})
 		}
 	}
 	if len(rows) == 0 {
@@ -548,7 +576,7 @@ func rebuildAbilities(ctx context.Context, tx pgx.Tx, c *model.Channel) error {
 
 	_, err := tx.CopyFrom(ctx,
 		pgx.Identifier{"abilities"},
-		[]string{"group_name", "model", "channel_id", "priority", "weight", "enabled"},
+		[]string{"group_name", "model", "channel_id", "priority", "weight", "enabled", "rpm_limit", "supported_protocols"},
 		pgx.CopyFromRows(rows))
 	return err
 }
@@ -563,6 +591,7 @@ func rebuildAbilityPrefixes(ctx context.Context, tx pgx.Tx, c *model.Channel) er
 	enabled := c.Status == model.StatusEnabled
 	seen := make(map[string]struct{}, len(c.Groups)*len(c.ModelPrefixes))
 	rows := make([][]any, 0, len(c.Groups)*len(c.ModelPrefixes))
+	protocols := normaliseProtocols(c.SupportedProtocols)
 	for _, g := range c.Groups {
 		g = strings.TrimSpace(g)
 		if g == "" {
@@ -578,7 +607,7 @@ func rebuildAbilityPrefixes(ctx context.Context, tx pgx.Tx, c *model.Channel) er
 				continue
 			}
 			seen[key] = struct{}{}
-			rows = append(rows, []any{g, p, c.ID, c.Priority, c.Weight, enabled})
+			rows = append(rows, []any{g, p, c.ID, c.Priority, c.Weight, enabled, c.RPMLimit, protocols})
 		}
 	}
 	if len(rows) == 0 {
@@ -587,7 +616,7 @@ func rebuildAbilityPrefixes(ctx context.Context, tx pgx.Tx, c *model.Channel) er
 
 	_, err := tx.CopyFrom(ctx,
 		pgx.Identifier{"ability_prefixes"},
-		[]string{"group_name", "prefix", "channel_id", "priority", "weight", "enabled"},
+		[]string{"group_name", "prefix", "channel_id", "priority", "weight", "enabled", "rpm_limit", "supported_protocols"},
 		pgx.CopyFromRows(rows))
 	return err
 }
@@ -643,7 +672,8 @@ func (s *Store) RebuildAllAbilities(ctx context.Context) error {
 // leave the table it just reported as repaired missing entries.
 func routingSources(ctx context.Context, tx pgx.Tx) ([]*model.Channel, error) {
 	rows, err := tx.Query(ctx, `SELECT id, status, priority, weight,
-		channel_groups, models, model_prefixes, model_mapping FROM channels ORDER BY id`)
+		channel_groups, models, model_prefixes, model_mapping, rpm_limit,
+		supported_protocols FROM channels ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -653,7 +683,8 @@ func routingSources(ctx context.Context, tx pgx.Tx) ([]*model.Channel, error) {
 	for rows.Next() {
 		var c model.Channel
 		if err := rows.Scan(&c.ID, &c.Status, &c.Priority, &c.Weight,
-			&c.Groups, &c.Models, &c.ModelPrefixes, &c.ModelMapping); err != nil {
+			&c.Groups, &c.Models, &c.ModelPrefixes, &c.ModelMapping, &c.RPMLimit,
+			&c.SupportedProtocols); err != nil {
 			return nil, err
 		}
 		channels = append(channels, &c)

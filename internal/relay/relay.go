@@ -39,6 +39,7 @@ type Relay struct {
 	cfg     *config.Config
 	clients *clientPool
 	breaker *breaker
+	limiter *rpmLimiter
 	// stream notifies connected consoles about new log rows. Optional: the
 	// relay works without one.
 	stream *logstream.Broker
@@ -63,6 +64,7 @@ func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config) *Relay {
 		cfg:     cfg,
 		clients: newClientPool(),
 		breaker: newBreaker(),
+		limiter: newRPMLimiter(),
 	}
 	rl.capture.Store(DefaultCaptureLimit)
 	rl.retryBudget.Store(int64(cfg.MaxRetries))
@@ -361,7 +363,7 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidates, err := rl.st.Candidates(ctx, p.group(), info.Model)
+	candidates, err := rl.st.Candidates(ctx, p.group(), info.Model, protocolFromPath(r.URL.Path))
 	if err != nil {
 		rl.finish(entry, captured, started, http.StatusInternalServerError, err.Error())
 		writeError(w, http.StatusInternalServerError, "server_error", "", err.Error())
@@ -427,6 +429,18 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 		if err != nil {
 			continue
 		}
+
+		// Per-channel RPM cap. A channel over its rate is treated like a
+		// cooling breaker: skipped this pass, not counted as an attempt, so
+		// a sibling channel at the same priority gets the request instead.
+		if allowed, _ := rl.limiter.allow(cand.ChannelID, cand.RPMLimit); !allowed {
+			if lastStatus == 0 {
+				lastStatus = http.StatusTooManyRequests
+				lastMessage = fmt.Sprintf("channel %q is rate limited (RPM %d)", ch.Name, cand.RPMLimit)
+			}
+			continue
+		}
+
 		if attempts > 0 && !rl.pauseBeforeRetry(ctx, attempts) {
 			// The caller hung up while we were backing off.
 			return

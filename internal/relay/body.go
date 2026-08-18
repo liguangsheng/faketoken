@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"strings"
+
+	"github.com/faketoken/faketoken/internal/model"
 )
 
 // requestInfo is everything the router needs to know about a client payload.
@@ -174,4 +176,22 @@ func spliceTopLevelString(body []byte, key, value string) ([]byte, bool) {
 
 func isJSONSpace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}
+
+// protocolFromPath maps a client request path to the upstream dialect it
+// speaks. The router uses this to skip channels that advertise only a subset.
+// Gemini's path carries no "protocol" in this sense — it routes by model, and
+// every channel that serves the model already accepts the Gemini dialect — so
+// it returns "" and the protocol filter is skipped.
+func protocolFromPath(path string) string {
+	switch {
+	case strings.Contains(path, "/v1/messages"):
+		return model.ProtocolMessages
+	case strings.Contains(path, "/v1/responses"):
+		return model.ProtocolResponses
+	case strings.HasSuffix(path, "/chat/completions"),
+		strings.HasSuffix(path, "/completions"):
+		return model.ProtocolChatCompletions
+	}
+	return ""
 }

@@ -58,7 +58,9 @@ export interface Channel {
   timeout_secs: number
   proxy_url: string
   price_ratio: number
+  rpm_limit: number
   test_model: string
+  supported_protocols: string[]
   used_quota: number
   request_count: number
   error_count: number
@@ -154,6 +156,7 @@ export interface ChannelImportPreview {
   api_key: string
   auth_style: 'auto' | 'bearer' | 'x-api-key' | 'x-goog-api-key'
   suggested_name: string
+  supported_protocols: string[]
   models: string[]
   model_error?: string
   existing_channel?: { id: number; name: string; status: number }

@@ -2007,7 +2007,7 @@ func TestBatchStatusAndDeleteChannels(t *testing.T) {
 	}
 
 	// Routing must follow the bulk switch, not just the channel rows.
-	candidates, err := h.store.Candidates(context.Background(), "default", "gpt-4o")
+	candidates, err := h.store.Candidates(context.Background(), "default", "gpt-4o", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3408,7 +3408,7 @@ func TestRebuildKeepsAChannelWrittenWhileItRuns(t *testing.T) {
 		{"racer", "racer-model"},
 		{"existing", "gpt-4o"},
 	} {
-		candidates, err := h.store.Candidates(ctx, "default", tc.served)
+		candidates, err := h.store.Candidates(ctx, "default", tc.served, "")
 		if err != nil {
 			t.Fatal(err)
 		}

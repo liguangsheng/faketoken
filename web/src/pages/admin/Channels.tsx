@@ -359,7 +359,9 @@ export default function Channels() {
             timeout_secs: 0,
             proxy_url: '',
             price_ratio: 1,
+            rpm_limit: 0,
             test_model: '',
+            supported_protocols: ['chat_completions', 'responses', 'messages'],
             note: '',
           }),
       ...overrides,
@@ -411,7 +413,9 @@ export default function Channels() {
       timeout_secs: Number(values.timeout_secs ?? 0),
       proxy_url: values.proxy_url ?? '',
       price_ratio: Number(values.price_ratio ?? 1),
+      rpm_limit: Number(values.rpm_limit ?? 0),
       test_model: values.test_model ?? '',
+      supported_protocols: values.supported_protocols ?? ['chat_completions', 'responses', 'messages'],
       note: values.note ?? '',
     }
 
@@ -703,6 +707,7 @@ export default function Channels() {
       base_url: preview.base_url,
       auth_style: preview.auth_style,
       api_key: preview.api_key,
+      supported_protocols: preview.supported_protocols ?? [],
       ...(preview.models.length ? { models: preview.models } : {}),
     }
 
@@ -1282,6 +1287,13 @@ export default function Channels() {
                     <span className="text-muted" style={{ fontSize: 12 }}>
                       鉴权 {AUTH_STYLES.find((item) => item.value === row.auth_style)?.label ?? row.auth_style}
                     </span>
+                    {row.supported_protocols && row.supported_protocols.length < 3 && (
+                      <span className="text-muted" style={{ fontSize: 12 }}>
+                        协议 {row.supported_protocols
+                          .map((p) => TEST_PROTOCOLS.find((t) => t.value === p)?.label ?? p)
+                          .join(' / ')}
+                      </span>
+                    )}
                   </Space>
                 </Card>
               </Col>
@@ -1470,6 +1482,11 @@ export default function Channels() {
               </Form.Item>
             </Col>
             <Col xs={24} md={8}>
+              <Form.Item name="rpm_limit" label="RPM 限制" tooltip="每分钟最大请求数，0 表示不限制">
+                <InputNumber min={0} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
               <Form.Item name="status" label="状态">
                 <Select
                   options={[
@@ -1496,6 +1513,20 @@ export default function Channels() {
             tooltip="执行「模型测试」时的默认模型；留空则取第一个支持的模型，只配了前缀的渠道必须填"
           >
             <Input placeholder="留空则取第一个支持的模型" />
+          </Form.Item>
+
+          <Form.Item
+            name="supported_protocols"
+            label="支持的协议"
+            tooltip="勾选上游实际支持的请求协议，路由时只会把对应协议的请求转发到此渠道"
+          >
+            <Checkbox.Group>
+              {TEST_PROTOCOLS.map((item) => (
+                <Checkbox key={item.value} value={item.value}>
+                  {item.label}
+                </Checkbox>
+              ))}
+            </Checkbox.Group>
           </Form.Item>
 
           <Form.Item name="headers" label="附加请求头" tooltip="每行 Header-Name=value">

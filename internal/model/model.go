@@ -24,6 +24,33 @@ const (
 	AuthStyleXGoogAPIKey = "x-goog-api-key"
 )
 
+// Supported upstream protocols. A channel advertises the subset it actually
+// answers; empty (or all three) keeps the original "route every dialect"
+// behaviour.
+const (
+	ProtocolChatCompletions = "chat_completions"
+	ProtocolResponses       = "responses"
+	ProtocolMessages        = "messages"
+)
+
+// AllProtocols lists every known upstream dialect.
+var AllProtocols = []string{ProtocolChatCompletions, ProtocolResponses, ProtocolMessages}
+
+// SupportsProtocol reports whether the channel advertises the protocol. An
+// empty slice is treated as "every protocol" so a channel created before the
+// column existed keeps routing as it did before.
+func (c *Channel) SupportsProtocol(protocol string) bool {
+	if protocol == "" || len(c.SupportedProtocols) == 0 {
+		return true
+	}
+	for _, p := range c.SupportedProtocols {
+		if p == protocol {
+			return true
+		}
+	}
+	return false
+}
+
 type User struct {
 	ID           int64     `json:"id"`
 	Username     string    `json:"username"`
@@ -96,6 +123,9 @@ type Channel struct {
 	TimeoutSecs    int32             `json:"timeout_secs"`
 	ProxyURL       string            `json:"proxy_url"`
 	PriceRatio     float64           `json:"price_ratio"`
+	// RPMLimit caps how many requests the channel may serve per minute. 0
+	// means unlimited; a channel left at 0 has no rate limiting applied.
+	RPMLimit       int32             `json:"rpm_limit"`
 	UsedQuota      int64             `json:"used_quota"`
 	RequestCount   int64             `json:"request_count"`
 	ErrorCount     int64             `json:"error_count"`
@@ -106,9 +136,14 @@ type Channel struct {
 	// TestModel is what the console probe sends. Empty falls back to the first
 	// served model, which is meaningless for a prefix-only channel.
 	TestModel string    `json:"test_model"`
-	Note      string    `json:"note"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	// SupportedProtocols is the set of upstream dialects the channel answers.
+	// The probe narrows it; the operator can edit it. Empty means every
+	// dialect, so an old channel keeps routing as it did before the column
+	// existed.
+	SupportedProtocols []string `json:"supported_protocols"`
+	Note               string   `json:"note"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 
 	// APIKey is decrypted on read and masked before leaving the API layer.
 	APIKey string `json:"api_key,omitempty"`
@@ -129,6 +164,7 @@ type Candidate struct {
 	ChannelID int64
 	Priority  int32
 	Weight    int32
+	RPMLimit  int32
 }
 
 type ChannelModel struct {

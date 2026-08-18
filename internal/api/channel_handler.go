@@ -35,30 +35,37 @@ type channelInput struct {
 	TimeoutSecs   int32             `json:"timeout_secs"`
 	ProxyURL      string            `json:"proxy_url"`
 	PriceRatio    float64           `json:"price_ratio"`
+	RPMLimit      int32             `json:"rpm_limit"`
 	TestModel     string            `json:"test_model"`
-	Note          string            `json:"note"`
+	// SupportedProtocols narrows routing to the dialects the upstream answers.
+	// Empty means every dialect, so channels created before the field existed
+	// keep routing as they did before.
+	SupportedProtocols []string `json:"supported_protocols"`
+	Note               string   `json:"note"`
 }
 
 func (in channelInput) toModel(id int64) *model.Channel {
 	ch := &model.Channel{
-		ID:            id,
-		Name:          strings.TrimSpace(in.Name),
-		BaseURL:       strings.TrimSpace(in.BaseURL),
-		AuthStyle:     defaultString(in.AuthStyle, model.AuthStyleAuto),
-		APIKey:        strings.TrimSpace(in.APIKey),
-		Status:        normaliseChannelStatus(in.Status),
-		Priority:      in.Priority,
-		Weight:        max(in.Weight, 1),
-		Groups:        cleanList(in.Groups, "default"),
-		Models:        cleanList(in.Models),
-		ModelPrefixes: cleanList(in.ModelPrefixes),
-		ModelMapping:  in.ModelMapping,
-		Headers:       in.Headers,
-		TimeoutSecs:   in.TimeoutSecs,
-		ProxyURL:      strings.TrimSpace(in.ProxyURL),
-		PriceRatio:    in.PriceRatio,
-		TestModel:     strings.TrimSpace(in.TestModel),
-		Note:          in.Note,
+		ID:                 id,
+		Name:               strings.TrimSpace(in.Name),
+		BaseURL:            strings.TrimSpace(in.BaseURL),
+		AuthStyle:          defaultString(in.AuthStyle, model.AuthStyleAuto),
+		APIKey:             strings.TrimSpace(in.APIKey),
+		Status:             normaliseChannelStatus(in.Status),
+		Priority:           in.Priority,
+		Weight:             max(in.Weight, 1),
+		Groups:             cleanList(in.Groups, "default"),
+		Models:             cleanList(in.Models),
+		ModelPrefixes:      cleanList(in.ModelPrefixes),
+		ModelMapping:       in.ModelMapping,
+		Headers:            in.Headers,
+		TimeoutSecs:        in.TimeoutSecs,
+		ProxyURL:           strings.TrimSpace(in.ProxyURL),
+		PriceRatio:         in.PriceRatio,
+		RPMLimit:           in.RPMLimit,
+		TestModel:          strings.TrimSpace(in.TestModel),
+		SupportedProtocols: in.SupportedProtocols,
+		Note:               in.Note,
 	}
 	if ch.PriceRatio <= 0 {
 		ch.PriceRatio = 1
