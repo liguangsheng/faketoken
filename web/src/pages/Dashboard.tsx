@@ -52,7 +52,7 @@ export default function Dashboard() {
   const { user, isAdmin } = useAuth()
   const { resolved } = useThemeMode()
   const { message } = App.useApp()
-  const [days, setDays] = useState(7)
+  const [days, setDays] = useState(0)
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
 
