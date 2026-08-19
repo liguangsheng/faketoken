@@ -639,7 +639,7 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
         // (which adds the 用户 column) as the widest case. A smaller value makes
         // the browser shrink every column to fit, and the crushed cells collide
         // instead of scrolling.
-        scroll={{ x: 1590 }}
+        scroll={{ x: 1670 }}
         onRow={(row) => ({
           onClick: () => openDetail(row),
           // Rows are the only way into the detail drawer, so they must be
@@ -756,12 +756,14 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
               ),
           },
           {
-            // A mapped model is shown as "asked → sent". Collapsing the two
-            // into one name hides the rewrite, which is exactly the thing you
-            // are looking for when a model behaves unlike its name.
-            title: '模型 / 思考强度',
+            // A mapped model puts the requested name on top and the forwarded
+            // one under it. Collapsing the two into one name hides the rewrite,
+            // which is exactly the thing you are looking for when a model
+            // behaves unlike its name; side by side on one line, the pair also
+            // truncated exactly where it mattered on the busy admin table.
+            title: '模型',
             dataIndex: 'model',
-            width: 240,
+            width: 210,
             render: (value: string, row: RequestLog) => {
               const mapped = row.upstream_model && row.upstream_model !== value
               return (
@@ -770,27 +772,35 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
                 >
                   {/* nowrap is deliberate: a model name broken across lines
                       cannot be compared against its neighbours at a glance. */}
-                  <div className="cell-stack">
-                    <span className="mono">
-                      {value}
-                      {mapped && <span className="text-muted"> → {row.upstream_model}</span>}
-                    </span>
-                    {row.reasoning_effort ? (
-                      <span className="cell-stack__sub">
-                        <Tag
-                          color={REASONING_TONE[row.reasoning_effort] ?? 'default'}
-                          style={{ marginInlineEnd: 0, lineHeight: '16px' }}
-                        >
-                          {row.reasoning_effort}
-                        </Tag>
+                  <div className="cell-stack" style={{ minWidth: 0 }}>
+                    <span className="mono cell-stack__clip">{value}</span>
+                    {mapped ? (
+                      <span className="mono text-muted cell-stack__sub cell-stack__clip">
+                        → {row.upstream_model}
                       </span>
                     ) : (
-                      <span className="text-muted cell-stack__sub">未指定思考强度</span>
+                      <span className="text-muted cell-stack__sub">未映射</span>
                     )}
                   </div>
                 </Tooltip>
               )
             },
+          },
+          {
+            title: '思考强度',
+            dataIndex: 'reasoning_effort',
+            width: 110,
+            render: (value: string) =>
+              value ? (
+                <Tag
+                  color={REASONING_TONE[value] ?? 'default'}
+                  style={{ marginInlineEnd: 0 }}
+                >
+                  {value}
+                </Tag>
+              ) : (
+                <span className="text-muted">未指定</span>
+              ),
           },
           {
             title: '来源 IP',
