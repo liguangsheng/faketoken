@@ -224,6 +224,13 @@ const turnFromMessage = (raw: unknown): ConversationTurn | null => {
       ),
     }
   }
+  // Anthropic and Gemini have no tool role on the wire: results ride inside a
+  // user message. When that message carries nothing but results, the speaker
+  // is the tool, whatever the transport had to label it. A mixed turn (real
+  // user text alongside results) stays user rather than misfiling the text.
+  if (role === 'user' && kept.every((part) => part.kind === 'tool_result')) {
+    return { role: 'tool', parts: kept }
+  }
   return { role, parts: kept }
 }
 
