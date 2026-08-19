@@ -47,7 +47,18 @@ type Config struct {
 
 	// Frontend
 	WebDir string
+
+	// ARAClaim is the line served at /.well-known/ara-claim.txt to prove
+	// domain ownership to the ARA registry. Empty means the route reports
+	// 404 rather than serving a blank file that would read as a valid but
+	// wrong claim.
+	ARAClaim string
 }
+
+// defaultARAClaim is the claim issued for the current deployment. It stays in
+// the binary so a deployment that never sets ARA_CLAIM keeps verifying, and
+// config_test.go pins the value so it cannot drift unnoticed.
+const defaultARAClaim = "ara-site-verification=khmVMA2Dg0VlH-w9x5cgltAJFkkZpGkQ"
 
 func Load() (*Config, error) {
 	c := &Config{
@@ -64,6 +75,7 @@ func Load() (*Config, error) {
 		AllowRegister:     envBool("ALLOW_REGISTER", true),
 		InitQuota:         int64(envInt("INIT_QUOTA_MICRO_USD", 1_000_000)), // $1.00
 		WebDir:            env("WEB_DIR", "web/dist"),
+		ARAClaim:          env("ARA_CLAIM", defaultARAClaim),
 
 		// Fail closed: an unpriced model is a misconfiguration, and relaying it
 		// anyway hands out upstream tokens the operator still has to pay for.

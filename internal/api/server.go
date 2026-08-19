@@ -46,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("GET /.well-known/ara-claim.txt", s.handleARAClaim)
 
 	// ---- authenticated user surface
 	mux.HandleFunc("GET /api/version", s.requireAuth(s.handleVersion))

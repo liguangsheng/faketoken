@@ -24,6 +24,43 @@ services:
       timeout: 5s
       retries: 20
 
+  # Throwaway instance for the integration suite, which drops and recreates the
+  # public schema on every harness. Kept as a separate container on its own
+  # port with tmpfs storage: nothing durable can land here, and a mistyped
+  # TEST_DATABASE_URL cannot reach the deployment data next door. Behind the
+  # "test" profile so `docker compose up -d` never starts it in production.
+  postgres-test:
+    image: postgres:18-alpine
+    container_name: faketoken-postgres-test
+    profiles: ["test"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-llmproxy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-llmproxy}
+      POSTGRES_DB: faketoken_test
+    ports:
+      - "${TEST_POSTGRES_PORT:-5434}:5432"
+    # cluster_name is the marker newHarness reads back to confirm which
+    # instance it reached — a database name alone can be recreated anywhere,
+    # including on the deployment cluster. The rest trades crash safety for
+    # speed, which a tmpfs cluster has given up regardless.
+    command:
+      - postgres
+      - -c
+      - cluster_name=faketoken-test
+      - -c
+      - fsync=off
+      - -c
+      - full_page_writes=off
+      - -c
+      - synchronous_commit=off
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-llmproxy} -d faketoken_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
   server:
     build: .
     container_name: faketoken
@@ -47,6 +84,8 @@ services:
       BILLING_FALLBACK_CACHED_PRICE: ${BILLING_FALLBACK_CACHED_PRICE:-0}
       BILLING_FALLBACK_PER_REQUEST_PRICE: ${BILLING_FALLBACK_PER_REQUEST_PRICE:-0}
       WEB_DIR: /app/web
+      # Blank or unset falls back to the claim compiled into the binary.
+      ARA_CLAIM: ${ARA_CLAIM:-}
     ports:
       - "${SERVER_PORT:-3200}:3200"
     # Lets a channel target a service the host publishes on its own ports
@@ -59,6 +98,35 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  # Nightly pg_dump of the deployment database, kept in the stack rather than a
+  # host cron so it starts, stops and moves with everything else, and so the
+  # dump always runs with a client matching the server version.
+  backup:
+    image: postgres:18-alpine
+    container_name: faketoken-backup
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Runs as the host user so the dumps stay readable and prunable from
+    # outside the container, which is where a restore is actually driven from.
+    user: "${BACKUP_UID:-1000}:${BACKUP_GID:-1000}"
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-llmproxy}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-llmproxy}
+      PGDATABASE: ${POSTGRES_DB:-llmproxy}
+      # BACKUP_AT is read in this zone, not UTC.
+      TZ: ${TZ:-Asia/Singapore}
+      BACKUP_DIR: /backup
+      BACKUP_AT: ${BACKUP_AT:-05:00}
+      BACKUP_KEEP: ${BACKUP_KEEP:-10}
+      BACKUP_EXCLUDE_DATA: ${BACKUP_EXCLUDE_DATA:-request_log_details}
+    volumes:
+      - ./scripts/pg-backup.sh:/usr/local/bin/pg-backup.sh:ro
+      - ${BACKUP_DIR:-./.backup}:/backup
+    entrypoint: ["/usr/local/bin/pg-backup.sh"]
 
 volumes:
   pgdata:

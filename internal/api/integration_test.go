@@ -1,10 +1,12 @@
 // End-to-end tests covering sign-in, channel management, model pulling,
 // priority routing, transparent passthrough, streaming and billing.
 //
-// They require a throwaway Postgres. Point TEST_DATABASE_URL at one, e.g.
+// Every harness drops and recreates the public schema, so these run against a
+// dedicated throwaway Postgres — a separate container on its own port with
+// tmpfs storage, not another database on the deployment cluster. newHarness
+// verifies it reached that instance before touching anything.
 //
-//	make db-up
-//	TEST_DATABASE_URL='postgres://llmproxy:llmproxy@localhost:5433/llmproxy?sslmode=disable' go test ./internal/api -v
+//	make test-integration
 package api
 
 import (
@@ -49,12 +51,54 @@ type harness struct {
 	admin  string // session token
 }
 
+// testClusterName is set by the postgres-test service in docker-compose.yml.
+// The deployment cluster leaves cluster_name empty, so reading it back
+// identifies which server answered. A database name proves nothing on its own
+// — anything can be created alongside the real data under any name.
+const testClusterName = "faketoken-test"
+
+// requireTestDatabase rejects a DSN whose database name is not suffixed
+// "_test". This runs before dialling so the common mistake reports without a
+// connection attempt; requireTestInstance is what actually pins the server.
+func requireTestDatabase(dsn string) error {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return fmt.Errorf("parse TEST_DATABASE_URL: %w", err)
+	}
+	name := strings.TrimPrefix(u.Path, "/")
+	if !strings.HasSuffix(name, "_test") {
+		return fmt.Errorf("TEST_DATABASE_URL names database %q; the suite drops the "+
+			"public schema, so it only runs against a database suffixed \"_test\"", name)
+	}
+	return nil
+}
+
+// requireTestInstance confirms the pool reached the throwaway cluster and not
+// the deployment one, which the database name alone cannot establish.
+func requireTestInstance(ctx context.Context, pool *pgxpool.Pool) error {
+	var name string
+	if err := pool.QueryRow(ctx, "SHOW cluster_name").Scan(&name); err != nil {
+		return fmt.Errorf("read cluster_name: %w", err)
+	}
+	if name != testClusterName {
+		return fmt.Errorf("connected to cluster %q, want %q; start the throwaway "+
+			"instance with `make test-db` and point TEST_DATABASE_URL at it", name, testClusterName)
+	}
+	return nil
+}
+
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set TEST_DATABASE_URL to run the integration tests")
+	}
+	// The reset below is unrecoverable, and the deployment DSN differs from a
+	// test one only by the database name — easy to paste by accident, and the
+	// damage is silent because the suite then passes against real data.
+	if err := requireTestDatabase(dsn); err != nil {
+		t.Fatalf("refusing to run: %v", err)
 	}
 
 	ctx := context.Background()
@@ -63,6 +107,10 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
+
+	if err := requireTestInstance(ctx, pool); err != nil {
+		t.Fatalf("refusing to run: %v", err)
+	}
 
 	// Each run starts from a clean slate.
 	if _, err := pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
@@ -86,6 +134,9 @@ func newHarness(t *testing.T) *harness {
 		// behave in an actual deployment.
 		WebDir:         webDirForTest(t),
 		UnpricedPolicy: string(billing.PolicyReject),
+		// Deliberately not the production claim: serving that here would pass
+		// even if the handler ignored configuration and echoed a constant.
+		ARAClaim: testARAClaim,
 	}
 
 	cipher, err := auth.NewCipher(cfg.EncryptionKey)
@@ -725,6 +776,52 @@ func TestConsoleCachingLetsANewBuildThrough(t *testing.T) {
 	if !strings.Contains(resp.Header.Get("Cache-Control"), "immutable") {
 		t.Fatalf("hashed asset served with Cache-Control %q, want immutable",
 			resp.Header.Get("Cache-Control"))
+	}
+}
+
+// testARAClaim stands in for the deployment claim so the assertions below
+// prove the route reads configuration. config_test.go pins the real default.
+const testARAClaim = "ara-site-verification=harness-claim"
+
+// The ARA registry proves domain ownership by fetching a file over the domain,
+// and the SPA fallback answers anything it cannot find on disk with index.html
+// — a 200 full of HTML, which reads as "served" to a smoke test and as a failed
+// claim to the verifier. This pins the route to real text.
+func TestARAClaimIsServedAsAPlainTextFile(t *testing.T) {
+	h := newHarness(t)
+
+	resp, err := http.Get(h.server.URL + "/.well-known/ara-claim.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("claim answered %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("claim served as %q, want text/plain", ct)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(body)) != testARAClaim {
+		t.Fatalf("claim body %q, want %q", body, testARAClaim)
+	}
+}
+
+// An unconfigured claim must not answer 200 with an empty body: the verifier
+// would read that as the domain serving the wrong claim rather than as a
+// deployment that simply has none.
+func TestARAClaimWithoutAConfiguredValueIs404(t *testing.T) {
+	srv := &Server{cfg: &config.Config{}}
+
+	rec := httptest.NewRecorder()
+	srv.handleARAClaim(rec, httptest.NewRequest(http.MethodGet, "/.well-known/ara-claim.txt", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unconfigured claim answered %d, want 404", rec.Code)
 	}
 }
 

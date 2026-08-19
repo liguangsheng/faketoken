@@ -46,9 +46,9 @@ type rawUsage struct {
 	// Anthropic Responses API wraps usage inside response.completed events.
 	Response *struct {
 		Usage *struct {
-			InputTokens      int `json:"input_tokens"`
-			OutputTokens     int `json:"output_tokens"`
-			TotalTokens      int `json:"total_tokens"`
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			TotalTokens        int `json:"total_tokens"`
 			InputTokensDetails *struct {
 				CacheWriteTokens int `json:"cache_write_tokens"`
 				CachedTokens     int `json:"cached_tokens"`

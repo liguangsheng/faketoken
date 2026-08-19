@@ -8,3 +8,6 @@
 
 # typescript incremental build cache
 /web/tsconfig.tsbuildinfo
+
+# database dumps
+/.backup/
