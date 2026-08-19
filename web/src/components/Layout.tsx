@@ -13,8 +13,8 @@ import {
 } from 'antd'
 import type { MenuProps } from 'antd'
 import {
-  BulbOutlined,
   DesktopOutlined,
+  ExclamationCircleOutlined,
   LogoutOutlined,
   MenuOutlined,
   MenuFoldOutlined,
@@ -24,7 +24,7 @@ import {
   SunOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -32,7 +32,7 @@ import { useMediaQuery } from '../hooks/useMediaQuery'
 import { NAV_SECTIONS, navLookup } from '../nav'
 import { useThemeMode } from '../theme/ThemeProvider'
 import type { ThemeMode } from '../theme/ThemeProvider'
-import { formatMoney } from '../utils/format'
+import { formatMoney, formatUSD, toUSD } from '../utils/format'
 
 const { Header, Sider, Content } = AntLayout
 
@@ -72,6 +72,8 @@ export default function Layout({ children }: { children: ReactNode }) {
   )
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [version, setVersion] = useState('')
+  // Manual balance refresh needs visible feedback; the auto-poll stays silent.
+  const [refreshingBalance, setRefreshingBalance] = useState(false)
 
   const current = navLookup(location.pathname)
 
@@ -128,7 +130,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         ...section.items.map((item) => ({
           key: item.key,
           icon: item.icon,
-          label: item.label,
+          label: <Link to={item.key}>{item.label}</Link>,
         })),
       ])
     }
@@ -140,7 +142,9 @@ export default function Layout({ children }: { children: ReactNode }) {
       children: section.items.map((item) => ({
         key: item.key,
         icon: item.icon,
-        label: item.label,
+        // A real link, so middle-click / Cmd+click opens a page in a new tab —
+        // indispensable when reading logs against another screen.
+        label: <Link to={item.key}>{item.label}</Link>,
       })),
     }))
   }, [collapsed, isMobile, sections])
@@ -151,7 +155,11 @@ export default function Layout({ children }: { children: ReactNode }) {
       selectedKeys={[location.pathname]}
       items={menuItems}
       style={{ border: 'none', paddingBlock: 4 }}
-      onClick={({ key }) => navigate(key)}
+      // The label anchors handle their own navigation (and modifier clicks);
+      // this catches clicks on the icon and padding around them.
+      onClick={({ key, domEvent }) => {
+        if (!(domEvent.target as HTMLElement).closest('a')) navigate(key)
+      }}
     />
   )
 
@@ -162,7 +170,19 @@ export default function Layout({ children }: { children: ReactNode }) {
     })
   }
 
-  const lowBalance = (user?.quota ?? 0) <= 0
+  const quotaMicro = user?.quota ?? 0
+  const balanceEmpty = quotaMicro <= 0
+  // A heads-up tier: warn while there is still money to act on.
+  const balanceLow = !balanceEmpty && toUSD(quotaMicro) < 1
+
+  const refreshBalance = async () => {
+    setRefreshingBalance(true)
+    try {
+      await refresh()
+    } finally {
+      setRefreshingBalance(false)
+    }
+  }
 
   const themeMenu: MenuProps = {
     selectable: true,
@@ -198,11 +218,10 @@ export default function Layout({ children }: { children: ReactNode }) {
         open={drawerOpen}
         placement="left"
         width={248}
-        closable={false}
+        title={<Brand collapsed={false} />}
         onClose={() => setDrawerOpen(false)}
-        styles={{ body: { padding: 0 } }}
+        styles={{ body: { padding: 0 }, header: { padding: '0 8px 0 0' } }}
       >
-        <Brand collapsed={false} />
         {navMenu}
       </Drawer>
 
@@ -225,13 +244,30 @@ export default function Layout({ children }: { children: ReactNode }) {
           )}
 
           {current ? (
-            <Breadcrumb
-              style={{ fontSize: 13 }}
-              items={[
-                { title: current.section.label },
-                { title: <span style={{ color: 'var(--app-text)' }}>{current.item.label}</span> },
-              ]}
-            />
+            isMobile ? (
+              // The drawer already gives the section context; on a phone the
+              // page name alone is what fits.
+              <span
+                style={{
+                  color: 'var(--app-text)',
+                  fontSize: 13,
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {current.item.label}
+              </span>
+            ) : (
+              <Breadcrumb
+                style={{ fontSize: 13 }}
+                items={[
+                  { title: current.section.label },
+                  { title: <span style={{ color: 'var(--app-text)' }}>{current.item.label}</span> },
+                ]}
+              />
+            )
           ) : (
             <span className="text-muted" style={{ fontSize: 13 }}>
               FakeToken
@@ -240,16 +276,36 @@ export default function Layout({ children }: { children: ReactNode }) {
 
           <span className="app-header__spacer" />
 
-          <Tooltip title="点击刷新余额">
+          <Tooltip
+            title={
+              balanceEmpty
+                ? '余额已用尽，请充值后再调用 · 点击刷新'
+                : balanceLow
+                  ? `余额不足 $1（${formatUSD(quotaMicro)}），请及时充值 · 点击刷新`
+                  : `${formatUSD(quotaMicro)} · 点击刷新`
+            }
+          >
             <button
               type="button"
-              className={`balance-chip${lowBalance ? ' balance-chip--empty' : ''}`}
-              onClick={() => void refresh()}
-              style={{ cursor: 'pointer' }}
+              className={`balance-chip${
+                balanceEmpty ? ' balance-chip--empty' : balanceLow ? ' balance-chip--low' : ''
+              }`}
+              aria-label={`余额 ${formatMoney(quotaMicro)}${
+                balanceEmpty ? '，已用尽' : balanceLow ? '，不足 $1' : ''
+              }，点击刷新`}
+              onClick={() => void refreshBalance()}
             >
               <span className="balance-chip__label">余额</span>
-              <span className="balance-chip__value">{formatMoney(user?.quota ?? 0)}</span>
-              <ReloadOutlined style={{ fontSize: 11, opacity: 0.5 }} />
+              <span className="balance-chip__value">{formatMoney(quotaMicro)}</span>
+              {(balanceEmpty || balanceLow) && (
+                <ExclamationCircleOutlined
+                  style={{
+                    color: balanceEmpty ? 'var(--app-danger)' : 'var(--app-warning)',
+                    fontSize: 11,
+                  }}
+                />
+              )}
+              <ReloadOutlined spin={refreshingBalance} style={{ fontSize: 11, opacity: 0.5 }} />
             </button>
           </Tooltip>
 
@@ -259,7 +315,7 @@ export default function Layout({ children }: { children: ReactNode }) {
               aria-label="切换主题"
               icon={
                 mode === 'system' ? (
-                  <BulbOutlined />
+                  <DesktopOutlined />
                 ) : resolved === 'dark' ? (
                   <MoonOutlined />
                 ) : (
@@ -296,9 +352,20 @@ export default function Layout({ children }: { children: ReactNode }) {
               onClick: ({ key }) => (key === 'logout' ? signOut() : navigate(key)),
             }}
           >
-            <button type="button" className="user-trigger">
-              <Avatar size={26} style={{ background: 'var(--app-brand)' }}>
-                {(user?.display_name || user?.username || '?').slice(0, 1).toUpperCase()}
+            <button
+              type="button"
+              className="user-trigger"
+              aria-label={`账户菜单：${user?.display_name || user?.username || ''}`}
+              aria-haspopup="menu"
+            >
+              {/* soft 底 + 品牌色前景：白字压在浅紫上在暗色下会糊掉 */}
+              <Avatar
+                size={26}
+                style={{ background: 'var(--app-brand-soft)', color: 'var(--app-brand)' }}
+              >
+                <span aria-hidden>
+                  {(user?.display_name || user?.username || '?').slice(0, 1).toUpperCase()}
+                </span>
               </Avatar>
               {!isMobile && (
                 <span className="user-trigger__name">

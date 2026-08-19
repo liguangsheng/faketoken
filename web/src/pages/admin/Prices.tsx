@@ -16,9 +16,10 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
+import dayjs from 'dayjs'
 import {
+  BlockOutlined,
   CloudDownloadOutlined,
-  CopyOutlined,
   PlusOutlined,
   ReloadOutlined,
   SettingOutlined,
@@ -35,7 +36,7 @@ import {
 import EmptyState from '../../components/EmptyState'
 import PageHeader from '../../components/PageHeader'
 import { useSettings } from '../../settings/SettingsContext'
-import { formatRelative, formatTime } from '../../utils/format'
+import { formatPrice, formatRelative, formatTime } from '../../utils/format'
 
 const POLICY_LABEL: Record<UnpricedPolicy, string> = {
   reject: '拒绝请求',
@@ -54,7 +55,7 @@ const EMPTY_PRICE: ModelPrice = {
 /** How many unpriced models to show before collapsing the rest into a count. */
 const MAX_MISSING_TAGS = 24
 
-const money = (value: number) => (value ? `$${value}` : null)
+const money = (value: number) => (value ? formatPrice(value) : null)
 
 export default function Prices() {
   const { message, modal } = App.useApp()
@@ -70,6 +71,9 @@ export default function Prices() {
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [policyOpen, setPolicyOpen] = useState(false)
+  const [savingPolicy, setSavingPolicy] = useState(false)
+  const [page, setPage] = useState(1)
+  const [showAllMissing, setShowAllMissing] = useState(false)
   const [editing, setEditing] = useState<ModelPrice | null>(null)
   const [form] = Form.useForm<ModelPrice>()
   const [policyForm] = Form.useForm<BillingSettings>()
@@ -98,9 +102,14 @@ export default function Prices() {
     void load()
   }, [load])
 
-  const openModal = (price?: ModelPrice, duplicate = false) => {
-    setEditing(duplicate ? null : (price ?? null))
-    form.setFieldsValue(price ? { ...price, model: duplicate ? '' : price.model } : EMPTY_PRICE)
+  /**
+   * asNew opens the form in "create" mode while keeping whatever model name
+   * was passed in — editable, so a missing model can be shortened to a prefix
+   * before saving. Editing an existing row still locks the name.
+   */
+  const openModal = (price?: ModelPrice, asNew = false) => {
+    setEditing(asNew ? null : (price ?? null))
+    form.setFieldsValue(price ?? EMPTY_PRICE)
     setOpen(true)
   }
 
@@ -131,6 +140,17 @@ export default function Prices() {
 
   const submitPolicy = async () => {
     const values = await policyForm.validateFields()
+    if (
+      values.unpriced_policy === 'fallback' &&
+      !values.fallback.input_price &&
+      !values.fallback.output_price &&
+      !values.fallback.per_request_price
+    ) {
+      // The Alert says the rule; the form has to actually hold it.
+      message.warning('兜底价至少要有一项大于 0，否则等同于免费放行')
+      return
+    }
+    setSavingPolicy(true)
     try {
       const saved = await api.admin.updateBillingSettings(values)
       setSettings(saved)
@@ -139,6 +159,8 @@ export default function Prices() {
       await load()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setSavingPolicy(false)
     }
   }
 
@@ -168,7 +190,11 @@ export default function Prices() {
         try {
           const result = await api.admin.importPrices(overwrite)
           message.success(
-            `导入完成：写入 ${result.imported} 个模型，跳过 ${result.skipped} 个已有条目`,
+            overwrite
+              ? `导入完成：写入 / 覆盖 ${result.imported} 个模型`
+              : `导入完成：写入 ${result.imported} 个模型${
+                  result.skipped ? `，跳过 ${result.skipped} 个已有条目` : ''
+                }`,
           )
           await load()
         } catch (error) {
@@ -210,9 +236,14 @@ export default function Prices() {
             <Input
               allowClear
               placeholder="搜索模型"
-              style={{ width: 180 }}
+              aria-label="搜索模型"
+              style={{ width: 180, maxWidth: '100%' }}
               value={keyword}
-              onChange={(event) => setKeyword(event.target.value)}
+              onChange={(event) => {
+                setKeyword(event.target.value)
+                // 前端过滤下翻页残留会让搜索结果看起来是空的
+                setPage(1)
+              }}
             />
             <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
               刷新
@@ -220,19 +251,18 @@ export default function Prices() {
             <Button icon={<SettingOutlined />} onClick={openPolicy}>
               计费策略
             </Button>
-            <Dropdown
+            {/* 主按钮直接执行安全的默认动作，危险的覆盖收进菜单 */}
+            <Dropdown.Button
+              icon={undefined}
+              loading={importing}
+              onClick={() => importCatalog(false)}
               menu={{
-                items: [
-                  { key: 'missing', label: '只补充缺失的模型' },
-                  { key: 'overwrite', label: '覆盖同名模型的价格', danger: true },
-                ],
+                items: [{ key: 'overwrite', label: '覆盖同名模型的价格', danger: true }],
                 onClick: ({ key }) => importCatalog(key === 'overwrite'),
               }}
             >
-              <Button icon={<CloudDownloadOutlined />} loading={importing}>
-                导入内置价格
-              </Button>
-            </Dropdown>
+              <CloudDownloadOutlined /> 导入内置价格
+            </Dropdown.Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
               新增价格
             </Button>
@@ -240,10 +270,16 @@ export default function Prices() {
         }
       />
 
+      {settings && (
       <Alert
         style={{ marginBottom: 12 }}
         type={current === 'free' ? 'warning' : 'info'}
         showIcon
+        action={
+          <Button size="small" onClick={openPolicy}>
+            修改
+          </Button>
+        }
         message={
           <Space wrap>
             <span>未配价模型的处理方式：</span>
@@ -262,6 +298,7 @@ export default function Prices() {
               : '未配置价格的模型会被免费放行且不扣费，用量仍会记录。这是收入漏洞，仅在刻意运营免费网关时使用。'
         }
       />
+      )}
 
       {missingCount > 0 && (
         <Alert
@@ -279,22 +316,41 @@ export default function Prices() {
                     : '这些模型正在按兜底价计费，价格可能与真实成本有偏差。'}
               </div>
               <div className="tag-list" style={{ marginBottom: 10 }}>
-                {missing.slice(0, MAX_MISSING_TAGS).map((name) => (
+                {(showAllMissing ? missing : missing.slice(0, MAX_MISSING_TAGS)).map((name) => (
                   <Tooltip key={name} title="点击为该模型配置价格">
                     <Tag
                       color="red"
-                      className="mono"
-                      style={{ cursor: 'pointer' }}
-                      onClick={() => openModal({ ...EMPTY_PRICE, model: name })}
+                      className="mono tag-editable"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`为 ${name} 配置价格`}
+                      onClick={() => openModal({ ...EMPTY_PRICE, model: name }, true)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          openModal({ ...EMPTY_PRICE, model: name }, true)
+                        }
+                      }}
                     >
                       {name}
                     </Tag>
                   </Tooltip>
                 ))}
                 {missing.length > MAX_MISSING_TAGS && (
-                  <Tooltip title={missing.slice(MAX_MISSING_TAGS).join('、')}>
-                    <Tag>+{missing.length - MAX_MISSING_TAGS}</Tag>
-                  </Tooltip>
+                  <Tag
+                    className="tag-editable"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setShowAllMissing((value) => !value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        setShowAllMissing((value) => !value)
+                      }
+                    }}
+                  >
+                    {showAllMissing ? '收起' : `展开全部 ${missing.length} 个`}
+                  </Tag>
                 )}
               </div>
               <Button
@@ -326,7 +382,9 @@ export default function Prices() {
                   : '可以直接导入内置价格表，再按自己的成本微调。'
               }
               action={
-                keyword ? undefined : (
+                keyword ? (
+                  <Button onClick={() => setKeyword('')}>清除搜索</Button>
+                ) : (
                   <Button
                     type="primary"
                     icon={<CloudDownloadOutlined />}
@@ -340,12 +398,14 @@ export default function Prices() {
           ),
         }}
         pagination={{
+          current: page,
           defaultPageSize,
           showSizeChanger: true,
           // Hiding the bar on a single page would also hide the size changer,
           // leaving no way back once a page size larger than the table is picked.
           hideOnSinglePage: false,
           showTotal: (count) => `共 ${count} 个模型`,
+          onChange: (nextPage) => setPage(nextPage),
         }}
         columns={[
           {
@@ -355,12 +415,11 @@ export default function Prices() {
             // scroll.x above is sized to leave it room: it is the row's
             // identity, and a model name runs to ~190px in the mono face.
             width: 330,
-            ellipsis: true,
             sorter: (a, b) => a.model.localeCompare(b.model),
             render: (model: string) => (
-              <Tooltip title={model}>
-                <span className="mono">{model}</span>
-              </Tooltip>
+              <Typography.Text className="mono" ellipsis={{ tooltip: model }} style={{ maxWidth: 310 }}>
+                {model}
+              </Typography.Text>
             ),
           },
           {
@@ -384,8 +443,13 @@ export default function Prices() {
             dataIndex: 'cached_price',
             width: 150,
             align: 'right',
-            render: (value: number) =>
-              money(value) ?? <span className="text-muted">与输入同价</span>,
+            render: (value: number, row) =>
+              money(value) ??
+              (row.input_price ? (
+                <span className="text-muted">{money(row.input_price)}（同输入）</span>
+              ) : (
+                <span className="text-muted">免费</span>
+              )),
           },
           {
             title: '每次请求',
@@ -393,12 +457,13 @@ export default function Prices() {
             width: 120,
             align: 'right',
             render: (value: number) =>
-              value ? <Tag color="purple">${value}</Tag> : <span className="text-muted">-</span>,
+              money(value) ?? <span className="text-muted">-</span>,
           },
           {
             title: '更新时间',
             dataIndex: 'updated_at',
             width: 130,
+            sorter: (a, b) => dayjs(a.updated_at ?? 0).valueOf() - dayjs(b.updated_at ?? 0).valueOf(),
             render: (value: string) => (
               <Tooltip title={formatTime(value)}>{formatRelative(value)}</Tooltip>
             ),
@@ -416,8 +481,9 @@ export default function Prices() {
                   <Button
                     size="small"
                     type="link"
-                    icon={<CopyOutlined />}
-                    onClick={() => openModal(row, true)}
+                    icon={<BlockOutlined />}
+                    aria-label={`以 ${row.model} 的价格为模板新增`}
+                    onClick={() => openModal({ ...row, model: '' }, true)}
                   />
                 </Tooltip>
                 <Popconfirm
@@ -432,9 +498,13 @@ export default function Prices() {
                   okText="删除"
                   okButtonProps={{ danger: true }}
                   onConfirm={async () => {
-                    await api.admin.deletePrice(row.model)
-                    message.success('已删除')
-                    await load()
+                    try {
+                      await api.admin.deletePrice(row.model)
+                      message.success('已删除')
+                      await load()
+                    } catch (error) {
+                      message.error(error instanceof Error ? error.message : '删除失败')
+                    }
                   }}
                 >
                   <Button size="small" type="link" danger>
@@ -452,15 +522,21 @@ export default function Prices() {
         title={editing ? `编辑价格：${editing.model}` : '新增价格'}
         onCancel={() => setOpen(false)}
         onOk={submit}
+        okText={editing ? '保存' : '创建'}
         confirmLoading={saving}
         destroyOnClose
       >
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+        <Form form={form} layout="vertical" style={{ marginTop: 16 }} onFinish={() => void submit()}>
           <Form.Item
             name="model"
             label="模型名"
             rules={[{ required: true, message: '请输入模型名' }]}
             tooltip="支持前缀匹配，填 gpt-4o 即可覆盖所有 gpt-4o-* 快照"
+            extra={
+              editing
+                ? '模型名不可修改；要改名请用列表里的模板按钮以此新增，再删除旧条目。'
+                : undefined
+            }
           >
             <Input disabled={Boolean(editing)} placeholder="gpt-4o" className="mono" />
           </Form.Item>
@@ -504,6 +580,7 @@ export default function Prices() {
               addonAfter="/ 次"
             />
           </Form.Item>
+          <button type="submit" hidden />
         </Form>
       </Modal>
 
@@ -512,6 +589,8 @@ export default function Prices() {
         title="计费策略"
         onCancel={() => setPolicyOpen(false)}
         onOk={submitPolicy}
+        okText="保存"
+        confirmLoading={savingPolicy}
         destroyOnClose
       >
         <Form form={policyForm} layout="vertical" style={{ marginTop: 16 }}>

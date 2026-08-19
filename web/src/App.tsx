@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { Spin } from 'antd'
 
 import { useAuth } from './auth/AuthContext'
@@ -23,9 +23,17 @@ function Booting() {
         background: 'var(--app-bg)',
       }}
     >
-      <Spin />
+      {/* Session restore usually settles in milliseconds; the delay keeps the
+          spinner from flashing on every open. */}
+      <Spin delay={200} spinning />
     </div>
   )
+}
+
+/** Remembers where the visitor was headed, so signing in can return there. */
+function RedirectToLogin() {
+  const location = useLocation()
+  return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />
 }
 
 export default function App() {
@@ -37,7 +45,7 @@ export default function App() {
     return (
       <Routes>
         <Route path="/login" element={<Login />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
+        <Route path="*" element={<RedirectToLogin />} />
       </Routes>
     )
   }

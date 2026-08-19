@@ -10,10 +10,12 @@ import {
   YAxis,
 } from 'recharts'
 
-import { formatCompact, formatNumber } from '../utils/format'
+import { formatCompact, formatNumber, formatUSDValue } from '../utils/format'
 
 export interface ChartPoint {
   label: string
+  /** Full timestamp for the tooltip; the axis keeps the short label. */
+  fullLabel: string
   requests: number
   errors: number
   costUsd: number
@@ -21,7 +23,6 @@ export interface ChartPoint {
 
 interface Props {
   data: ChartPoint[]
-  dark: boolean
   showErrors: boolean
 }
 
@@ -30,6 +31,7 @@ interface TooltipItem {
   value?: number
   color?: string
   dataKey?: string | number
+  payload?: ChartPoint
 }
 
 function ChartTooltip({
@@ -55,7 +57,9 @@ function ChartTooltip({
         padding: '8px 10px',
       }}
     >
-      <div style={{ color: 'var(--app-text-muted)', marginBottom: 6 }}>{label}</div>
+      <div style={{ color: 'var(--app-text-muted)', marginBottom: 6 }}>
+        {payload[0]?.payload?.fullLabel ?? label}
+      </div>
       {payload.map((item) => (
         <div
           key={String(item.dataKey)}
@@ -76,7 +80,7 @@ function ChartTooltip({
           </span>
           <strong style={{ color: 'var(--app-text)' }}>
             {item.dataKey === 'costUsd'
-              ? `$${(item.value ?? 0).toFixed(4)}`
+              ? formatUSDValue(item.value ?? 0)
               : formatNumber(item.value ?? 0)}
           </strong>
         </div>
@@ -85,22 +89,32 @@ function ChartTooltip({
   )
 }
 
+/** Ticks scale their precision with the amount, so a $0.003 day is not a wall of "$0.00". */
+const costTick = (value: number) => {
+  if (value === 0) return '$0'
+  if (value < 0.01) return `$${value.toFixed(4)}`
+  if (value < 1) return `$${value.toFixed(2)}`
+  return `$${value.toFixed(0)}`
+}
+
 /**
  * Loaded lazily: recharts is by far the heaviest dependency and nothing above
- * the fold needs it.
+ * the fold needs it. All colours come from the CSS variables, so the chart
+ * follows a theme switch without a re-render.
  */
-export default function UsageChart({ data, dark, showErrors }: Props) {
-  const axisColor = dark ? '#6b7385' : '#9ca3af'
-  const gridColor = dark ? '#242833' : '#eef0f4'
-  const brand = dark ? '#8b87f5' : '#4f46e5'
+export default function UsageChart({ data, showErrors }: Props) {
+  const axisColor = 'var(--app-text-faint)'
+  const gridColor = 'var(--app-border)'
+  // A single bucket cannot draw a line segment; a dot keeps it visible.
+  const singlePoint = data.length === 1
 
   return (
     <ResponsiveContainer width="100%" height={300}>
       <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
         <defs>
           <linearGradient id="requestsFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={brand} stopOpacity={0.28} />
-            <stop offset="100%" stopColor={brand} stopOpacity={0.02} />
+            <stop offset="0%" stopColor="var(--app-brand)" stopOpacity={0.28} />
+            <stop offset="100%" stopColor="var(--app-brand)" stopOpacity={0.02} />
           </linearGradient>
         </defs>
         <CartesianGrid stroke={gridColor} vertical={false} />
@@ -113,6 +127,7 @@ export default function UsageChart({ data, dark, showErrors }: Props) {
         />
         <YAxis
           yAxisId="left"
+          allowDecimals={false}
           tick={{ fill: axisColor, fontSize: 12 }}
           axisLine={false}
           tickLine={false}
@@ -125,7 +140,7 @@ export default function UsageChart({ data, dark, showErrors }: Props) {
           tick={{ fill: axisColor, fontSize: 12 }}
           axisLine={false}
           tickLine={false}
-          tickFormatter={(value: number) => `$${value < 1 ? value.toFixed(2) : value.toFixed(0)}`}
+          tickFormatter={costTick}
           width={56}
         />
         <Tooltip cursor={{ stroke: gridColor }} content={<ChartTooltip />} />
@@ -135,19 +150,20 @@ export default function UsageChart({ data, dark, showErrors }: Props) {
           type="monotone"
           dataKey="requests"
           name="调用次数"
-          stroke={brand}
+          stroke="var(--app-brand)"
           strokeWidth={2}
           fill="url(#requestsFill)"
+          dot={singlePoint ? { r: 3 } : false}
           activeDot={{ r: 4 }}
         />
         <Line
           yAxisId="right"
           type="monotone"
           dataKey="costUsd"
-          name="消费"
-          stroke="#0ea5e9"
+          name="消费（右轴）"
+          stroke="var(--app-accent)"
           strokeWidth={2}
-          dot={false}
+          dot={singlePoint ? { r: 3 } : false}
           activeDot={{ r: 4 }}
         />
         {showErrors && (
@@ -156,10 +172,10 @@ export default function UsageChart({ data, dark, showErrors }: Props) {
             type="monotone"
             dataKey="errors"
             name="失败"
-            stroke="#ef4444"
+            stroke="var(--app-danger)"
             strokeWidth={1.5}
             strokeDasharray="4 3"
-            dot={false}
+            dot={singlePoint ? { r: 3 } : false}
           />
         )}
       </ComposedChart>

@@ -5,17 +5,14 @@ import {
   App,
   Badge,
   Button,
-  Col,
   DatePicker,
   Descriptions,
   Drawer,
   Input,
-  Row,
   Segmented,
   Select,
   Skeleton,
   Space,
-  Statistic,
   Switch,
   Table,
   Tabs,
@@ -23,7 +20,7 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
-import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { CopyOutlined, KeyOutlined, ReloadOutlined, RobotOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons'
 import type { TableRef } from 'antd/es/table'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
@@ -34,7 +31,9 @@ import { useLiveRate } from '../hooks/useLiveRate'
 import { useLogStream } from '../hooks/useLogStream'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 import { useSettings } from '../settings/SettingsContext'
+import { copyTextToClipboard } from '../utils/clipboard'
 import EmptyState from './EmptyState'
+import RateCard from './RateCard'
 import {
   parseRequestConversation,
   parseResponseConversation,
@@ -61,6 +60,8 @@ interface Props {
   extra?: ReactNode
   /** Show a live RPM/TPM pulse bar above the table (admin first-page only). */
   showRate?: boolean
+  /** Bump to force a data reload without remounting (filters survive). */
+  reloadToken?: number
 }
 
 const statusTone = (code: number) => (code < 400 ? 'green' : code < 500 ? 'orange' : 'red')
@@ -89,18 +90,28 @@ interface LiveRowLayout {
 const cacheRate = (entry: RequestLog) =>
   entry.prompt_tokens > 0 ? entry.cached_tokens / entry.prompt_tokens : 0
 
-export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
+export default function LogTable({ admin, fetcher, extra, showRate, reloadToken }: Props) {
   const { message } = App.useApp()
   // A Drawer is not clamped to the viewport the way a Modal is.
   const narrow = useMediaQuery('(max-width: 768px)')
   const [rows, setRows] = useState<RequestLog[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  // Overlapping fetches race (slow filter query vs fast one); only the newest
+  // request may write state.
+  const requestSeq = useRef(0)
+  // While the pointer is over the table, live arrivals are parked instead of
+  // inserted: rows that keep sliding away from the cursor cannot be clicked.
+  const hoveringRef = useRef(false)
+  const hoverBuffer = useRef<RequestLog[]>([])
+  const [hoverPending, setHoverPending] = useState(0)
   const [page, setPage] = useState(1)
   const { defaultPageSize } = useSettings()
   const [pageSize, setPageSize] = useState(defaultPageSize)
   const [keywordInput, setKeywordInput] = useState('')
   const [modelInput, setModelInput] = useState('')
+  const [tokenInput, setTokenInput] = useState('')
   const [usernameInput, setUsernameInput] = useState('')
   const [channelInput, setChannelInput] = useState('')
   const [onlyError, setOnlyError] = useState(false)
@@ -239,6 +250,8 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
   // only and read as a low, useless number.
   const rateActive = Boolean(showRate && admin && page === 1 && live && !range)
   const rate = useLiveRate(rateActive)
+  // Why the meter is parked, so a zero never reads as "no traffic".
+  const idleHint = !live ? '实时推送已关闭' : range ? '已选时间范围' : '非首页'
   // Seed whenever the first page finishes loading; the SSE additions pile on
   // top. Not seeded on other pages — the bar is hidden there anyway.
   useEffect(() => {
@@ -273,54 +286,68 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
 
   const keyword = useDebouncedValue(keywordInput)
   const model = useDebouncedValue(modelInput)
+  const tokenName = useDebouncedValue(tokenInput)
   const username = useDebouncedValue(usernameInput)
   const channelID = useDebouncedValue(channelInput)
 
   // Any filter change invalidates the current page number.
   useEffect(() => {
     setPage(1)
-  }, [keyword, model, username, channelID, onlyError, range])
+  }, [keyword, model, tokenName, username, channelID, onlyError, range])
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const result = await fetcher({
-        page,
-        page_size: pageSize,
-        keyword: keyword || undefined,
-        model: model || undefined,
-        username: admin && username ? username : undefined,
-        // The backend has always supported this filter; now that the table
-        // shows ids, it is finally useful.
-        channel_id: Number(channelID) > 0 ? Number(channelID) : undefined,
-        only_error: onlyError || undefined,
-        start: range?.[0]?.toISOString(),
-        end: range?.[1]?.toISOString(),
-      })
-      setRows(result.data ?? [])
-      setTotal(result.total)
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [
-    admin,
-    channelID,
-    fetcher,
-    keyword,
-    message,
-    model,
-    onlyError,
-    page,
-    pageSize,
-    range,
-    username,
-  ])
+  // silent: refresh the data without the table-wide loading veil — used by
+  // stream reconnects, where a periodic grey flash reads as something broken.
+  const load = useCallback(
+    async (silent = false) => {
+      const seq = ++requestSeq.current
+      if (!silent) setLoading(true)
+      try {
+        const result = await fetcher({
+          page,
+          page_size: pageSize,
+          keyword: keyword || undefined,
+          model: model || undefined,
+          token_name: tokenName || undefined,
+          username: admin && username ? username : undefined,
+          // The backend has always supported this filter; now that the table
+          // shows ids, it is finally useful.
+          channel_id: Number(channelID) > 0 ? Number(channelID) : undefined,
+          only_error: onlyError || undefined,
+          start: range?.[0]?.toISOString(),
+          end: range?.[1]?.toISOString(),
+        })
+        if (seq !== requestSeq.current) return
+        const data = result.data ?? []
+        // Anything parked during a hover is part of the truth just fetched;
+        // flushing it later would push stale rows into the fresh page.
+        hoverBuffer.current = []
+        setHoverPending(0)
+        setRows(data)
+        setTotal(result.total)
+        setLoadError(null)
+        // A purge (or anything else shrinking the data) can strand a deep page
+        // number pointing past the end; walk back to the last real page.
+        if (data.length === 0 && result.total > 0 && page > 1) {
+          setPage(Math.max(1, Math.ceil(result.total / pageSize)))
+        }
+      } catch (error) {
+        if (seq !== requestSeq.current) return
+        const text = error instanceof Error ? error.message : '加载失败'
+        // Both surfaces on purpose: the empty-state branch is invisible while
+        // stale rows are still on screen, and the toast alone evaporates.
+        setLoadError(text)
+        message.error(text)
+      } finally {
+        if (!silent && seq === requestSeq.current) setLoading(false)
+      }
+    },
+    [admin, channelID, fetcher, keyword, message, model, onlyError, page, pageSize, range, tokenName, username],
+  )
 
   useEffect(() => {
     void load()
-  }, [load])
+    // reloadToken is an external "data changed" signal (e.g. after purge).
+  }, [load, reloadToken])
 
   // The stream carries the same filters as the list, so what arrives live is
   // what a reload would show. A time range is the exception: it bounds history,
@@ -331,12 +358,13 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
     // what is on screen.
     if (keyword) params.set('keyword', keyword)
     if (model) params.set('model', model)
+    if (tokenName) params.set('token_name', tokenName)
     if (admin && username) params.set('username', username)
     if (Number(channelID) > 0) params.set('channel_id', channelID)
     if (onlyError) params.set('only_error', 'true')
     const query = params.toString()
     return `${admin ? '/api/admin/logs/stream' : '/api/logs/stream'}${query ? `?${query}` : ''}`
-  }, [admin, channelID, keyword, model, onlyError, username])
+  }, [admin, channelID, keyword, model, onlyError, tokenName, username])
 
   // Live only makes sense on the first page of a "newest first" list: on any
   // other page every arrival would shift the rows the user is reading. Nothing
@@ -344,12 +372,38 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
   const canStream = live && page === 1 && !range
   const [pending, setPending] = useState(0)
 
+  const flushHoverBuffer = useCallback(() => {
+    const buffered = hoverBuffer.current
+    if (!buffered.length) return
+    hoverBuffer.current = []
+    setHoverPending(0)
+    // Live entries only belong at the top of the first page; anywhere else
+    // they would displace historical rows.
+    if (page !== 1) return
+    setRows((current) => {
+      let next = current
+      for (const entry of buffered) {
+        if (!next.some((row) => row.id === entry.id)) next = [entry, ...next]
+      }
+      return next.slice(0, pageSize)
+    })
+  }, [page, pageSize])
+
   const streamState = useLogStream({
     url: streamURL,
     enabled: live && !range,
     onEntry: (entry) => {
       if (page !== 1) {
         setPending((count) => count + 1)
+        return
+      }
+      setTotal((count) => count + 1)
+      rate.add(entry)
+      if (admin && hoveringRef.current) {
+        if (!hoverBuffer.current.some((row) => row.id === entry.id)) {
+          hoverBuffer.current.push(entry)
+          setHoverPending(hoverBuffer.current.length)
+        }
         return
       }
       captureLiveLayout(entry.id)
@@ -360,13 +414,11 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
         if (current.some((row) => row.id === entry.id)) return current
         return [entry, ...current].slice(0, pageSize)
       })
-      setTotal((count) => count + 1)
-      rate.add(entry)
     },
     onReconnect: () => {
-      // The stream dropped and came back; reload the first page to recover
-      // entries that were published while the connection was down.
-      if (page === 1) void load()
+      // The stream dropped and came back; quietly reload the first page to
+      // recover entries that were published while the connection was down.
+      if (page === 1) void load(true)
     },
   })
 
@@ -379,7 +431,7 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
   }, [load, page, pending])
 
   const dirty = Boolean(
-    keywordInput || modelInput || usernameInput || channelInput || onlyError || range,
+    keywordInput || modelInput || tokenInput || usernameInput || channelInput || onlyError || range,
   )
 
   const presets = useMemo(
@@ -394,76 +446,74 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
 
   return (
     <>
-      {showRate && admin && page === 1 && (
-        <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
-          <Col xs={12} sm={8} md={6}>
-            <Statistic
-              title="RPM"
-              value={rateActive ? rate.rpm : 0}
-              suffix={
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  / min
-                </Typography.Text>
-              }
-              valueStyle={{ fontFamily: 'var(--app-font-mono, monospace)' }}
-            />
-          </Col>
-          <Col xs={12} sm={8} md={6}>
-            <Statistic
-              title="Tokens / min"
-              value={rateActive ? formatCompact(rate.tpm) : 0}
-              suffix={
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  / min
-                </Typography.Text>
-              }
-              valueStyle={{ fontFamily: 'var(--app-font-mono, monospace)' }}
-            />
-          </Col>
-          <Col xs={24} md={12} style={{ display: 'flex', alignItems: 'flex-end' }}>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              滚动 60 秒窗口 · 仅统计当前首页可见记录
-              {!rateActive && live && '（非首页或已选时间范围，已暂停）'}
-              {!live && '（实时推送已关闭）'}
-            </Typography.Text>
-          </Col>
-        </Row>
+      {showRate && admin && (
+        <Space size={8} style={{ marginBottom: 12 }}>
+          <RateCard label="RPM" value={rate.rpm} active={rateActive} idleHint={idleHint} />
+          <RateCard
+            label="TPM"
+            value={rate.tpm}
+            format={formatCompact}
+            active={rateActive}
+            idleHint={idleHint}
+          />
+        </Space>
       )}
       <Space wrap style={{ marginBottom: 12 }} size={8}>
         <Input
           allowClear
           prefix={<SearchOutlined className="text-muted" />}
-          placeholder="搜索 ID、用户、密钥、模型、渠道、接口、IP、错误"
+          placeholder={
+            admin ? '搜索 ID、用户、密钥、模型、渠道、IP、错误' : '搜索 ID、密钥、模型、接口、错误'
+          }
+          aria-label="搜索日志"
           style={{ width: 300 }}
           value={keywordInput}
           onChange={(event) => setKeywordInput(event.target.value)}
         />
+        {/* Prefix icons keep the filters tellable-apart once they hold text
+            and the placeholder is gone. */}
         <Input
           allowClear
-          placeholder="按模型过滤"
-          style={{ width: 180 }}
+          prefix={<RobotOutlined className="text-muted" />}
+          placeholder="模型"
+          aria-label="按模型过滤"
+          style={{ width: 160 }}
           value={modelInput}
           onChange={(event) => setModelInput(event.target.value)}
+        />
+        <Input
+          allowClear
+          prefix={<KeyOutlined className="text-muted" />}
+          placeholder="令牌"
+          aria-label="按令牌名过滤"
+          style={{ width: 140 }}
+          value={tokenInput}
+          onChange={(event) => setTokenInput(event.target.value)}
         />
         {admin && (
           <Input
             allowClear
-            placeholder="按用户名过滤"
-            style={{ width: 160 }}
+            prefix={<UserOutlined className="text-muted" />}
+            placeholder="用户名"
+            aria-label="按用户名过滤"
+            style={{ width: 150 }}
             value={usernameInput}
             onChange={(event) => setUsernameInput(event.target.value)}
           />
         )}
         <Input
           allowClear
-          placeholder="按渠道 ID"
-          style={{ width: 120 }}
+          prefix={<span className="text-muted">#</span>}
+          placeholder="渠道 ID"
+          aria-label="按渠道 ID 过滤，仅支持数字"
+          style={{ width: 110 }}
           value={channelInput}
           onChange={(event) => setChannelInput(event.target.value.replace(/\D/g, ''))}
         />
         <Select
           value={onlyError}
-          style={{ width: 120 }}
+          style={{ width: 110 }}
+          aria-label="按结果过滤"
           onChange={setOnlyError}
           options={[
             { value: false, label: '全部请求' },
@@ -484,6 +534,7 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
             onClick={() => {
               setKeywordInput('')
               setModelInput('')
+              setTokenInput('')
               setUsernameInput('')
               setChannelInput('')
               setOnlyError(false)
@@ -503,34 +554,79 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
               : '由服务端推送新记录，无需轮询'
           }
         >
-          <Space size={6}>
-            <Switch size="small" checked={live} disabled={Boolean(range)} onChange={setLive} />
-            <Badge
-              status={
-                !live || range ? 'default' : streamState === 'live' ? 'processing' : 'warning'
-              }
-              text={
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {!live || range
-                    ? '实时推送'
+          {/* The label element makes the caption part of the toggle's hit area. */}
+          <label
+            style={{
+              alignItems: 'center',
+              cursor: range ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+            }}
+          >
+            <Space size={6}>
+              <Switch
+                size="small"
+                checked={live}
+                disabled={Boolean(range)}
+                aria-label="实时推送"
+                onChange={(value) => {
+                  setLive(value)
+                  // Re-enabling reconnects a fresh stream, which cannot know
+                  // what it missed; reload the first page to close the gap.
+                  if (value && page === 1) void load()
+                }}
+              />
+              <Badge
+                status={
+                  !live || range
+                    ? 'default'
                     : streamState === 'live'
-                      ? canStream
-                        ? '实时推送中'
-                        : '已暂停（非首页）'
-                      : '连接中…'}
-                </Typography.Text>
-              }
-            />
-          </Space>
+                      ? 'processing'
+                      : streamState === 'connecting'
+                        ? 'warning'
+                        : 'error'
+                }
+                text={
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {!live || range
+                      ? '实时推送'
+                      : streamState === 'live'
+                        ? canStream
+                          ? '实时推送中'
+                          : '已暂停（非首页）'
+                        : streamState === 'connecting'
+                          ? '连接中…'
+                          : '已断开，重试中'}
+                  </Typography.Text>
+                }
+              />
+            </Space>
+          </label>
         </Tooltip>
         {pending > 0 && (
           <Button type="link" size="small" onClick={() => setPage(1)}>
             有 {pending} 条新记录
           </Button>
         )}
+        {hoverPending > 0 && (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {hoverPending} 条新记录待插入（悬停时暂停）
+          </Typography.Text>
+        )}
         {extra}
       </Space>
 
+      <div
+        // Pointer events, filtered to mice: a touch tap synthesizes mouseenter
+        // with no matching leave, which would park the stream forever.
+        onPointerEnter={(event) => {
+          if (event.pointerType === 'mouse') hoveringRef.current = true
+        }}
+        onPointerLeave={(event) => {
+          if (event.pointerType !== 'mouse') return
+          hoveringRef.current = false
+          flushHoverBuffer()
+        }}
+      >
       <Table
         ref={liveTableRoot}
         rowKey="id"
@@ -543,10 +639,29 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
         // (which adds the 用户 column) as the widest case. A smaller value makes
         // the browser shrink every column to fit, and the crushed cells collide
         // instead of scrolling.
-        scroll={{ x: 1530 }}
-        onRow={(row) => ({ onClick: () => openDetail(row) })}
+        scroll={{ x: 1590 }}
+        onRow={(row) => ({
+          onClick: () => openDetail(row),
+          // Rows are the only way into the detail drawer, so they must be
+          // reachable without a mouse.
+          tabIndex: 0,
+          'aria-label': `查看调用 #${row.id} 详情`,
+          onKeyDown: (event) => {
+            if (event.key === 'Enter') openDetail(row)
+          },
+        })}
         locale={{
-          emptyText: (
+          emptyText: loadError ? (
+            <EmptyState
+              title="加载失败"
+              description={loadError}
+              action={
+                <Button type="primary" icon={<ReloadOutlined />} onClick={() => void load()}>
+                  重试
+                </Button>
+              }
+            />
+          ) : (
             <EmptyState
               title="没有匹配的调用记录"
               description={dirty ? '试试放宽筛选条件或时间范围。' : '发起一次请求后这里就会有记录。'}
@@ -585,17 +700,29 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
             ),
           },
           {
-            // The id is what stays stable and short; the name is a label that
-            // can be renamed out from under a log entry, so it goes in the
-            // tooltip where it costs no width.
+            // Id above (stable, matches other admin surfaces), name below —
+            // reading traffic distribution should not require hovering every
+            // row to learn which upstream #12 is.
             title: '渠道',
             dataIndex: 'channel_id',
-            width: 80,
+            width: 140,
             render: (id: number, row: RequestLog) =>
               id > 0 ? (
-                <Tooltip title={row.channel_name || `渠道 #${id}`}>
-                  <Tag className="mono">#{id}</Tag>
-                </Tooltip>
+                <div className="cell-stack" style={{ minWidth: 0 }}>
+                  <span>
+                    <Tag className="mono" style={{ marginInlineEnd: 0 }}>#{id}</Tag>
+                  </span>
+                  {row.channel_name && (
+                    <Tooltip title={row.channel_name}>
+                      <span
+                        className="text-muted cell-stack__sub"
+                        style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                      >
+                        {row.channel_name}
+                      </span>
+                    </Tooltip>
+                  )}
+                </div>
               ) : (
                 <span className="text-muted">-</span>
               ),
@@ -695,7 +822,7 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
                   </Tooltip>
                 )}
                 {row.retries > 0 && (
-                  <Tooltip title={`切换了 ${row.retries} 次渠道`}>
+                  <Tooltip title={`共尝试 ${row.retries + 1} 次（切换 ${row.retries} 次渠道）`}>
                     <Tag color="gold">×{row.retries + 1}</Tag>
                   </Tooltip>
                 )}
@@ -730,7 +857,10 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
                     <span
                       className="duration-bar"
                       style={{
-                        background: `linear-gradient(to top, var(--app-brand) ${ratio * 100}%, var(--app-warning) ${ratio * 100}%)`,
+                        // Brand = waiting for the first byte, neutral = the
+                        // stream itself. Warning orange here made every slow
+                        // stream look like an incident.
+                        background: `linear-gradient(to top, var(--app-brand) ${ratio * 100}%, var(--app-border-strong) ${ratio * 100}%)`,
                       }}
                       aria-hidden
                     />
@@ -752,13 +882,24 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
           {
             // Input / output / total spelled out. The cache breakdown lives in
             // the detail drawer, where there is room to explain it.
-            title: 'Tokens',
+            title: (
+              <Tooltip title="输入 → 输出 · 合计">
+                <span>Tokens</span>
+              </Tooltip>
+            ),
             width: 150,
+            align: 'right',
             render: (_: unknown, row: RequestLog) => (
-              <span className="mono" style={{ whiteSpace: 'nowrap' }}>
-                {formatCompact(row.prompt_tokens)}→{formatCompact(row.completion_tokens)}
-                <span className="text-muted"> · {formatCompact(row.total_tokens)}</span>
-              </span>
+              <Tooltip
+                title={`输入 ${formatNumber(row.prompt_tokens)} · 输出 ${formatNumber(
+                  row.completion_tokens,
+                )} · 合计 ${formatNumber(row.total_tokens)}`}
+              >
+                <span className="mono" style={{ whiteSpace: 'nowrap' }}>
+                  {formatCompact(row.prompt_tokens)}→{formatCompact(row.completion_tokens)}
+                  <span className="text-muted"> · {formatCompact(row.total_tokens)}</span>
+                </span>
+              </Tooltip>
             ),
           },
           {
@@ -783,14 +924,27 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
           },
         ]}
       />
+      </div>
 
       <Drawer
         className="detail-drawer"
         open={Boolean(detail)}
         // Wider than the metadata alone needs: request bodies are the reason
         // this drawer is opened, and they read badly in a narrow column.
-        width={narrow ? '100%' : admin ? 860 : 560}
-        title="调用详情"
+        // min() guards the 769–860px window, where a fixed 860 overflows.
+        width={narrow ? '100%' : admin ? 'min(860px, 100vw)' : 'min(560px, 100vw)'}
+        title={
+          detail ? (
+            <Space size={8}>
+              <span>调用详情 #{detail.id}</span>
+              <Tag color={statusTone(detail.status_code)} style={{ marginInlineEnd: 0 }}>
+                {detail.status_code}
+              </Tag>
+            </Space>
+          ) : (
+            '调用详情'
+          )
+        }
         onClose={() => setDetail(null)}
       >
         {detail && admin && (
@@ -897,6 +1051,7 @@ function LogBody({
   bodies: RequestLogDetail | null
   entry: RequestLog
 }) {
+  const { message } = App.useApp()
   const { settings } = useSettings()
   const [view, setView] = useState<BodyView>('chat')
 
@@ -934,7 +1089,11 @@ function LogBody({
   const headers = kind === 'request' ? bodies.request_headers : bodies.response_headers
   const body = kind === 'request' ? bodies.request_body : bodies.response_body
   const truncated = kind === 'request' ? bodies.request_truncated : bodies.response_truncated
-  const message = httpMessage(kind, entry, headers, body)
+  const httpText = httpMessage(kind, entry, headers, body)
+
+  // Non-chat calls (embeddings, audio, …) have nothing to show in the chat
+  // view; land them on the raw message instead of an apology.
+  const effectiveView: BodyView = turns ? view : 'raw'
 
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -949,48 +1108,43 @@ function LogBody({
       <Space size={8} wrap>
         <Segmented
           size="small"
-          value={view}
+          value={effectiveView}
           onChange={(value) => setView(value as BodyView)}
           options={[
             { label: '报文', value: 'raw' },
-            { label: '会话', value: 'chat' },
+            { label: '会话', value: 'chat', disabled: !turns },
           ]}
         />
-        {view === 'raw' ? (
+        {effectiveView === 'raw' ? (
           <>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              敏感头已脱敏
+              敏感头已脱敏{turns ? '' : ' · 该正文不是可识别的对话'}
             </Typography.Text>
-            <Typography.Text
-              copyable={{ text: message, tooltips: ['复制报文', '已复制'] }}
-              style={{ marginBottom: 0 }}
-            />
+            <Button
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={() => {
+                void copyTextToClipboard(httpText).then((copied) =>
+                  copied
+                    ? message.success('已复制报文')
+                    : message.warning('浏览器拒绝了剪贴板访问，请手动选中复制'),
+                )
+              }}
+            >
+              复制报文
+            </Button>
           </>
         ) : (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {turns
-              ? `${turns.length} 条消息${truncated ? '（正文被截断，可能不完整）' : ''}`
-              : '无法解析为会话'}
+            {`${turns?.length ?? 0} 条消息${truncated ? '（正文被截断，可能不完整）' : ''}`}
           </Typography.Text>
         )}
       </Space>
-      {view === 'raw' ? (
-        <pre className="code-block" style={{ maxHeight: '68vh' }}>
-          {message}
-        </pre>
-      ) : turns ? (
-        <Conversation turns={turns} />
+      {effectiveView === 'raw' ? (
+        // No inner max-height: the drawer body is the scroll container.
+        <pre className="code-block">{httpText}</pre>
       ) : (
-        <Alert
-          type="info"
-          showIcon
-          message="这段正文不是可识别的对话"
-          description={
-            truncated
-              ? '正文被截断后无法还原为对话，可在「全局设置 → 正文捕获」调高上限。'
-              : '仅支持 OpenAI、Anthropic、Gemini 与 Responses 协议的对话正文，其余请求请查看报文。'
-          }
-        />
+        <Conversation turns={turns ?? []} />
       )}
     </Space>
   )

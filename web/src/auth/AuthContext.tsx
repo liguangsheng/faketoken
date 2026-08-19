@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { App as AntApp } from 'antd'
 import { ApiError, api, session, setUnauthorizedHandler, type User } from '../api/client'
 
 interface AuthValue {
@@ -15,8 +16,15 @@ interface AuthValue {
 const AuthContext = createContext<AuthValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const { message } = AntApp.useApp()
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
+  // Read inside the unauthorized handler without re-registering it per render.
+  const hadUser = useRef(false)
+
+  useEffect(() => {
+    hadUser.current = Boolean(user)
+  }, [user])
 
   const refresh = useCallback(async () => {
     if (!session.get()) {
@@ -36,9 +44,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    setUnauthorizedHandler(() => setUser(null))
+    setUnauthorizedHandler(() => {
+      // Being bounced to the login form with no explanation reads as a crash;
+      // a single line names the cause. Only when a session actually existed —
+      // failed login attempts also come through here.
+      if (hadUser.current) message.warning('登录已过期，请重新登录', 4)
+      setUser(null)
+    })
     void refresh()
-  }, [refresh])
+  }, [message, refresh])
 
   const value = useMemo<AuthValue>(
     () => ({

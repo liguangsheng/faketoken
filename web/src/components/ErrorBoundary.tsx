@@ -38,6 +38,15 @@ export default class ErrorBoundary extends Component<Props, State> {
           <Button key="reset" onClick={() => this.setState({ error: null })}>
             重试渲染
           </Button>,
+          // A full navigation also drops whatever in-memory state broke the page.
+          <Button
+            key="home"
+            onClick={() => {
+              window.location.href = '/'
+            }}
+          >
+            回到仪表盘
+          </Button>,
         ]}
       >
         <Typography.Paragraph copyable={{ text: `${error.message}\n${error.stack ?? ''}` }}>

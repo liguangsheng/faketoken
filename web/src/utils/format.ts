@@ -12,8 +12,25 @@ export const toUSD = (micro: number) => micro / MICRO_USD
 
 export const formatUSD = (micro: number, digits = 4) => {
   const value = toUSD(micro)
-  if (value !== 0 && Math.abs(value) < 0.0001) return `$${value.toExponential(2)}`
-  return `$${value.toFixed(digits)}`
+  const sign = value < 0 ? '-' : ''
+  const abs = Math.abs(value)
+  if (abs !== 0 && abs < 0.0001) return `${sign}$${abs.toExponential(2)}`
+  return `${sign}$${abs.toFixed(digits)}`
+}
+
+/** Same precision rules as formatUSD, for values already in dollars. */
+export const formatUSDValue = (value: number, digits = 4) => formatUSD(value * MICRO_USD, digits)
+
+/**
+ * A per-1M-token unit price, as entered by the operator (a dollar amount, not
+ * micro-USD). One shared shape so the price page and the plaza render the
+ * same number the same way: no float noise, no scientific notation.
+ */
+export const formatPrice = (value: number) => {
+  if (!value) return '$0'
+  const sign = value < 0 ? '-' : ''
+  const rounded = Number(Math.abs(value).toPrecision(6))
+  return `${sign}$${rounded.toLocaleString('en-US', { maximumFractionDigits: 10 })}`
 }
 
 export const formatMoney = (micro: number) => formatUSD(micro, 2)
@@ -40,6 +57,10 @@ export const formatTime = (value?: string | null) =>
  */
 export const formatTimeShort = (value?: string | null) =>
   value ? dayjs(value).format('MM-DD HH:mm:ss') : '-'
+
+/** "2026-08-19 11:42" — for deadlines, where the exact date matters but seconds don't. */
+export const formatDateMinute = (value?: string | null) =>
+  value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
 
 /** "3 分钟前" — pair it with a tooltip carrying the absolute timestamp. */
 export const formatRelative = (value?: string | null, fallback = '-') =>

@@ -5,9 +5,9 @@ export type StatTone = 'brand' | 'success' | 'warning' | 'danger' | 'neutral'
 
 const TONES: Record<StatTone, { bg: string; color: string }> = {
   brand: { bg: 'var(--app-brand-soft)', color: 'var(--app-brand)' },
-  success: { bg: 'rgba(22, 163, 74, 0.12)', color: 'var(--app-success)' },
-  warning: { bg: 'rgba(217, 119, 6, 0.12)', color: 'var(--app-warning)' },
-  danger: { bg: 'rgba(220, 38, 38, 0.12)', color: 'var(--app-danger)' },
+  success: { bg: 'var(--app-success-soft)', color: 'var(--app-success)' },
+  warning: { bg: 'var(--app-warning-soft)', color: 'var(--app-warning)' },
+  danger: { bg: 'var(--app-danger-soft)', color: 'var(--app-danger)' },
   neutral: { bg: 'var(--app-surface-sunken)', color: 'var(--app-text-muted)' },
 }
 
@@ -54,7 +54,10 @@ export default function StatCard({
   return (
     <Card size="small" styles={{ body: { padding: 16 } }}>
       {loading ? (
-        <Skeleton active paragraph={{ rows: 1, width: '60%' }} title={{ width: '40%' }} />
+        // Same height as the real body, so the grid doesn't jump when data lands.
+        <div style={{ minHeight: 92, display: 'flex', alignItems: 'center' }}>
+          <Skeleton active paragraph={{ rows: 1, width: '60%' }} title={{ width: '40%' }} />
+        </div>
       ) : tooltip ? (
         <Tooltip title={tooltip}>
           <div>{body}</div>

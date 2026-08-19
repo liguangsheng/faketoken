@@ -23,7 +23,9 @@ export default function Profile() {
 
   const redeem = async () => {
     const code = redeemCode.trim()
-    if (!code) return
+    // Guarded because the server credits on every call: a double Enter would
+    // redeem twice (and fail confusingly the second time).
+    if (!code || redeeming) return
     setRedeeming(true)
     try {
       const result = await api.redeem(code)
@@ -81,8 +83,17 @@ export default function Profile() {
         <Col xs={24} lg={10}>
           <Card>
             <Space align="start" size={14}>
-              <Avatar size={52} style={{ background: 'var(--app-brand)', fontSize: 22 }}>
-                {(user?.display_name || user?.username || '?').slice(0, 1).toUpperCase()}
+              <Avatar
+                size={52}
+                style={{
+                  background: 'var(--app-brand-soft)',
+                  color: 'var(--app-brand)',
+                  fontSize: 22,
+                }}
+              >
+                <span aria-hidden>
+                  {(user?.display_name || user?.username || '?').slice(0, 1).toUpperCase()}
+                </span>
               </Avatar>
               <div style={{ display: 'grid', gap: 6 }}>
                 <Typography.Title level={4} style={{ margin: 0 }}>
@@ -99,9 +110,9 @@ export default function Profile() {
               </div>
             </Space>
 
-            <Row gutter={12} style={{ marginTop: 20 }}>
+            <Row gutter={[12, 12]} style={{ marginTop: 20 }}>
               {stats.map((item) => (
-                <Col span={8} key={item.label}>
+                <Col xs={24} sm={8} key={item.label}>
                   <div
                     style={{
                       background: 'var(--app-surface-sunken)',
@@ -111,7 +122,18 @@ export default function Profile() {
                     }}
                   >
                     <div className="stat-card__label">{item.label}</div>
-                    <div style={{ fontSize: 17, fontWeight: 650, marginTop: 4 }}>{item.value}</div>
+                    <div
+                      style={{
+                        fontSize: 17,
+                        fontWeight: 650,
+                        marginTop: 4,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {item.value}
+                    </div>
                   </div>
                 </Col>
               ))}
@@ -123,7 +145,9 @@ export default function Profile() {
               <Input
                 value={redeemCode}
                 placeholder="输入兑换码"
+                aria-label="兑换码"
                 className="mono"
+                disabled={redeeming}
                 onChange={(event) => setRedeemCode(event.target.value)}
                 onPressEnter={() => void redeem()}
               />
@@ -151,8 +175,12 @@ export default function Profile() {
             >
               <Row gutter={12}>
                 <Col xs={24} md={12}>
-                  <Form.Item name="display_name" label="昵称">
-                    <Input placeholder="展示在右上角与日志中" maxLength={32} />
+                  <Form.Item
+                    name="display_name"
+                    label="昵称"
+                    extra="展示在右上角与调用日志中。"
+                  >
+                    <Input maxLength={32} />
                   </Form.Item>
                 </Col>
                 <Col xs={24} md={12}>
@@ -185,7 +213,10 @@ export default function Profile() {
                   <Form.Item
                     name="new_password"
                     label="新密码"
-                    rules={[{ required: true, min: 8, message: '密码至少 8 位' }]}
+                    rules={[
+                      { required: true, message: '请输入新密码' },
+                      { min: 8, message: '密码至少 8 位' },
+                    ]}
                   >
                     <Input.Password autoComplete="new-password" />
                   </Form.Item>

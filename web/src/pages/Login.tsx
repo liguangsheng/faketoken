@@ -55,20 +55,28 @@ export default function Login() {
           </div>
           {/* The switcher already names both modes, so a heading beside it
               would just say the same thing twice. */}
-          {allowRegister ? (
-            <Segmented
-              block
-              value={mode}
-              onChange={(value) => setMode(value as Mode)}
-              options={[
-                { value: 'login', label: '登录' },
-                { value: 'register', label: '注册' },
-              ]}
-              style={{ marginBottom: 20 }}
-            />
-          ) : (
-            <h1 className="login-title">登录</h1>
-          )}
+          {/* Fixed height: the register switch arrives async, and the swap
+              from plain title to Segmented must not bump the form. */}
+          <div style={{ minHeight: 52 }}>
+            {allowRegister ? (
+              <Segmented
+                block
+                value={mode}
+                onChange={(value) => {
+                  setMode(value as Mode)
+                  // Register-only errors (min length) must not linger on login.
+                  form.setFields([{ name: 'password', errors: [] }])
+                }}
+                options={[
+                  { value: 'login', label: '登录' },
+                  { value: 'register', label: '注册' },
+                ]}
+                style={{ marginBottom: 20 }}
+              />
+            ) : (
+              <h1 className="login-title">登录</h1>
+            )}
+          </div>
 
           <Form form={form} layout="vertical" onFinish={submit} requiredMark={false}>
             <Form.Item
@@ -79,6 +87,7 @@ export default function Login() {
               <Input
                 prefix={<UserOutlined className="text-muted" />}
                 placeholder="用户名"
+                aria-label="用户名"
                 size="large"
                 autoFocus
                 autoComplete="username"
@@ -95,6 +104,7 @@ export default function Login() {
               <Input.Password
                 prefix={<LockOutlined className="text-muted" />}
                 placeholder={mode === 'register' ? '密码（至少 8 位）' : '密码'}
+                aria-label="密码"
                 size="large"
                 autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
               />
@@ -111,6 +121,7 @@ export default function Login() {
                 <Input
                   prefix={<GiftOutlined className="text-muted" />}
                   placeholder="邀请码"
+                  aria-label="邀请码"
                   size="large"
                   autoComplete="off"
                 />

@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { App, Button, Dropdown } from 'antd'
-import { DeleteOutlined } from '@ant-design/icons'
+import { App, Button, Dropdown, Space } from 'antd'
+import { DeleteOutlined, DownOutlined } from '@ant-design/icons'
 
 import { api } from '../../api/client'
 import LogTable from '../../components/LogTable'
@@ -10,7 +10,7 @@ const PURGE_OPTIONS = [7, 30, 90]
 
 export default function AdminLogs() {
   const { message, modal } = App.useApp()
-  const [refreshKey, setRefreshKey] = useState(0)
+  const [reloadToken, setReloadToken] = useState(0)
 
   const purge = (days: number) => {
     modal.confirm({
@@ -20,37 +20,45 @@ export default function AdminLogs() {
       okText: '确认清理',
       okButtonProps: { danger: true },
       onOk: async () => {
-        const result = await api.admin.purgeLogs(days)
-        message.success(`已清理 ${result.deleted} 条记录`)
-        setRefreshKey((value) => value + 1)
+        try {
+          const result = await api.admin.purgeLogs(days)
+          message.success(`已清理 ${result.deleted} 条记录`)
+          // A data-only reload: the operator's filters and page survive.
+          setReloadToken((value) => value + 1)
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : '清理失败')
+          throw error
+        }
       },
     })
   }
-
-  const purgeButton = (
-    <Dropdown
-      menu={{
-        items: PURGE_OPTIONS.map((days) => ({
-          key: String(days),
-          label: `清理 ${days} 天前`,
-          danger: true,
-        })),
-        onClick: ({ key }) => purge(Number(key)),
-      }}
-    >
-      <Button danger icon={<DeleteOutlined />}>
-        清理历史日志
-      </Button>
-    </Dropdown>
-  )
 
   return (
     <>
       <PageHeader
         title="全局日志"
-        description="全部用户的逐次调用记录，可按用户名、模型、时间范围筛选；点开任意一行可查看完整请求与响应。"
+        description="全部用户的逐次调用记录与完整正文。"
+        extra={
+          <Dropdown
+            menu={{
+              items: PURGE_OPTIONS.map((days) => ({
+                key: String(days),
+                label: `清理 ${days} 天前`,
+                danger: true,
+              })),
+              onClick: ({ key }) => purge(Number(key)),
+            }}
+          >
+            <Button danger icon={<DeleteOutlined />}>
+              <Space size={6}>
+                清理历史日志
+                <DownOutlined style={{ fontSize: 10 }} />
+              </Space>
+            </Button>
+          </Dropdown>
+        }
       />
-      <LogTable key={`requests-${refreshKey}`} admin showRate fetcher={api.admin.logs} extra={purgeButton} />
+      <LogTable admin showRate fetcher={api.admin.logs} reloadToken={reloadToken} />
     </>
   )
 }

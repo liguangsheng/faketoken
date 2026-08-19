@@ -21,6 +21,8 @@ export interface Token {
   unlimited_quota: boolean
   quota: number
   used_quota: number
+  /** Requests-per-minute cap for this key; 0 means unlimited. */
+  rpm_limit: number
   allowed_models: string[]
   /** Routes and prices this key; empty follows the owning account's group. */
   group: string
@@ -137,6 +139,9 @@ export interface ChannelTestResult {
     cached_tokens: number
     total_tokens: number
   }
+  /** Where the probe actually went: model after model_mapping, and the path. */
+  upstream_model?: string
+  endpoint?: string
 }
 
 /** A built-in probe prompt, compiled into the server. */

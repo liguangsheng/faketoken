@@ -20,6 +20,11 @@
   --app-success: #16a34a;
   --app-warning: #d97706;
   --app-danger: #dc2626;
+  --app-success-soft: rgba(22, 163, 74, 0.12);
+  --app-warning-soft: rgba(217, 119, 6, 0.12);
+  --app-danger-soft: rgba(220, 38, 38, 0.12);
+  /* Secondary data colour (cost lines, rank bars); brand stays for primary. */
+  --app-accent: #0ea5e9;
   --app-header-h: 56px;
 
   color-scheme: light;
@@ -42,6 +47,10 @@
   --app-success: #4ade80;
   --app-warning: #fbbf24;
   --app-danger: #f87171;
+  --app-success-soft: rgba(74, 222, 128, 0.16);
+  --app-warning-soft: rgba(251, 191, 36, 0.16);
+  --app-danger-soft: rgba(248, 113, 113, 0.16);
+  --app-accent: #38bdf8;
 
   color-scheme: dark;
 }
@@ -160,6 +169,12 @@ body {
   width: 28px;
 }
 
+/* Collapsed rail centres its menu icons; the logo should line up with them. */
+.ant-layout-sider-collapsed .app-brand {
+  justify-content: center;
+  padding-inline: 0;
+}
+
 .app-brand__text {
   display: flex;
   flex-direction: column;
@@ -227,6 +242,7 @@ body {
   border: 1px solid var(--app-border);
   border-radius: 999px;
   color: inherit;
+  cursor: pointer;
   display: inline-flex;
   gap: 6px;
   font-family: inherit;
@@ -251,8 +267,20 @@ body {
   font-weight: 650;
 }
 
+/* Warn before the money is gone, not only after. */
+.balance-chip--low .balance-chip__value {
+  color: var(--app-warning);
+}
+
 .balance-chip--empty .balance-chip__value {
   color: var(--app-danger);
+}
+
+/* On a phone the amount alone earns its width; the label does not. */
+@media (max-width: 479px) {
+  .balance-chip__label {
+    display: none;
+  }
 }
 
 .user-trigger {
@@ -318,6 +346,17 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  /* A non-wrapping control (Segmented) must scroll rather than push the page wide. */
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* A form label outside antd Form (Playground uses hand-rolled fields). Kept in
+   step with the Form labelColor tokens rather than borrowed from StatCard. */
+.field-label {
+  color: var(--app-text-muted);
+  display: inline-block;
+  font-size: 13px;
 }
 
 .page-enter {
@@ -396,8 +435,9 @@ body {
   white-space: nowrap;
 }
 
+/* Hints carry real numbers, so they use muted (AA contrast), not faint. */
 .stat-card__hint {
-  color: var(--app-text-faint);
+  color: var(--app-text-muted);
   font-size: 12px;
   margin-top: 6px;
   min-height: 18px;
@@ -441,7 +481,7 @@ body {
 }
 
 .rank-row__bar span {
-  background: linear-gradient(90deg, var(--app-brand), #0ea5e9);
+  background: linear-gradient(90deg, var(--app-brand), var(--app-accent));
   border-radius: 999px;
   display: block;
   height: 100%;
@@ -449,7 +489,7 @@ body {
 }
 
 .rank-row__meta {
-  color: var(--app-text-faint);
+  color: var(--app-text-muted);
   font-size: 11.5px;
   grid-column: 1 / -1;
   margin-top: 3px;
@@ -541,7 +581,7 @@ body {
 }
 
 .metric-strip__label {
-  color: var(--app-text-faint);
+  color: var(--app-text-muted);
   font-size: 11.5px;
 }
 
@@ -557,6 +597,17 @@ body {
 /* Row-level click targets need an obvious affordance. */
 .table-clickable .ant-table-row {
   cursor: pointer;
+}
+
+/* Rows are keyboard-openable (tabIndex + Enter), so they need a visible focus. */
+.table-clickable .ant-table-row:focus-visible {
+  outline: 2px solid var(--app-brand);
+  outline-offset: -2px;
+}
+
+/* A disabled channel should read as parked before the eye reaches the switch. */
+.row-disabled > td {
+  opacity: 0.55;
 }
 
 /* The old rows are moved down with a FLIP animation in LogTable. The incoming
@@ -711,20 +762,140 @@ body {
   transition: background-color 0.15s ease;
 }
 
+/* 折叠分区嵌在抽屉表单里时，与相邻的 Divider 分区左缘对齐。 */
+.drawer-collapse .ant-collapse-header {
+  padding-inline: 0 !important;
+}
+
+.drawer-collapse .ant-collapse-content-box {
+  padding: 8px 0 0 !important;
+}
+
 .detail-drawer .ant-descriptions-item-label {
   width: 116px;
+}
+
+/* ===========================================================================
+   Live rate cards
+   =========================================================================== */
+
+.rate-chip {
+  align-items: center;
+  background: var(--app-surface-sunken);
+  border: 1px solid var(--app-border);
+  border-radius: 7px;
+  display: inline-flex;
+  gap: 6px;
+  line-height: 1;
+  overflow: hidden;
+  padding: 4px 9px;
+  position: relative;
+}
+
+/* The breathing glow sits behind the content and is the only thing that moves
+   while the feed is quiet, so an idle chip still reads as connected. */
+.rate-chip--live::before {
+  background: radial-gradient(circle at 12% 50%, var(--app-brand-soft), transparent 72%);
+  content: '';
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+/* Idle is a hollow ring, live is a filled dot — the difference survives
+   colour-blindness and paused animations. */
+.rate-chip__dot {
+  background: transparent;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 50%;
+  flex: none;
+  height: 6px;
+  position: relative;
+  width: 6px;
+}
+
+.rate-chip--live .rate-chip__dot {
+  background: var(--app-brand);
+  border-color: var(--app-brand);
+}
+
+.rate-chip__label {
+  color: var(--app-text-muted);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  position: relative;
+}
+
+.rate-chip__value {
+  color: var(--app-text);
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  /* Fixed-width digits stop the chip resizing as the number rolls. */
+  font-variant-numeric: tabular-nums;
+  position: relative;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .rate-chip--live::before {
+    animation: rate-breathe 3.6s ease-in-out infinite;
+  }
+
+  .rate-chip--live .rate-chip__dot {
+    animation: rate-dot 3.6s ease-in-out infinite;
+  }
+
+  .rate-chip__value--bump {
+    animation: rate-bump 0.46s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+@keyframes rate-breathe {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.06);
+  }
+}
+
+@keyframes rate-dot {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--app-brand-soft);
+    opacity: 0.65;
+  }
+  50% {
+    box-shadow: 0 0 0 4px transparent;
+    opacity: 1;
+  }
+}
+
+@keyframes rate-bump {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  38% {
+    transform: translateY(-1px) scale(1.14);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
 }
 
 /* ===========================================================================
    Conversation view (log detail drawer)
    =========================================================================== */
 
+/* No inner max-height: the drawer body is the one scroll container, so long
+   transcripts read with a single wheel gesture instead of nested scrollbars. */
 .chat-log {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: 68vh;
-  overflow: auto;
 }
 
 .chat-turn {

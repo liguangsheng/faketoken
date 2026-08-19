@@ -23,7 +23,7 @@ import PageHeader from '../../components/PageHeader'
 import { formatRelative, formatTime } from '../../utils/format'
 
 export default function Groups() {
-  const { message } = App.useApp()
+  const { message, modal } = App.useApp()
   const [rows, setRows] = useState<UserGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
@@ -31,6 +31,7 @@ export default function Groups() {
   const [saving, setSaving] = useState(false)
   const [togglingGroup, setTogglingGroup] = useState<string | null>(null)
   const [form] = Form.useForm<UserGroup>()
+  const rateValue = Form.useWatch('rate', form)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -60,6 +61,24 @@ export default function Groups() {
 
   // Flipped straight from the table: it is the one field an operator changes
   // on its own, and opening a modal to tick one box is friction for nothing.
+  // Opening a discounted group is the exception — that hands the discount to
+  // every user, so it asks first.
+  const confirmToggleSelectable = (group: UserGroup, selectable: boolean) => {
+    if (selectable && group.rate < 1) {
+      modal.confirm({
+        title: `向所有用户开放「${group.name}」（×${group.rate}）？`,
+        content:
+          group.rate === 0
+            ? '该分组倍率为 0，开放后任何用户都能把密钥指向它免费调用。'
+            : `开放后任何用户都能把密钥指向该分组，按 ${group.rate} 倍计费。`,
+        okText: '开放',
+        onOk: () => toggleSelectable(group, true),
+      })
+      return
+    }
+    void toggleSelectable(group, selectable)
+  }
+
   const toggleSelectable = async (group: UserGroup, selectable: boolean) => {
     setTogglingGroup(group.name)
     try {
@@ -78,7 +97,7 @@ export default function Groups() {
     setSaving(true)
     try {
       await api.admin.upsertGroup(values)
-      message.success('已保存')
+      message.success(`「${values.name}」已保存，倍率 ×${values.rate} 立即生效`)
       setOpen(false)
       await load()
     } catch (error) {
@@ -118,6 +137,7 @@ export default function Groups() {
         loading={loading}
         dataSource={rows}
         pagination={false}
+        scroll={{ x: 780 }}
         locale={{
           emptyText: (
             <EmptyState
@@ -170,7 +190,8 @@ export default function Groups() {
                   size="small"
                   checked={selectable}
                   loading={togglingGroup === row.name}
-                  onChange={(checked) => void toggleSelectable(row, checked)}
+                  aria-label={`允许普通用户使用「${row.name}」分组`}
+                  onChange={(checked) => confirmToggleSelectable(row, checked)}
                 />
               </Tooltip>
             ),
@@ -178,8 +199,15 @@ export default function Groups() {
           {
             title: '说明',
             dataIndex: 'description',
+            ellipsis: { showTitle: false },
             render: (value: string) =>
-              value || <span className="text-muted">-</span>,
+              value ? (
+                <Tooltip title={value}>
+                  <span>{value}</span>
+                </Tooltip>
+              ) : (
+                <span className="text-muted">-</span>
+              ),
           },
           {
             title: '创建时间',
@@ -199,7 +227,7 @@ export default function Groups() {
                 </Button>
                 <Popconfirm
                   title="删除这个分组？"
-                  description="属于该分组的用户需要另行调整。"
+                  description="该分组下的用户将无法匹配任何渠道，请先把他们移至其他分组。此操作不可撤销。"
                   okText="删除"
                   okButtonProps={{ danger: true }}
                   disabled={row.name === 'default'}
@@ -214,9 +242,12 @@ export default function Groups() {
                   }}
                 >
                   <Tooltip title={row.name === 'default' ? '默认分组不可删除' : undefined}>
-                    <Button size="small" type="link" danger disabled={row.name === 'default'}>
-                      删除
-                    </Button>
+                    {/* span：disabled 按钮不冒泡鼠标事件，Tooltip 需要有人接住 hover */}
+                    <span style={{ display: 'inline-block', cursor: row.name === 'default' ? 'not-allowed' : undefined }}>
+                      <Button size="small" type="link" danger disabled={row.name === 'default'}>
+                        删除
+                      </Button>
+                    </span>
                   </Tooltip>
                 </Popconfirm>
               </Space>
@@ -230,10 +261,19 @@ export default function Groups() {
         title={editing ? `编辑分组：${editing.name}` : '新建分组'}
         onCancel={() => setOpen(false)}
         onOk={submit}
+        okText="保存"
         confirmLoading={saving}
         destroyOnClose
       >
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+        {editing && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginTop: 12 }}
+            message="倍率修改保存后立即生效，影响该分组所有用户的后续计费。"
+          />
+        )}
+        <Form form={form} layout="vertical" style={{ marginTop: 16 }} onFinish={() => void submit()}>
           <Form.Item
             name="name"
             label="分组名"
@@ -242,7 +282,19 @@ export default function Groups() {
           >
             <Input disabled={Boolean(editing)} placeholder="vip" className="mono" />
           </Form.Item>
-          <Form.Item name="rate" label="计费倍率" tooltip="1 表示原价，0.5 表示五折，0 表示免费">
+          <Form.Item
+            name="rate"
+            label="计费倍率"
+            tooltip="1 表示原价，0.5 表示五折，0 表示免费"
+            rules={[{ required: true, message: '请输入倍率' }]}
+            extra={
+              rateValue === 0
+                ? '倍率为 0：该分组将免费使用，不产生任何扣费。'
+                : typeof rateValue === 'number' && rateValue > 10
+                  ? '倍率异常偏高，请确认不是想输入小数。'
+                  : undefined
+            }
+          >
             <InputNumber min={0} step={0.1} style={{ width: '100%' }} addonBefore="×" />
           </Form.Item>
           <Form.Item
@@ -257,6 +309,7 @@ export default function Groups() {
           <Form.Item name="description" label="说明">
             <Input.TextArea rows={2} placeholder="例如：内部团队专用，走高优先级渠道" />
           </Form.Item>
+          <button type="submit" hidden />
         </Form>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           新分组创建后，记得在「渠道管理」里把它加入对应渠道的可用分组。

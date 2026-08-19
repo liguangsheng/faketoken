@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { Skeleton } from 'antd'
 
 import { useAuth } from './auth/AuthContext'
@@ -39,6 +39,13 @@ export default function AuthenticatedApp() {
   )
 }
 
+/** After signing in, land where the interrupted visit was headed. */
+function LoginLanding() {
+  const location = useLocation()
+  const from = (location.state as { from?: string } | null)?.from
+  return <Navigate to={from && from !== '/login' ? from : '/'} replace />
+}
+
 function Console() {
   const { isAdmin } = useAuth()
   // Wait for the console preferences before mounting any page: the tables read
@@ -60,7 +67,7 @@ function Console() {
       <ErrorBoundary>
         <Suspense fallback={<Skeleton active paragraph={{ rows: 8 }} />}>
           <Routes>
-            <Route path="/login" element={<Navigate to="/" replace />} />
+            <Route path="/login" element={<LoginLanding />} />
             <Route path="/" element={<Dashboard />} />
             <Route path="/tokens" element={<Tokens />} />
             <Route path="/models" element={<Plaza />} />

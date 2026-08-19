@@ -16,27 +16,32 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
+import { useNavigate } from 'react-router-dom'
 
 import { api, type InviteCode } from '../../api/client'
 import EmptyState from '../../components/EmptyState'
 import PageHeader from '../../components/PageHeader'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { useSettings } from '../../settings/SettingsContext'
-import { formatRelative, formatTime } from '../../utils/format'
+import { copyTextToClipboard } from '../../utils/clipboard'
+import { formatDateMinute, formatRelative, formatTime } from '../../utils/format'
 
 const STATUS = { UNUSED: 1, USED: 2, DISABLED: 3 }
 
-const statusTag = (status: number) => {
+// 红色留给「已过期」这类永久失效；停用是可逆的暂存态，用橙色。
+const statusTag = (status: number, expiresAt?: string | null) => {
   if (status === STATUS.USED) return <Tag>已使用</Tag>
-  if (status === STATUS.DISABLED) return <Tag color="red">已停用</Tag>
+  if (status === STATUS.DISABLED) return <Tag color="orange">已停用</Tag>
+  if (expiresAt && dayjs(expiresAt).isBefore(dayjs())) return <Tag color="red">已过期</Tag>
   return <Tag color="green">未使用</Tag>
 }
 
 export default function Invites() {
   const { message, modal } = App.useApp()
+  const navigate = useNavigate()
   const { defaultPageSize, settings } = useSettings()
   const [rows, setRows] = useState<InviteCode[]>([])
   const [total, setTotal] = useState(0)
@@ -142,19 +147,23 @@ export default function Invites() {
       okText: '删除',
       okButtonProps: { danger: true },
       onOk: async () => {
-        const result = await api.admin.deleteInvites(selectedIds)
-        message.success(`已删除 ${result.deleted} 个邀请码`)
-        setSelectedIds([])
-        await load()
+        try {
+          const result = await api.admin.deleteInvites(selectedIds)
+          message.success(`已删除 ${result.deleted} 个邀请码`)
+          setSelectedIds([])
+          await load()
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : '删除失败')
+          throw error
+        }
       },
     })
   }
 
   const copyAll = async () => {
-    try {
-      await navigator.clipboard.writeText(generated.join('\n'))
+    if (await copyTextToClipboard(generated.join('\n'))) {
       message.success(`已复制 ${generated.length} 个邀请码`)
-    } catch {
+    } else {
       message.warning('浏览器拒绝了剪贴板访问，请手动复制')
     }
   }
@@ -184,14 +193,21 @@ export default function Invites() {
           showIcon
           style={{ marginBottom: 12 }}
           message="当前注册不需要邀请码"
-          description="这些邀请码暂时不会被用到。在「全局设置 → 新用户」中开启「注册需要邀请码」后才会生效。"
+          description="这些邀请码暂时不会被用到。开启「注册需要邀请码」后才会生效。"
+          action={
+            <Button size="small" onClick={() => navigate('/admin/settings')}>
+              去开启
+            </Button>
+          }
         />
       )}
 
       <Space wrap size={8} style={{ marginBottom: 12 }}>
         <Input
           allowClear
+          prefix={<SearchOutlined className="text-muted" />}
           placeholder="搜索邀请码、备注或使用者"
+          aria-label="搜索邀请码、备注或使用者"
           style={{ width: 220 }}
           value={keywordInput}
           onChange={(event) => setKeywordInput(event.target.value)}
@@ -208,8 +224,19 @@ export default function Invites() {
             { value: STATUS.DISABLED, label: '已停用' },
           ]}
         />
+        {(keywordInput || statusFilter !== undefined) && (
+          <Button
+            type="link"
+            onClick={() => {
+              setKeywordInput('')
+              setStatusFilter(undefined)
+            }}
+          >
+            重置
+          </Button>
+        )}
         {selectedIds.length > 0 && (
-          <Button size="small" danger onClick={removeSelected}>
+          <Button danger onClick={removeSelected}>
             删除选中 {selectedIds.length} 个
           </Button>
         )}
@@ -217,13 +244,21 @@ export default function Invites() {
 
       <Table
         rowKey="id"
-        size="small"
         loading={loading}
         dataSource={rows}
+        scroll={{ x: 1030 }}
         rowSelection={{
           selectedRowKeys: selectedIds,
           onChange: (keys) => setSelectedIds(keys as number[]),
           getCheckboxProps: (row) => ({ disabled: row.status === STATUS.USED }),
+          renderCell: (_value, row, _index, node) =>
+            row.status === STATUS.USED ? (
+              <Tooltip title="已使用的邀请码保留作为注册记录，不可选择">
+                <span tabIndex={0}>{node}</span>
+              </Tooltip>
+            ) : (
+              node
+            ),
         }}
         locale={{
           emptyText: (
@@ -243,7 +278,7 @@ export default function Invites() {
           pageSize,
           total,
           showSizeChanger: true,
-          hideOnSinglePage: total <= Math.min(10, pageSize),
+          hideOnSinglePage: total <= 10,
           showTotal: (count) => `共 ${count} 个邀请码`,
           onChange: (nextPage, nextSize) => {
             setPage(nextPage)
@@ -271,7 +306,7 @@ export default function Invites() {
             title: '状态',
             dataIndex: 'status',
             width: 100,
-            render: (status: number) => statusTag(status),
+            render: (status: number, row) => statusTag(status, row.expires_at),
           },
           {
             title: '使用者',
@@ -290,13 +325,21 @@ export default function Invites() {
           {
             title: '有效期',
             dataIndex: 'expires_at',
-            width: 140,
-            render: (value: string | null) =>
-              value ? (
-                <Tooltip title={formatTime(value)}>{formatRelative(value)}</Tooltip>
-              ) : (
-                <span className="text-muted">永久</span>
-              ),
+            width: 150,
+            render: (value: string | null) => {
+              if (!value) return <span className="text-muted">永久</span>
+              const expired = dayjs(value).isBefore(dayjs())
+              return (
+                <Tooltip title={formatTime(value)}>
+                  <div className="cell-stack">
+                    <span style={{ color: expired ? 'var(--app-danger)' : undefined }}>
+                      {formatDateMinute(value)}
+                    </span>
+                    <span className="text-muted cell-stack__sub">{formatRelative(value)}</span>
+                  </div>
+                </Tooltip>
+              )
+            },
           },
           {
             title: '创建时间',
@@ -314,14 +357,13 @@ export default function Invites() {
               // offers neither action; the server refuses both regardless.
               row.status === STATUS.USED ? (
                 <Tooltip title="已使用的邀请码保留作为注册记录，不能停用或删除">
-                  <span className="text-muted">-</span>
+                  <span className="text-muted" tabIndex={0}>-</span>
                 </Tooltip>
               ) : (
                 <Space size={4}>
                   <Button
                     size="small"
                     type="link"
-                    style={{ padding: 0 }}
                     onClick={() =>
                       void setStatus(
                         row,
@@ -338,7 +380,7 @@ export default function Invites() {
                     okButtonProps={{ danger: true }}
                     onConfirm={() => removeOne(row)}
                   >
-                    <Button size="small" type="link" danger style={{ padding: 0 }}>
+                    <Button size="small" type="link" danger>
                       删除
                     </Button>
                   </Popconfirm>
@@ -352,15 +394,21 @@ export default function Invites() {
         open={createOpen}
         title="生成邀请码"
         width={560}
-        onCancel={() => setCreateOpen(false)}
+        // 生成结果只展示这一次，误点遮罩不应让整批码消失
+        maskClosable={false}
+        onCancel={() => {
+          if (creating) return
+          setCreateOpen(false)
+        }}
         footer={
           generated.length > 0
             ? [
-                <Button key="copy" onClick={() => void copyAll()}>
-                  复制全部
-                </Button>,
-                <Button key="done" type="primary" onClick={() => setCreateOpen(false)}>
+                <Button key="done" onClick={() => setCreateOpen(false)}>
                   完成
+                </Button>,
+                // 此刻唯一想做的事就是复制，让它当主按钮
+                <Button key="copy" type="primary" onClick={() => void copyAll()}>
+                  复制全部
                 </Button>,
               ]
             : [
@@ -388,11 +436,17 @@ export default function Invites() {
             </pre>
           </>
         ) : (
-          <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
+          <Form
+            form={form}
+            layout="vertical"
+            style={{ marginTop: 12 }}
+            onFinish={() => void create()}
+          >
             <Form.Item
               name="count"
               label="数量"
               rules={[{ required: true, message: '请输入数量' }]}
+              extra="一次最多生成 200 个。"
             >
               <InputNumber min={1} max={200} step={1} precision={0} style={{ width: '100%' }} />
             </Form.Item>
@@ -409,6 +463,7 @@ export default function Invites() {
                 placeholder="留空表示永不过期"
               />
             </Form.Item>
+            <button type="submit" hidden />
           </Form>
         )}
       </Modal>

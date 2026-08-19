@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Alert,
   App,
@@ -10,6 +10,7 @@ import {
   InputNumber,
   Row,
   Select,
+  Skeleton,
   Space,
   Switch,
   Typography,
@@ -54,13 +55,15 @@ const droppedKeywords = (raw: string) =>
   raw.split('\n').filter((line) => line.trim() !== '').length - parseKeywords(raw).length
 
 export default function Settings() {
-  const { message } = App.useApp()
-  const { settings, apply, loaded, refresh } = useSettings()
+  const { message, modal } = App.useApp()
+  const { settings, apply, ready, loaded, refresh } = useSettings()
   const [draft, setDraft] = useState<ConsoleSettings>(settings)
   const [saving, setSaving] = useState(false)
+  // Guards the sync below: a refresh landing mid-edit must not eat the edit.
+  const dirtyRef = useRef(false)
 
   useEffect(() => {
-    setDraft(settings)
+    if (!dirtyRef.current) setDraft(settings)
   }, [settings])
 
   const dirty =
@@ -77,12 +80,21 @@ export default function Settings() {
     draft.blocked_reply !== settings.blocked_reply ||
     draft.max_retries !== settings.max_retries ||
     draft.retry_backoff_ms !== settings.retry_backoff_ms
+  dirtyRef.current = dirty
 
-  const save = async () => {
-    if (!loaded) {
-      message.error('设置尚未加载成功，保存会覆盖服务端已有配置')
-      return
+  // Closing the tab with unsaved global settings deserves one browser prompt.
+  useEffect(() => {
+    if (!dirty) return
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      // Older Chromium ignores a bare preventDefault for this event.
+      event.returnValue = ''
     }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [dirty])
+
+  const persist = async () => {
     setSaving(true)
     try {
       apply(await api.admin.updateSettings(draft))
@@ -92,6 +104,29 @@ export default function Settings() {
     } finally {
       setSaving(false)
     }
+  }
+
+  const save = async () => {
+    if (!loaded) {
+      message.error('设置尚未加载成功，保存会覆盖服务端已有配置')
+      return
+    }
+    // Lowering the keep-count deletes captured bodies immediately and
+    // irreversibly; that is worth one explicit confirmation.
+    if (draft.log_detail_keep < settings.log_detail_keep) {
+      modal.confirm({
+        title:
+          draft.log_detail_keep === 0
+            ? '停止记录并清空全部已保留的调用正文？'
+            : `把保留条数降到 ${draft.log_detail_keep}？`,
+        content: '超出条数的请求 / 响应正文会被立即删除，且无法恢复。',
+        okText: '确认保存',
+        okButtonProps: { danger: true },
+        onOk: persist,
+      })
+      return
+    }
+    await persist()
   }
 
   return (
@@ -112,6 +147,10 @@ export default function Settings() {
         }
       />
 
+      {/* 首次加载中不渲染表单：可编辑的默认值配上红色告警是在把「加载中」演成「加载失败」 */}
+      {!ready ? (
+        <Skeleton active paragraph={{ rows: 10 }} />
+      ) : (
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
         {!loaded && (
           <Alert
@@ -137,6 +176,7 @@ export default function Settings() {
                   style={{ marginBottom: 0 }}
                 >
                   <Select
+                    aria-label="默认每页条数"
                     value={draft.default_page_size}
                     onChange={(value) => setDraft({ ...draft, default_page_size: value })}
                     options={PAGE_SIZE_OPTIONS.map((size) => ({ value: size, label: `${size} 条` }))}
@@ -194,6 +234,7 @@ export default function Settings() {
                 >
                   <Space size={10}>
                     <Switch
+                      aria-label="开放注册"
                       checked={draft.allow_register}
                       onChange={(checked) => setDraft({ ...draft, allow_register: checked })}
                     />
@@ -210,6 +251,7 @@ export default function Settings() {
                 >
                   <Space size={10}>
                     <Switch
+                      aria-label="注册需要邀请码"
                       checked={draft.require_invite_code}
                       disabled={!draft.allow_register}
                       onChange={(checked) => setDraft({ ...draft, require_invite_code: checked })}
@@ -227,7 +269,11 @@ export default function Settings() {
               <Col xs={24} md={8}>
                 <Form.Item
                   label="注册赠送额度"
-                  help="用户自助注册后获得的初始余额；管理员手动创建的账号不受影响。"
+                  help={
+                    draft.allow_register
+                      ? '用户自助注册后获得的初始余额；管理员手动创建的账号不受影响。'
+                      : '注册已关闭，此项无效。'
+                  }
                   style={{ marginBottom: 0 }}
                 >
                   <InputNumber
@@ -333,7 +379,7 @@ export default function Settings() {
 
             {droppedKeywords(draft.blocked_keywords) > 0 && (
               <Alert
-                type="error"
+                type="warning"
                 showIcon
                 style={{ marginTop: 12 }}
                 message={`有 ${droppedKeywords(draft.blocked_keywords)} 行不会生效`}
@@ -440,11 +486,38 @@ export default function Settings() {
         </Row>
 
         {dirty && (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            有未保存的修改。
-          </Typography.Text>
+          <div
+            style={{
+              alignItems: 'center',
+              background: 'var(--app-surface)',
+              border: '1px solid var(--app-border)',
+              borderRadius: 12,
+              bottom: 12,
+              boxShadow: 'var(--app-shadow-lg)',
+              display: 'flex',
+              gap: 8,
+              padding: '10px 16px',
+              position: 'sticky',
+              zIndex: 10,
+            }}
+          >
+            <Typography.Text type="secondary" style={{ fontSize: 13, marginInlineEnd: 'auto' }}>
+              有未保存的修改
+            </Typography.Text>
+            <Button onClick={() => setDraft(settings)}>放弃修改</Button>
+            <Button
+              type="primary"
+              icon={<SaveOutlined />}
+              loading={saving}
+              disabled={!loaded}
+              onClick={() => void save()}
+            >
+              保存
+            </Button>
+          </div>
         )}
       </Space>
+      )}
     </>
   )
 }

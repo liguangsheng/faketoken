@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { App, Button, Card, Input, Tag, Tooltip, Typography } from 'antd'
+import type { KeyboardEvent } from 'react'
+import { App, Button, Card, Col, Input, Row, Tag, Tooltip, Typography } from 'antd'
 import { CopyOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 
 import { api, type PlazaModel, type UnpricedPolicy } from '../api/client'
 import EmptyState from '../components/EmptyState'
 import PageHeader from '../components/PageHeader'
+import { formatPrice } from '../utils/format'
+import { copyTextToClipboard } from '../utils/clipboard'
 
 /**
  * Vendors are guessed from the model name, purely for grouping and filtering.
@@ -33,9 +36,6 @@ const OTHER = { key: 'other', label: '其他', color: 'default' }
 
 const vendorOf = (model: string) => VENDORS.find((v) => v.test.test(model)) ?? OTHER
 
-/** Renders a dollar price without the float noise the rate multiply leaves. */
-const fmtMoney = (value: number) => `$${Number(value.toPrecision(6))}`
-
 interface Entry extends PlazaModel {
   vendor: typeof OTHER
   /** Effective prices, after the group rate. */
@@ -54,6 +54,7 @@ export default function Plaza() {
   const [rate, setRate] = useState(1)
   const [policy, setPolicy] = useState<UnpricedPolicy>('reject')
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [keyword, setKeyword] = useState('')
   const [vendorKey, setVendorKey] = useState('all')
 
@@ -65,8 +66,13 @@ export default function Plaza() {
       setGroup(result.group)
       setRate(result.group_rate > 0 ? result.group_rate : 1)
       setPolicy(result.unpriced_policy)
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载失败')
+      setError(null)
+    } catch (err) {
+      const text = err instanceof Error ? err.message : '加载失败'
+      setError(text)
+      // The full-page error state only renders when there is nothing to show;
+      // a failed refresh over an existing catalog still needs a signal.
+      message.error(text)
     } finally {
       setLoading(false)
     }
@@ -98,23 +104,32 @@ export default function Plaza() {
     [models, rate, policy],
   )
 
-  const filtered = useMemo(() => {
+  // Keyword first, vendor second: the chips count what the keyword left, so a
+  // chip never promises models that a click then fails to show.
+  const keywordFiltered = useMemo(() => {
     const kw = keyword.trim().toLowerCase()
+    if (!kw) return entries
     return entries.filter(
       (e) =>
-        (vendorKey === 'all' || e.vendor.key === vendorKey) &&
-        (!kw || e.model.toLowerCase().includes(kw)),
+        e.model.toLowerCase().includes(kw) ||
+        e.vendor.label.toLowerCase().includes(kw) ||
+        e.vendor.key.includes(kw),
     )
-  }, [entries, keyword, vendorKey])
+  }, [entries, keyword])
 
-  /** Vendors that actually have models, in declaration order, for the chips. */
+  const filtered = useMemo(
+    () => keywordFiltered.filter((e) => vendorKey === 'all' || e.vendor.key === vendorKey),
+    [keywordFiltered, vendorKey],
+  )
+
+  /** Vendors that survive the keyword, in declaration order, for the chips. */
   const vendorChips = useMemo(() => {
     const counts = new Map<string, number>()
-    for (const e of entries) counts.set(e.vendor.key, (counts.get(e.vendor.key) ?? 0) + 1)
+    for (const e of keywordFiltered) counts.set(e.vendor.key, (counts.get(e.vendor.key) ?? 0) + 1)
     return [...VENDORS, OTHER]
       .filter((v) => counts.has(v.key))
       .map((v) => ({ ...v, count: counts.get(v.key) ?? 0 }))
-  }, [entries])
+  }, [keywordFiltered])
 
   /** Cards grouped into one section per vendor, keeping declaration order. */
   const sections = useMemo(() => {
@@ -133,14 +148,30 @@ export default function Plaza() {
   }, [filtered])
 
   const copy = async (text: string) => {
-    try {
-      // Needs a secure context, so it fails over plain HTTP.
-      await navigator.clipboard.writeText(text)
+    if (await copyTextToClipboard(text)) {
       message.success(`已复制：${text}`)
-    } catch {
+    } else {
       message.error('复制失败：浏览器不允许访问剪贴板，请手动选中复制')
     }
   }
+
+  const clearFilters = () => {
+    setKeyword('')
+    setVendorKey('all')
+  }
+
+  const chipProps = (key: string, label: string, count: number) => ({
+    role: 'radio' as const,
+    tabIndex: 0,
+    'aria-checked': vendorKey === key,
+    'aria-label': `${label}，${count} 个模型`,
+    onKeyDown: (event: KeyboardEvent) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        setVendorKey(vendorKey === key || key === 'all' ? 'all' : key)
+      }
+    },
+  })
 
   return (
     <>
@@ -152,7 +183,9 @@ export default function Plaza() {
             价格单位为「美元 / 100 万 Token」
             {rate !== 1 ? (
               <>
-                ，已按分组倍率 <Typography.Text code>x{rate}</Typography.Text> 折算为实际计费单价
+                ，已按分组倍率{' '}
+                <Typography.Text code>x{Number(rate.toPrecision(4))}</Typography.Text>{' '}
+                折算为实际计费单价
               </>
             ) : (
               '，即实际计费单价'
@@ -165,8 +198,9 @@ export default function Plaza() {
             <Input
               allowClear
               prefix={<SearchOutlined />}
-              placeholder="搜索模型"
-              style={{ width: 220 }}
+              placeholder="搜索模型或厂商"
+              aria-label="搜索模型或厂商"
+              style={{ width: 220, maxWidth: '100%' }}
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
             />
@@ -178,15 +212,20 @@ export default function Plaza() {
       />
 
       {entries.length > 0 && (
-        <div className="tag-list" style={{ marginBottom: 16 }}>
-          <Tag.CheckableTag checked={vendorKey === 'all'} onChange={() => setVendorKey('all')}>
-            全部（{entries.length}）
+        <div className="tag-list" role="radiogroup" aria-label="按厂商筛选" style={{ marginBottom: 16 }}>
+          <Tag.CheckableTag
+            checked={vendorKey === 'all'}
+            onChange={() => setVendorKey('all')}
+            {...chipProps('all', '全部', keywordFiltered.length)}
+          >
+            全部（{keywordFiltered.length}）
           </Tag.CheckableTag>
           {vendorChips.map((v) => (
             <Tag.CheckableTag
               key={v.key}
               checked={vendorKey === v.key}
               onChange={() => setVendorKey(vendorKey === v.key ? 'all' : v.key)}
+              {...chipProps(v.key, v.label, v.count)}
             >
               {v.label}（{v.count}）
             </Tag.CheckableTag>
@@ -194,14 +233,39 @@ export default function Plaza() {
         </div>
       )}
 
-      {!loading && entries.length === 0 && (
+      {loading && entries.length === 0 && (
+        <Row gutter={[12, 12]}>
+          {Array.from({ length: 8 }, (_, index) => (
+            <Col key={index} xs={24} sm={12} lg={8} xl={6}>
+              <Card size="small" loading />
+            </Col>
+          ))}
+        </Row>
+      )}
+
+      {!loading && error && entries.length === 0 && (
+        <EmptyState
+          title="加载失败"
+          description={error}
+          action={
+            <Button type="primary" icon={<ReloadOutlined />} onClick={() => void load()}>
+              重试
+            </Button>
+          }
+        />
+      )}
+      {!loading && !error && entries.length === 0 && (
         <EmptyState
           title="当前分组暂无可用模型"
           description="还没有渠道向这个分组提供模型，请联系管理员配置渠道。"
         />
       )}
-      {!loading && entries.length > 0 && filtered.length === 0 && (
-        <EmptyState title="没有匹配的模型" description="换个关键词或厂商筛选试试。" />
+      {!loading && !error && entries.length > 0 && filtered.length === 0 && (
+        <EmptyState
+          title="没有匹配的模型"
+          description="换个关键词或厂商筛选试试。"
+          action={<Button onClick={clearFilters}>清除筛选</Button>}
+        />
       )}
 
       {sections.map(({ vendor, models: list }) => (
@@ -231,7 +295,7 @@ export default function Plaza() {
 
 function ModelCard({ entry, onCopy }: { entry: Entry; onCopy: (text: string) => void }) {
   return (
-    <Card size="small" hoverable style={entry.blocked ? { opacity: 0.55 } : undefined}>
+    <Card size="small" style={entry.blocked ? { opacity: 0.55 } : undefined}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         <Typography.Text
           strong
@@ -246,6 +310,7 @@ function ModelCard({ entry, onCopy }: { entry: Entry; onCopy: (text: string) => 
             type="text"
             size="small"
             icon={<CopyOutlined />}
+            aria-label={`复制模型名 ${entry.model}`}
             onClick={() => onCopy(entry.model)}
           />
         </Tooltip>
@@ -267,11 +332,18 @@ function ModelCard({ entry, onCopy }: { entry: Entry; onCopy: (text: string) => 
       </div>
 
       <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-        <PriceRow label="输入 / 1M" value={entry.blocked ? null : fmtMoney(entry.input)} />
-        <PriceRow label="输出 / 1M" value={entry.blocked ? null : fmtMoney(entry.output)} />
-        {entry.cached > 0 && <PriceRow label="缓存输入 / 1M" value={fmtMoney(entry.cached)} />}
-        {entry.perRequest > 0 && <PriceRow label="每次请求" value={fmtMoney(entry.perRequest)} />}
+        <PriceRow label="输入 / 1M" value={entry.blocked ? null : formatPrice(entry.input)} />
+        <PriceRow label="输出 / 1M" value={entry.blocked ? null : formatPrice(entry.output)} />
+        {entry.cached > 0 && <PriceRow label="缓存输入 / 1M" value={formatPrice(entry.cached)} />}
+        {entry.perRequest > 0 && <PriceRow label="每次请求" value={formatPrice(entry.perRequest)} />}
       </div>
+
+      {/* Touch screens never see the tooltip, so the reason lives on the card. */}
+      {entry.blocked && (
+        <div className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>
+          未配置价格，按当前计费策略暂不可调用
+        </div>
+      )}
     </Card>
   )
 }

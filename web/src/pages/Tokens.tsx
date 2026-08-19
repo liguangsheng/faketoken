@@ -28,11 +28,14 @@ import { api, type Token, type UserGroup } from '../api/client'
 import EmptyState from '../components/EmptyState'
 import PageHeader from '../components/PageHeader'
 import { useSettings } from '../settings/SettingsContext'
+import { copyTextToClipboard } from '../utils/clipboard'
 import {
+  formatDateMinute,
   formatMoney,
   formatRelative,
   formatTime,
   formatTimeShort,
+  formatUSD,
   STATUS,
   toUSD,
 } from '../utils/format'
@@ -42,6 +45,7 @@ interface FormValues {
   status: number
   unlimited_quota: boolean
   quota_usd: number
+  rpm_limit: number
   allowed_models: string[]
   group: string
   key: string
@@ -91,13 +95,15 @@ export default function Tokens() {
   const [groups, setGroups] = useState<UserGroup[]>([])
   const [ownGroup, setOwnGroup] = useState('default')
   const [copyingId, setCopyingId] = useState<number | null>(null)
-  const [revealed, setRevealed] = useState<{
-    name: string
-    key: string
-  } | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(defaultPageSize)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [togglingId, setTogglingId] = useState<number | null>(null)
+  // The endpoint examples are onboarding; regulars fold them away for good.
+  const [endpointsCollapsed, setEndpointsCollapsed] = useState(
+    () => localStorage.getItem('faketoken-endpoints-collapsed') === '1',
+  )
   const [editing, setEditing] = useState<Token | null>(null)
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -113,8 +119,13 @@ export default function Tokens() {
       const result = await api.listTokens({ page, page_size: pageSize })
       setRows(result.data ?? [])
       setTotal(result.total)
+      setLoadError(null)
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载失败')
+      // Both surfaces on purpose: the empty-state branch is invisible while
+      // stale rows are still on screen, and the toast alone evaporates.
+      const text = error instanceof Error ? error.message : '加载失败'
+      setLoadError(text)
+      message.error(text)
     } finally {
       setLoading(false)
     }
@@ -152,10 +163,11 @@ export default function Tokens() {
             status: token.status,
             unlimited_quota: token.unlimited_quota,
             quota_usd: toUSD(token.quota),
+            rpm_limit: token.rpm_limit ?? 0,
             allowed_models: token.allowed_models ?? [],
-            // Empty means "follow my account"; show that as the account's own
-            // group so the field never looks unset.
-            group: token.group || ownGroup,
+            // Empty means "follow my account" — a real choice in the dropdown,
+            // so it round-trips instead of being silently pinned on save.
+            group: token.group || '',
             // Deliberately blank: the current secret is not fetched just to
             // open the form, and blank already means "leave it alone".
             key: '',
@@ -166,8 +178,9 @@ export default function Tokens() {
             status: STATUS.ENABLED,
             unlimited_quota: true,
             quota_usd: 0,
+            rpm_limit: 0,
             allowed_models: [],
-            group: ownGroup,
+            group: '',
             key: '',
             expires_at: null,
           },
@@ -181,13 +194,12 @@ export default function Tokens() {
     setCopyingId(token.id)
     try {
       const { key } = await api.revealToken(token.id)
-      try {
-        await navigator.clipboard.writeText(key)
+      // copyTextToClipboard falls back to execCommand where the clipboard API
+      // refuses (plain-HTTP deployments), so a click just copies — no dialog.
+      if (await copyTextToClipboard(key)) {
         message.success(`已复制「${token.name}」的密钥`)
-      } catch {
-        // The clipboard API needs a secure context, so it fails over plain
-        // HTTP. Show the key instead of leaving the operator with nothing.
-        setRevealed({ name: token.name, key })
+      } else {
+        message.error('复制失败：浏览器不允许访问剪贴板')
       }
     } catch (error) {
       message.error(error instanceof Error ? error.message : '获取密钥失败')
@@ -224,6 +236,7 @@ export default function Tokens() {
       status: values.status ?? STATUS.ENABLED,
       unlimited_quota: values.unlimited_quota,
       quota_usd: values.unlimited_quota ? 0 : Number(values.quota_usd ?? 0),
+      rpm_limit: Number(values.rpm_limit ?? 0),
       allowed_models: values.allowed_models ?? [],
       group: values.group ?? '',
       key,
@@ -249,21 +262,27 @@ export default function Tokens() {
     }
   }
 
-  // The update endpoint replaces the whole row, so echo every field back.
+  // The update endpoint replaces the whole row, so echo every field back —
+  // dropping one (group, say) silently rewrites it to its zero value.
   const toggleStatus = async (row: Token, enabled: boolean) => {
+    setTogglingId(row.id)
     try {
       await api.updateToken(row.id, {
         name: row.name,
         status: enabled ? STATUS.ENABLED : STATUS.DISABLED,
         unlimited_quota: row.unlimited_quota,
         quota_usd: toUSD(row.quota),
+        rpm_limit: row.rpm_limit,
         allowed_models: row.allowed_models ?? [],
+        group: row.group,
         expires_at: row.expires_at,
       })
       message.success(enabled ? '密钥已启用' : '密钥已禁用')
       await load()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '操作失败')
+    } finally {
+      setTogglingId(null)
     }
   }
 
@@ -284,43 +303,85 @@ export default function Tokens() {
         }
       />
 
-      <Card size="small" title="接入地址" style={{ marginBottom: 12 }}>
-        <Tabs
-          size="small"
-          items={ENDPOINTS.map((endpoint) => ({
-            key: endpoint.key,
-            label: endpoint.label,
-            children: (
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                <Space wrap>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Base URL
-                  </Typography.Text>
-                  <Typography.Text className="mono" copyable code>
-                    {origin + endpoint.suffix}
-                  </Typography.Text>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {endpoint.hint}
-                  </Typography.Text>
-                </Space>
-                <div style={{ position: 'relative' }}>
-                  <pre className="code-block">{endpoint.curl(origin, 'sk-你的密钥')}</pre>
-                  <Typography.Text
-                    copyable={{
-                      text: endpoint.curl(origin, 'sk-你的密钥'),
-                      tooltips: '复制示例',
-                    }}
-                    style={{
-                      position: 'absolute',
-                      insetInlineEnd: 10,
-                      insetBlockStart: 8,
-                    }}
-                  />
-                </div>
+      <Card
+        size="small"
+        title="接入地址"
+        style={{ marginBottom: 12 }}
+        extra={
+          <Button
+            type="text"
+            size="small"
+            onClick={() => {
+              setEndpointsCollapsed((value) => {
+                localStorage.setItem('faketoken-endpoints-collapsed', value ? '0' : '1')
+                return !value
+              })
+            }}
+          >
+            {endpointsCollapsed ? '展开示例' : '收起'}
+          </Button>
+        }
+        // Collapsed still answers the one daily question — the Base URL —
+        // without a screen of curl examples between the title and the table.
+        styles={endpointsCollapsed ? { body: { paddingBlock: 10 } } : undefined}
+      >
+        {endpointsCollapsed ? (
+          <Space wrap size={[16, 4]}>
+            {ENDPOINTS.map((endpoint) => (
+              <Space key={endpoint.key} size={6}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {endpoint.label}
+                </Typography.Text>
+                <Typography.Text className="mono" copyable code>
+                  {origin + endpoint.suffix}
+                </Typography.Text>
               </Space>
-            ),
-          }))}
-        />
+            ))}
+          </Space>
+        ) : (
+          <Tabs
+            size="small"
+            items={ENDPOINTS.map((endpoint) => ({
+              key: endpoint.key,
+              label: endpoint.label,
+              children: (
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Space wrap>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      Base URL
+                    </Typography.Text>
+                    <Typography.Text className="mono" copyable code>
+                      {origin + endpoint.suffix}
+                    </Typography.Text>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {endpoint.hint}
+                    </Typography.Text>
+                  </Space>
+                  <div style={{ position: 'relative' }}>
+                    {/* Right padding keeps the floating copy chip off the text. */}
+                    <pre className="code-block" style={{ paddingInlineEnd: 36 }}>
+                      {endpoint.curl(origin, 'sk-你的密钥')}
+                    </pre>
+                    <Typography.Text
+                      copyable={{
+                        text: endpoint.curl(origin, 'sk-你的密钥'),
+                        tooltips: '复制示例',
+                      }}
+                      style={{
+                        background: 'var(--app-surface-sunken)',
+                        borderRadius: 6,
+                        padding: '0 4px',
+                        position: 'absolute',
+                        insetInlineEnd: 8,
+                        insetBlockStart: 8,
+                      }}
+                    />
+                  </div>
+                </Space>
+              ),
+            }))}
+          />
+        )}
       </Card>
 
       <Table
@@ -330,9 +391,19 @@ export default function Tokens() {
         // Must cover the sum of the column widths below. If it is smaller the
         // browser shrinks every column to fit, and the crushed cells collide
         // instead of scrolling.
-        scroll={{ x: 1370 }}
+        scroll={{ x: 1460 }}
         locale={{
-          emptyText: (
+          emptyText: loadError ? (
+            <EmptyState
+              title="加载失败"
+              description={loadError}
+              action={
+                <Button type="primary" icon={<ReloadOutlined />} onClick={() => void load()}>
+                  重试
+                </Button>
+              }
+            />
+          ) : (
             <EmptyState
               title="还没有 API 密钥"
               description="创建一个密钥，就能把上面的地址填进任意客户端了。"
@@ -349,7 +420,7 @@ export default function Tokens() {
           pageSize,
           total,
           showSizeChanger: true,
-          hideOnSinglePage: total <= Math.min(10, pageSize),
+          hideOnSinglePage: total <= 10,
           showTotal: (count) => `共 ${count} 个密钥`,
           onChange: (nextPage, nextSize) => {
             setPage(nextPage)
@@ -363,7 +434,9 @@ export default function Tokens() {
             width: 250,
             render: (name: string, row) => (
               <div style={{ display: 'grid', gap: 2 }}>
-                <strong>{name}</strong>
+                <Typography.Text strong ellipsis={{ tooltip: name }} style={{ maxWidth: 220 }}>
+                  {name}
+                </Typography.Text>
                 <Space size={4}>
                   <span className="mono text-muted">{row.key_prefix}</span>
                   <Tooltip title="复制完整密钥">
@@ -391,6 +464,8 @@ export default function Tokens() {
                   <Switch
                     size="small"
                     checked={status === STATUS.ENABLED}
+                    loading={togglingId === row.id}
+                    aria-label={`启用或禁用密钥 ${row.name}`}
                     onChange={(checked) => void toggleStatus(row, checked)}
                   />
                   {expired && <Tag color="red">已过期</Tag>}
@@ -410,17 +485,22 @@ export default function Tokens() {
                 )
               }
               const totalQuota = row.quota + row.used_quota
-              const percent = totalQuota > 0 ? (row.used_quota / totalQuota) * 100 : 0
+              // The bar shows what remains, matching the number beside it: a
+              // full bar means plenty left, a red sliver means nearly spent.
+              const remaining = totalQuota > 0 ? (row.quota / totalQuota) * 100 : 0
+              // Sub-cent balances still bill; "$0.00" would look like a bug.
+              const remainingText =
+                row.quota > 0 && row.quota < 10_000 ? formatUSD(row.quota) : formatMoney(row.quota)
               return (
                 <div style={{ display: 'grid', gap: 2, minWidth: 130 }}>
                   <span style={{ fontSize: 12 }}>
-                    剩余 <strong>{formatMoney(row.quota)}</strong>
+                    剩余 <strong>{remainingText}</strong>
                   </span>
                   <Progress
-                    percent={percent}
+                    percent={remaining}
                     showInfo={false}
                     size="small"
-                    status={percent >= 100 ? 'exception' : 'normal'}
+                    status={remaining <= 5 ? 'exception' : 'normal'}
                   />
                 </div>
               )
@@ -442,7 +522,9 @@ export default function Tokens() {
                       : `跟随账号分组（当前为「${ownGroup}」）`
                   }
                 >
-                  <Tag color={group ? 'purple' : undefined}>
+                  {/* Blue is the site-wide colour for group tags; a followed
+                      (unpinned) group stays neutral. */}
+                  <Tag color={group ? 'blue' : undefined}>
                     {effective}
                     {rate !== undefined && rate !== 1 && ` ×${rate}`}
                   </Tag>
@@ -456,6 +538,20 @@ export default function Tokens() {
             width: 110,
             align: 'right',
             render: (value: number) => formatMoney(value),
+          },
+          {
+            title: 'RPM',
+            dataIndex: 'rpm_limit',
+            width: 90,
+            align: 'right',
+            render: (value: number) =>
+              value > 0 ? (
+                <Tooltip title={`每分钟最多 ${value} 次请求，超出返回 429`}>
+                  <span className="mono">{value}</span>
+                </Tooltip>
+              ) : (
+                <span className="text-muted">不限</span>
+              ),
           },
           {
             title: '可用模型',
@@ -493,7 +589,7 @@ export default function Tokens() {
                       calculation for something worth being exact about. */}
                   <div className="cell-stack">
                     <span style={{ color: expired ? 'var(--app-danger)' : undefined }}>
-                      {dayjs(value).format('YYYY-MM-DD HH:mm')}
+                      {formatDateMinute(value)}
                     </span>
                     <span className="text-muted cell-stack__sub">{formatRelative(value)}</span>
                   </div>
@@ -532,9 +628,19 @@ export default function Tokens() {
                   okButtonProps={{ danger: true }}
                   okText="删除"
                   onConfirm={async () => {
-                    await api.deleteToken(row.id)
-                    message.success('已删除')
-                    await load()
+                    try {
+                      await api.deleteToken(row.id)
+                      message.success('已删除')
+                      // Deleting the page's last row must not strand the view
+                      // on an empty page while the pager still shows a total.
+                      if (rows.length === 1 && page > 1) {
+                        setPage(page - 1)
+                      } else {
+                        await load()
+                      }
+                    } catch (error) {
+                      message.error(error instanceof Error ? error.message : '删除失败')
+                    }
                   }}
                 >
                   <Button size="small" type="link" danger>
@@ -556,7 +662,12 @@ export default function Tokens() {
         okText={editing ? '保存' : '创建'}
         destroyOnClose
       >
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+        <Form
+          form={form}
+          layout="vertical"
+          style={{ marginTop: 16 }}
+          onFinish={() => void submit()}
+        >
           <Form.Item
             name="name"
             label="名称"
@@ -592,9 +703,10 @@ export default function Tokens() {
               },
             ]}
           >
-            <Input
+            {/* Masked by default: a key typed on a shared screen is a leak. */}
+            <Input.Password
               placeholder={editing ? '留空表示不修改' : '留空自动生成'}
-              autoComplete="off"
+              autoComplete="new-password"
               maxLength={200}
               allowClear
             />
@@ -623,11 +735,28 @@ export default function Tokens() {
           <Form.Item noStyle shouldUpdate>
             {({ getFieldValue }) =>
               getFieldValue('unlimited_quota') ? null : (
-                <Form.Item name="quota_usd" label="额度（美元）">
+                <Form.Item
+                  name="quota_usd"
+                  label="剩余额度（美元）"
+                  tooltip={
+                    editing
+                      ? `设置的是剩余可用金额；该密钥已消费 ${formatMoney(editing.used_quota)}，不计入此数`
+                      : '设置的是可用金额，用完即停'
+                  }
+                  extra="0 表示没有可用额度，密钥将无法调用。"
+                >
                   <InputNumber min={0} step={1} style={{ width: '100%' }} addonBefore="$" />
                 </Form.Item>
               )
             }
+          </Form.Item>
+
+          <Form.Item
+            name="rpm_limit"
+            label="RPM 限制"
+            tooltip="这个密钥每分钟最多发起的请求数，超出的请求会收到 429；0 表示不限制"
+          >
+            <InputNumber min={0} precision={0} style={{ width: '100%' }} addonAfter="次 / 分钟" />
           </Form.Item>
 
           <Form.Item
@@ -636,20 +765,33 @@ export default function Tokens() {
             tooltip="决定这个密钥能路由到哪些渠道，以及计费倍率；只列出管理员开放给你的分组"
           >
             <Select
-              options={groups.map((group) => ({
-                value: group.name,
-                label: (
-                  <Space size={6}>
-                    <span>{group.name}</span>
-                    {group.rate !== 1 && (
+              options={[
+                {
+                  value: '',
+                  label: (
+                    <Space size={6}>
+                      <span>跟随账号分组</span>
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                        ×{group.rate}
+                        当前「{ownGroup}」
                       </Typography.Text>
-                    )}
-                    {group.name === ownGroup && <Tag>默认</Tag>}
-                  </Space>
-                ),
-              }))}
+                    </Space>
+                  ),
+                },
+                ...groups.map((group) => ({
+                  value: group.name,
+                  label: (
+                    <Space size={6}>
+                      <span>{group.name}</span>
+                      {group.rate !== 1 && (
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          ×{group.rate}
+                        </Typography.Text>
+                      )}
+                      {group.name === ownGroup && <Tag>默认</Tag>}
+                    </Space>
+                  ),
+                })),
+              ]}
             />
           </Form.Item>
 
@@ -665,7 +807,21 @@ export default function Tokens() {
             />
           </Form.Item>
 
-          <Form.Item name="expires_at" label="过期时间" tooltip="留空表示永不过期">
+          <Form.Item
+            name="expires_at"
+            label="过期时间"
+            tooltip="留空表示永不过期"
+            rules={[
+              {
+                // disabledDate only blocks past days; a past hour today would
+                // create a key that is born expired.
+                validator: (_, value: Dayjs | null) =>
+                  !value || value.isAfter(dayjs())
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('过期时间需晚于当前时刻')),
+              },
+            ]}
+          >
             <DatePicker
               showTime={{ format: 'HH:mm' }}
               format="YYYY-MM-DD HH:mm"
@@ -674,55 +830,44 @@ export default function Tokens() {
               disabledDate={(date) => date.isBefore(dayjs().startOf('day'))}
             />
           </Form.Item>
+          {/* Lets Enter submit from any field. */}
+          <button type="submit" hidden />
         </Form>
       </Modal>
 
-      {/* Shown only when the clipboard API is unavailable, which happens over
-          plain HTTP; the operator can still select the text by hand. */}
-      <Modal
-        open={Boolean(revealed)}
-        title={revealed ? `「${revealed.name}」的密钥` : '密钥'}
-        width={560}
-        onCancel={() => setRevealed(null)}
-        onOk={() => setRevealed(null)}
-        okText="关闭"
-        cancelButtonProps={{ style: { display: 'none' } }}
-      >
-        <Typography.Paragraph
-          copyable={{
-            text: revealed?.key ?? '',
-            tooltips: ['复制密钥', '已复制'],
-          }}
-          className="mono"
-          style={{
-            background: 'var(--app-surface-sunken)',
-            border: '1px solid var(--app-border)',
-            borderRadius: 10,
-            padding: '10px 12px',
-            wordBreak: 'break-all',
-          }}
-        >
-          {revealed?.key}
-        </Typography.Paragraph>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          浏览器拒绝了自动复制（通常是因为未使用 HTTPS），请手动复制上方内容。
-        </Typography.Text>
-      </Modal>
 
       <Modal
         open={Boolean(newKey)}
         title="密钥创建成功"
         width={640}
         onCancel={() => setNewKey(null)}
-        onOk={() => setNewKey(null)}
-        okText="我已保存"
-        cancelButtonProps={{ style: { display: 'none' } }}
+        footer={[
+          <Button key="close" onClick={() => setNewKey(null)}>
+            关闭
+          </Button>,
+          // Copying is the whole point of this dialog, so it takes the
+          // primary spot instead of hiding behind a small inline icon.
+          <Button
+            key="copy"
+            type="primary"
+            icon={<CopyOutlined />}
+            onClick={() => {
+              void copyTextToClipboard(newKey ?? '').then((copied) =>
+                copied
+                  ? message.success('已复制密钥')
+                  : message.warning('浏览器拒绝了剪贴板访问，请手动选中复制'),
+              )
+            }}
+          >
+            复制密钥
+          </Button>,
+        ]}
       >
         <Alert
           type="info"
           showIcon
-          message="请复制保存"
-          description="密钥加密存放在服务端，之后也可以在列表中点击复制按钮取回。"
+          message="密钥已加密保存"
+          description="现在复制填入客户端；之后也随时可以在列表中重新复制。"
           style={{ marginBottom: 12 }}
         />
         <Typography.Paragraph
@@ -746,15 +891,20 @@ export default function Tokens() {
             label: endpoint.label,
             children: (
               <div style={{ position: 'relative' }}>
-                <pre className="code-block">{endpoint.curl(origin, newKey ?? '')}</pre>
+                <pre className="code-block" style={{ paddingInlineEnd: 36 }}>
+                  {endpoint.curl(origin, newKey ?? '')}
+                </pre>
                 <Typography.Text
                   copyable={{
                     text: endpoint.curl(origin, newKey ?? ''),
                     tooltips: '复制命令',
                   }}
                   style={{
+                    background: 'var(--app-surface-sunken)',
+                    borderRadius: 6,
+                    padding: '0 4px',
                     position: 'absolute',
-                    insetInlineEnd: 10,
+                    insetInlineEnd: 8,
                     insetBlockStart: 8,
                   }}
                 />

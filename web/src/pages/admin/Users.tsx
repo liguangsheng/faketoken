@@ -9,19 +9,19 @@ import {
   Modal,
   Select,
   Space,
+  Switch,
   Table,
   Tag,
   Tooltip,
   Typography,
 } from 'antd'
 import {
-  CheckCircleOutlined,
   DeleteOutlined,
   EllipsisOutlined,
   KeyOutlined,
   PlusOutlined,
   ReloadOutlined,
-  StopOutlined,
+  SearchOutlined,
 } from '@ant-design/icons'
 
 import { api, type User, type UserGroup } from '../../api/client'
@@ -49,10 +49,12 @@ export default function Users() {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<User | null>(null)
   const [saving, setSaving] = useState(false)
+  const [togglingId, setTogglingId] = useState<number | null>(null)
   const [form] = Form.useForm()
 
   const [quotaTarget, setQuotaTarget] = useState<User | null>(null)
   const [quotaForm] = Form.useForm<{ amount_usd: number }>()
+  const quotaAmount = Form.useWatch('amount_usd', quotaForm)
   const [passwordTarget, setPasswordTarget] = useState<User | null>(null)
   const [passwordForm] = Form.useForm<{ password: string; confirm: string }>()
 
@@ -117,12 +119,33 @@ export default function Users() {
     setOpen(true)
   }
 
+  // The update endpoint replaces every field, and users keep spending while a
+  // modal sits open: echoing a stale balance back would silently refund them.
+  // There is no single-user GET, so re-read through the list search.
+  const freshQuota = async (row: User): Promise<number> => {
+    try {
+      const result = await api.admin.listUsers({
+        page: 1,
+        page_size: 100,
+        keyword: row.username,
+      })
+      return result.data?.find((item) => item.id === row.id)?.quota ?? row.quota
+    } catch {
+      return row.quota
+    }
+  }
+
   const submit = async () => {
     const values = await form.validateFields()
     setSaving(true)
     try {
       if (editing) {
-        await api.admin.updateUser(editing.id, values)
+        // Only an amount the admin actually typed overrides the live balance.
+        const quotaTouched = form.isFieldTouched('quota_usd')
+        await api.admin.updateUser(editing.id, {
+          ...values,
+          quota_usd: quotaTouched ? values.quota_usd : toUSD(await freshQuota(editing)),
+        })
         message.success('已保存')
         if (editing.id === me?.id) await refreshMe()
       } else {
@@ -138,8 +161,10 @@ export default function Users() {
     }
   }
 
-  // The update endpoint replaces every editable field, so echo the row back.
+  // The update endpoint replaces every editable field, so echo the row back —
+  // with the balance re-read, not the one from when the page loaded.
   const setStatus = async (row: User, status: number) => {
+    setTogglingId(row.id)
     try {
       await api.admin.updateUser(row.id, {
         display_name: row.display_name,
@@ -147,13 +172,27 @@ export default function Users() {
         role: row.role,
         status,
         group: row.group,
-        quota_usd: toUSD(row.quota),
+        quota_usd: toUSD(await freshQuota(row)),
       })
       message.success(status === STATUS.ENABLED ? '账号已启用' : '账号已禁用')
       await load()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '操作失败')
+    } finally {
+      setTogglingId(null)
     }
+  }
+
+  // Disabling cuts off every key the user has, immediately; that deserves a
+  // pause. Re-enabling is harmless and stays one click.
+  const confirmDisable = (row: User) => {
+    modal.confirm({
+      title: `禁用「${row.username}」？`,
+      content: '禁用后该账号及其所有 API 密钥将立即无法调用，可随时重新启用。',
+      okText: '禁用',
+      okButtonProps: { danger: true },
+      onOk: () => setStatus(row, STATUS.DISABLED),
+    })
   }
 
   const grantQuota = async () => {
@@ -197,9 +236,14 @@ export default function Users() {
       okText: '删除',
       okButtonProps: { danger: true },
       onOk: async () => {
-        await api.admin.deleteUser(row.id)
-        message.success('已删除')
-        await load()
+        try {
+          await api.admin.deleteUser(row.id)
+          message.success('已删除')
+          await load()
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : '删除失败')
+          throw error
+        }
       },
     })
   }
@@ -213,7 +257,9 @@ export default function Users() {
           <>
             <Input
               allowClear
+              prefix={<SearchOutlined className="text-muted" />}
               placeholder="搜索用户名 / 邮箱"
+              aria-label="搜索用户名或邮箱"
               style={{ width: 200 }}
               value={keywordInput}
               onChange={(event) => setKeywordInput(event.target.value)}
@@ -234,7 +280,19 @@ export default function Users() {
         dataSource={rows}
         scroll={{ x: 1080 }}
         locale={{
-          emptyText: <EmptyState title="没有匹配的用户" description="换个关键词试试。" />,
+          emptyText: keyword ? (
+            <EmptyState title="没有匹配的用户" description="换个关键词试试。" />
+          ) : (
+            <EmptyState
+              title="还没有其他用户"
+              description="手动创建账号，或在全局设置里开放注册。"
+              action={
+                <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
+                  新建用户
+                </Button>
+              }
+            />
+          ),
         }}
         pagination={{
           current: page,
@@ -280,18 +338,43 @@ export default function Users() {
             render: (group: string) => <Tag color="blue">{group}</Tag>,
           },
           {
+            // A switch, matching the token and channel lists: one control for
+            // one meaning, wherever it appears.
             title: '状态',
             dataIndex: 'status',
             width: 90,
-            render: (status: number) =>
-              status === STATUS.ENABLED ? <Tag color="green">正常</Tag> : <Tag color="red">禁用</Tag>,
+            render: (status: number, row) => (
+              <Tooltip
+                title={
+                  row.id === me?.id
+                    ? '不能禁用自己的账号'
+                    : status === STATUS.ENABLED
+                      ? '已启用，点击禁用该账号'
+                      : '已禁用，点击恢复'
+                }
+              >
+                <span style={{ display: 'inline-flex' }}>
+                  <Switch
+                    size="small"
+                    checked={status === STATUS.ENABLED}
+                    disabled={row.id === me?.id}
+                    loading={togglingId === row.id}
+                    aria-label={`启用或禁用账号 ${row.username}`}
+                    onChange={(checked) =>
+                      checked ? void setStatus(row, STATUS.ENABLED) : confirmDisable(row)
+                    }
+                  />
+                </span>
+              </Tooltip>
+            ),
           },
           {
             title: '余额 / 累计消费',
             dataIndex: 'quota',
             width: 160,
+            align: 'right',
             render: (value: number, row) => (
-              <div style={{ display: 'grid', gap: 2 }}>
+              <div style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
                 <strong style={{ color: value <= 0 ? 'var(--app-danger)' : undefined }}>
                   {formatMoney(value)}
                 </strong>
@@ -339,19 +422,18 @@ export default function Users() {
                   menu={{
                     items: [
                       { key: 'password', icon: <KeyOutlined />, label: '重置密码' },
-                      row.status === STATUS.ENABLED
-                        ? {
-                            key: 'disable',
-                            icon: <StopOutlined />,
-                            label: '禁用账号',
-                            disabled: row.id === me?.id,
-                          }
-                        : { key: 'enable', icon: <CheckCircleOutlined />, label: '启用账号' },
                       { type: 'divider' as const },
                       {
                         key: 'delete',
                         icon: <DeleteOutlined />,
-                        label: '删除用户',
+                        label:
+                          row.id === me?.id ? (
+                            <Tooltip title="不能删除自己的账号">
+                              <span>删除用户</span>
+                            </Tooltip>
+                          ) : (
+                            '删除用户'
+                          ),
                         danger: true,
                         disabled: row.id === me?.id,
                       },
@@ -362,13 +444,16 @@ export default function Users() {
                         setPasswordTarget(row)
                       } else if (key === 'delete') {
                         removeUser(row)
-                      } else {
-                        void setStatus(row, key === 'enable' ? STATUS.ENABLED : STATUS.DISABLED)
                       }
                     },
                   }}
                 >
-                  <Button size="small" type="text" icon={<EllipsisOutlined />} />
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<EllipsisOutlined />}
+                    aria-label={`更多操作 ${row.username}`}
+                  />
                 </Dropdown>
               </Space>
             ),
@@ -381,10 +466,11 @@ export default function Users() {
         title={editing ? `编辑用户：${editing.username}` : '新建用户'}
         onCancel={() => setOpen(false)}
         onOk={submit}
+        okText={editing ? '保存' : '创建'}
         confirmLoading={saving}
         destroyOnClose
       >
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+        <Form form={form} layout="vertical" style={{ marginTop: 16 }} onFinish={() => void submit()}>
           {!editing && (
             <>
               <Form.Item
@@ -406,7 +492,11 @@ export default function Users() {
           <Form.Item name="display_name" label="昵称">
             <Input />
           </Form.Item>
-          <Form.Item name="email" label="邮箱">
+          <Form.Item
+            name="email"
+            label="邮箱"
+            rules={[{ type: 'email', message: '邮箱格式不正确' }]}
+          >
             <Input type="email" />
           </Form.Item>
           <Form.Item
@@ -425,7 +515,11 @@ export default function Users() {
           <Form.Item name="group" label="分组" tooltip="决定可用渠道与计费倍率">
             <Select options={groupOptions} />
           </Form.Item>
-          <Form.Item name="status" label="状态">
+          <Form.Item
+            name="status"
+            label="状态"
+            tooltip={editing?.id === me?.id ? '不能禁用自己的账号' : undefined}
+          >
             <Select
               disabled={Boolean(editing && editing.id === me?.id)}
               options={[
@@ -438,9 +532,16 @@ export default function Users() {
             name="quota_usd"
             label="余额（美元）"
             tooltip="这里是直接设置余额；日常增补建议用列表里的「充值」"
+            extra={
+              editing
+                ? '不修改此项时保存会保留用户当前的实时余额；一旦修改则以填写值覆盖。'
+                : undefined
+            }
           >
             <InputNumber min={-1000000} step={1} style={{ width: '100%' }} addonBefore="$" />
           </Form.Item>
+          {/* Lets Enter submit from any field. */}
+          <button type="submit" hidden />
         </Form>
       </Modal>
 
@@ -450,7 +551,10 @@ export default function Users() {
         onCancel={() => setQuotaTarget(null)}
         onOk={grantQuota}
         confirmLoading={saving}
-        okText="确认充值"
+        okText={typeof quotaAmount === 'number' && quotaAmount < 0 ? '确认扣减' : '确认充值'}
+        okButtonProps={
+          typeof quotaAmount === 'number' && quotaAmount < 0 ? { danger: true } : undefined
+        }
         destroyOnClose
       >
         <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
@@ -462,20 +566,39 @@ export default function Users() {
             label="充值金额"
             rules={[{ required: true, message: '请输入金额' }]}
           >
-            <InputNumber step={1} style={{ width: '100%' }} addonBefore="$" autoFocus />
+            <InputNumber
+              step={1}
+              style={{ width: '100%' }}
+              addonBefore="$"
+              autoFocus
+              onPressEnter={() => void grantQuota()}
+            />
           </Form.Item>
         </Form>
         <Space wrap>
+          {/* No plus sign: clicking fills the box with this amount, it does
+              not stack onto what is already there. */}
           {QUICK_AMOUNTS.map((amount) => (
             <Button
               key={amount}
               size="small"
               onClick={() => quotaForm.setFieldsValue({ amount_usd: amount })}
             >
-              +${amount}
+              ${amount}
             </Button>
           ))}
         </Space>
+        {typeof quotaAmount === 'number' && quotaTarget && (
+          <Typography.Paragraph style={{ fontSize: 13, marginTop: 12, marginBottom: 0 }}>
+            变更后余额：{' '}
+            <Typography.Text
+              strong
+              type={quotaTarget.quota + quotaAmount * 1_000_000 < 0 ? 'danger' : undefined}
+            >
+              {formatMoney(quotaTarget.quota + quotaAmount * 1_000_000)}
+            </Typography.Text>
+          </Typography.Paragraph>
+        )}
       </Modal>
 
       <Modal
@@ -487,11 +610,19 @@ export default function Users() {
         okText="确认重置"
         destroyOnClose
       >
-        <Form form={passwordForm} layout="vertical" style={{ marginTop: 12 }}>
+        <Form
+          form={passwordForm}
+          layout="vertical"
+          style={{ marginTop: 12 }}
+          onFinish={() => void resetPassword()}
+        >
           <Form.Item
             name="password"
             label="新密码"
-            rules={[{ required: true, min: 8, message: '密码至少 8 位' }]}
+            rules={[
+              { required: true, message: '请输入新密码' },
+              { min: 8, message: '密码至少 8 位' },
+            ]}
           >
             <Input.Password autoComplete="new-password" autoFocus />
           </Form.Item>
@@ -511,6 +642,7 @@ export default function Users() {
           >
             <Input.Password autoComplete="new-password" />
           </Form.Item>
+          <button type="submit" hidden />
         </Form>
       </Modal>
     </>
