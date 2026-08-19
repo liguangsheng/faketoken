@@ -83,6 +83,7 @@ export interface RequestLog {
   model: string
   upstream_model: string
   endpoint: string
+  method: string
   status_code: number
   stream: boolean
   prompt_tokens: number

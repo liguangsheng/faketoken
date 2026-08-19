@@ -11,6 +11,7 @@ import {
   Drawer,
   Input,
   Row,
+  Segmented,
   Select,
   Skeleton,
   Space,
@@ -34,6 +35,13 @@ import { useLogStream } from '../hooks/useLogStream'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 import { useSettings } from '../settings/SettingsContext'
 import EmptyState from './EmptyState'
+import {
+  parseRequestConversation,
+  parseResponseConversation,
+  type ConversationPart,
+  type ConversationTurn,
+  type PartKind,
+} from '../utils/conversation'
 import {
   formatBytes,
   formatCompact,
@@ -354,6 +362,11 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
       })
       setTotal((count) => count + 1)
       rate.add(entry)
+    },
+    onReconnect: () => {
+      // The stream dropped and came back; reload the first page to recover
+      // entries that were published while the connection was down.
+      if (page === 1) void load()
     },
   })
 
@@ -797,6 +810,7 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
                     kind={tab.key === 'request' ? 'request' : 'response'}
                     state={bodiesState}
                     bodies={bodies}
+                    entry={detail}
                   />
                 ),
             }))}
@@ -808,19 +822,91 @@ export default function LogTable({ admin, fetcher, extra, showRate }: Props) {
   )
 }
 
+// Standard reason phrases for the status codes a relay realistically returns.
+// Anything unlisted simply omits the phrase, which is valid HTTP.
+const REASON_PHRASE: Record<number, string> = {
+  200: 'OK',
+  201: 'Created',
+  202: 'Accepted',
+  204: 'No Content',
+  301: 'Moved Permanently',
+  302: 'Found',
+  304: 'Not Modified',
+  307: 'Temporary Redirect',
+  308: 'Permanent Redirect',
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  402: 'Payment Required',
+  403: 'Forbidden',
+  404: 'Not Found',
+  405: 'Method Not Allowed',
+  408: 'Request Timeout',
+  409: 'Conflict',
+  410: 'Gone',
+  413: 'Content Too Large',
+  422: 'Unprocessable Content',
+  429: 'Too Many Requests',
+  499: 'Client Closed Request',
+  500: 'Internal Server Error',
+  501: 'Not Implemented',
+  502: 'Bad Gateway',
+  503: 'Service Unavailable',
+  504: 'Gateway Timeout',
+}
+
+/**
+ * Renders one side of the call as it would appear on the wire: start line,
+ * folded headers, blank line, body. Reading a relayed call means comparing it
+ * against the upstream's own docs and curl output, and both speak raw HTTP —
+ * a JSON rendering of the header map forces a mental translation every time.
+ */
+const httpMessage = (
+  kind: 'request' | 'response',
+  entry: RequestLog,
+  headers: Record<string, string[]> | undefined,
+  body: string | undefined,
+) => {
+  const startLine =
+    kind === 'request'
+      ? `${entry.method || 'POST'} ${entry.endpoint || '/'} HTTP/1.1`
+      : `HTTP/1.1 ${entry.status_code}${
+          REASON_PHRASE[entry.status_code] ? ` ${REASON_PHRASE[entry.status_code]}` : ''
+        }`
+
+  // Repeated headers stay on separate lines, which is how they travel.
+  const lines = Object.entries(headers ?? {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .flatMap(([name, values]) => values.map((value) => `${name}: ${value}`))
+
+  return `${[startLine, ...lines].join('\n')}\n\n${body ?? ''}`
+}
+
 // LogBody shows one side of a call. The bodies are held for a limited number
 // of recent calls, so "not here" is a normal outcome and is spelled out rather
 // than shown as an empty panel.
+type BodyView = 'raw' | 'chat'
+
 function LogBody({
   kind,
   state,
   bodies,
+  entry,
 }: {
   kind: 'request' | 'response'
   state: 'idle' | 'loading' | 'expired' | 'failed'
   bodies: RequestLogDetail | null
+  entry: RequestLog
 }) {
   const { settings } = useSettings()
+  const [view, setView] = useState<BodyView>('chat')
+
+  // Parsing walks the whole body, which for a streamed response is every SSE
+  // frame; keep it off the render path unless the body actually changed.
+  const rawBody = kind === 'request' ? bodies?.request_body : bodies?.response_body
+  const turns = useMemo(
+    () => (kind === 'request' ? parseRequestConversation(rawBody) : parseResponseConversation(rawBody)),
+    [kind, rawBody],
+  )
 
   if (state === 'loading') return <Skeleton active paragraph={{ rows: 6 }} />
   if (state === 'expired') {
@@ -848,6 +934,7 @@ function LogBody({
   const headers = kind === 'request' ? bodies.request_headers : bodies.response_headers
   const body = kind === 'request' ? bodies.request_body : bodies.response_body
   const truncated = kind === 'request' ? bodies.request_truncated : bodies.response_truncated
+  const message = httpMessage(kind, entry, headers, body)
 
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -859,24 +946,115 @@ function LogBody({
           description="上限可在「全局设置 → 正文捕获」调整。"
         />
       )}
-      <Typography.Text strong>
-        {kind === 'request' ? '请求头' : '响应头'}
-        <span className="text-muted">（敏感字段已脱敏）</span>
-      </Typography.Text>
-      <pre className="code-block">{JSON.stringify(headers ?? {}, null, 2)}</pre>
-      <Space size={8}>
-        <Typography.Text strong>{kind === 'request' ? '请求正文' : '响应正文'}</Typography.Text>
-        {body && (
-          <Typography.Text
-            copyable={{ text: body, tooltips: ['复制正文', '已复制'] }}
-            style={{ marginBottom: 0 }}
-          />
+      <Space size={8} wrap>
+        <Segmented
+          size="small"
+          value={view}
+          onChange={(value) => setView(value as BodyView)}
+          options={[
+            { label: '报文', value: 'raw' },
+            { label: '会话', value: 'chat' },
+          ]}
+        />
+        {view === 'raw' ? (
+          <>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              敏感头已脱敏
+            </Typography.Text>
+            <Typography.Text
+              copyable={{ text: message, tooltips: ['复制报文', '已复制'] }}
+              style={{ marginBottom: 0 }}
+            />
+          </>
+        ) : (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {turns
+              ? `${turns.length} 条消息${truncated ? '（正文被截断，可能不完整）' : ''}`
+              : '无法解析为会话'}
+          </Typography.Text>
         )}
       </Space>
-      <pre className="code-block" style={{ maxHeight: '52vh' }}>
-        {body || '（空）'}
-      </pre>
+      {view === 'raw' ? (
+        <pre className="code-block" style={{ maxHeight: '68vh' }}>
+          {message}
+        </pre>
+      ) : turns ? (
+        <Conversation turns={turns} />
+      ) : (
+        <Alert
+          type="info"
+          showIcon
+          message="这段正文不是可识别的对话"
+          description={
+            truncated
+              ? '正文被截断后无法还原为对话，可在「全局设置 → 正文捕获」调高上限。'
+              : '仅支持 OpenAI、Anthropic、Gemini 与 Responses 协议的对话正文，其余请求请查看报文。'
+          }
+        />
+      )}
     </Space>
+  )
+}
+
+const ROLE_LABEL: Record<string, string> = {
+  system: 'system',
+  user: 'user',
+  assistant: 'assistant',
+  tool: 'tool',
+}
+
+const PART_LABEL: Record<PartKind, string> = {
+  text: '',
+  reasoning: '思考',
+  tool_call: '调用工具',
+  tool_result: '工具结果',
+  image: '附件',
+  other: '其他',
+}
+
+// Long system prompts dominate a transcript, so anything past this is folded
+// away behind a toggle. The threshold is generous enough that ordinary turns
+// are never clipped.
+const PART_CLAMP = 1600
+
+function Conversation({ turns }: { turns: ConversationTurn[] }) {
+  return (
+    <div className="chat-log">
+      {turns.map((turn, index) => (
+        <div key={index} className={`chat-turn chat-turn--${turn.role}`}>
+          <div className="chat-turn__role">{ROLE_LABEL[turn.role] ?? turn.role}</div>
+          <div className="chat-turn__parts">
+            {turn.parts.map((part, partIndex) => (
+              <ChatPart key={partIndex} part={part} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ChatPart({ part }: { part: ConversationPart }) {
+  const [expanded, setExpanded] = useState(false)
+  const long = part.text.length > PART_CLAMP
+  const shown = long && !expanded ? part.text.slice(0, PART_CLAMP) : part.text
+  const label = PART_LABEL[part.kind]
+
+  return (
+    <div className={`chat-part chat-part--${part.kind}`}>
+      {(label || part.name) && (
+        <div className="chat-part__label">
+          {label}
+          {part.name && <span className="mono"> {part.name}</span>}
+        </div>
+      )}
+      <pre className="chat-part__text">{shown}</pre>
+      {long && (
+        <Button type="link" size="small" onClick={() => setExpanded((value) => !value)}>
+          {expanded ? '收起' : `展开剩余 ${formatNumber(part.text.length - PART_CLAMP)} 字`}
+        </Button>
+      )}
+    </div>
   )
 }
 

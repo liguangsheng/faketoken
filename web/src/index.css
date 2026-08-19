@@ -714,3 +714,91 @@ body {
 .detail-drawer .ant-descriptions-item-label {
   width: 116px;
 }
+
+/* ===========================================================================
+   Conversation view (log detail drawer)
+   =========================================================================== */
+
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 68vh;
+  overflow: auto;
+}
+
+.chat-turn {
+  background: var(--app-surface-sunken);
+  border: 1px solid var(--app-border);
+  /* The role stripe is the fastest way to scan who is speaking. */
+  border-inline-start: 3px solid var(--app-border-strong);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.chat-turn__role {
+  color: var(--app-text-muted);
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  margin-block-end: 6px;
+  text-transform: uppercase;
+}
+
+.chat-turn--system {
+  border-inline-start-color: var(--app-text-faint);
+}
+
+.chat-turn--user {
+  border-inline-start-color: var(--app-brand);
+}
+
+.chat-turn--assistant {
+  border-inline-start-color: var(--app-success);
+}
+
+.chat-turn--tool {
+  border-inline-start-color: var(--app-warning);
+}
+
+.chat-turn__parts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-part__label {
+  color: var(--app-text-muted);
+  font-size: 11px;
+  margin-block-end: 2px;
+}
+
+.chat-part__text {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Reasoning and tool traffic are supporting detail; muting them keeps the
+   actual answer the thing the eye lands on first. */
+.chat-part--reasoning .chat-part__text,
+.chat-part--image .chat-part__text {
+  color: var(--app-text-muted);
+  font-style: italic;
+}
+
+.chat-part--tool_call,
+.chat-part--tool_result {
+  background: var(--app-surface);
+  border: 1px dashed var(--app-border-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.chat-part--tool_call .chat-part__text,
+.chat-part--tool_result .chat-part__text {
+  color: var(--app-text-muted);
+}

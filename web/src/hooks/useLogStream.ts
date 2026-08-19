@@ -19,18 +19,23 @@ interface Options {
   /** Set false to disconnect, e.g. while the user is reading an old page. */
   enabled: boolean
   onEntry: (entry: RequestLog) => void
+  /** Called after a dropped connection is re-established, so the caller can
+   *  reload the list to recover entries missed while the stream was down. */
+  onReconnect?: () => void
 }
 
 // Backoff between reconnection attempts. A dropped stream is normal (laptop
 // sleeps, proxy recycles); reconnecting immediately in a tight loop is not.
 const RETRY_MS = [1000, 2000, 5000, 10000]
 
-export function useLogStream({ url, enabled, onEntry }: Options): StreamState {
+export function useLogStream({ url, enabled, onEntry, onReconnect }: Options): StreamState {
   const [state, setState] = useState<StreamState>('offline')
   // Kept in a ref so a changing callback identity does not tear the stream
   // down and reconnect on every render.
   const onEntryRef = useRef(onEntry)
   onEntryRef.current = onEntry
+  const onReconnectRef = useRef(onReconnect)
+  onReconnectRef.current = onReconnect
 
   useEffect(() => {
     if (!enabled) {
@@ -40,6 +45,7 @@ export function useLogStream({ url, enabled, onEntry }: Options): StreamState {
 
     const controller = new AbortController()
     let attempt = 0
+    let wasLive = false
     let stopped = false
     let retryTimer: number | undefined
 
@@ -58,7 +64,13 @@ export function useLogStream({ url, enabled, onEntry }: Options): StreamState {
           throw new Error(`stream failed: HTTP ${response.status}`)
         }
 
+        // Recovering from a dropped connection: reload the list to fill the
+        // gap that formed while we were offline.
+        if (wasLive && onReconnectRef.current) {
+          onReconnectRef.current()
+        }
         setState('live')
+        wasLive = true
         attempt = 0
 
         const reader = response.body.getReader()
