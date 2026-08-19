@@ -12,13 +12,13 @@ import (
 
 const tokenColumns = `id, user_id, name, key_hash, key_prefix, status, unlimited_quota,
 	quota, used_quota, allowed_models, expires_at, last_used_at, created_at, updated_at,
-	group_name`
+	group_name, rpm_limit`
 
 func scanToken(row pgx.Row) (*model.Token, error) {
 	var t model.Token
 	err := row.Scan(&t.ID, &t.UserID, &t.Name, &t.KeyHash, &t.KeyPrefix, &t.Status,
 		&t.UnlimitedQuota, &t.Quota, &t.UsedQuota, &t.AllowedModels, &t.ExpiresAt,
-		&t.LastUsedAt, &t.CreatedAt, &t.UpdatedAt, &t.Group)
+		&t.LastUsedAt, &t.CreatedAt, &t.UpdatedAt, &t.Group, &t.RPMLimit)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -38,10 +38,10 @@ func (s *Store) CreateToken(ctx context.Context, t *model.Token) (*model.Token, 
 
 	row := s.pool.QueryRow(ctx, `INSERT INTO tokens
 		(user_id, name, key_hash, key_prefix, status, unlimited_quota, quota, allowed_models,
-		 expires_at, group_name, key_enc)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING `+tokenColumns,
+		 expires_at, group_name, key_enc, rpm_limit)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING `+tokenColumns,
 		t.UserID, t.Name, t.KeyHash, t.KeyPrefix, t.Status, t.UnlimitedQuota,
-		t.Quota, t.AllowedModels, t.ExpiresAt, t.Group, enc)
+		t.Quota, t.AllowedModels, t.ExpiresAt, t.Group, enc, t.RPMLimit)
 	return scanToken(row)
 }
 
@@ -113,7 +113,7 @@ func (s *Store) ListTokens(ctx context.Context, userID int64, offset, limit int)
 
 func (s *Store) UpdateToken(ctx context.Context, t *model.Token) (*model.Token, error) {
 	args := []any{t.ID, t.UserID, t.Name, t.Status, t.UnlimitedQuota, t.Quota,
-		t.AllowedModels, t.ExpiresAt, t.Group}
+		t.AllowedModels, t.ExpiresAt, t.Group, t.RPMLimit}
 
 	// An empty key means "leave it alone", the same contract the channel
 	// credential uses, so an edit form never has to echo the secret back.
@@ -130,7 +130,7 @@ func (s *Store) UpdateToken(ctx context.Context, t *model.Token) (*model.Token, 
 
 	row := s.pool.QueryRow(ctx, fmt.Sprintf(`UPDATE tokens SET
 		name = $3, status = $4, unlimited_quota = $5, quota = $6,
-		allowed_models = $7, expires_at = $8, group_name = $9%s, updated_at = now()
+		allowed_models = $7, expires_at = $8, group_name = $9, rpm_limit = $10%s, updated_at = now()
 		WHERE id = $1 AND user_id = $2 RETURNING %s`, keyClause, tokenColumns), args...)
 	return scanToken(row)
 }

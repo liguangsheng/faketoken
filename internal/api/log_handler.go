@@ -17,6 +17,7 @@ func logFilter(r *http.Request) store.LogFilter {
 	return store.LogFilter{
 		ChannelID: queryInt64(r, "channel_id"),
 		TokenID:   queryInt64(r, "token_id"),
+		TokenName: r.URL.Query().Get("token_name"),
 		Model:     r.URL.Query().Get("model"),
 		Username:  r.URL.Query().Get("username"),
 		Keyword:   r.URL.Query().Get("keyword"),

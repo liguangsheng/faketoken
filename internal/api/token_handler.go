@@ -14,12 +14,14 @@ import (
 )
 
 type tokenInput struct {
-	Name           string   `json:"name"`
-	Status         int16    `json:"status"`
-	UnlimitedQuota bool     `json:"unlimited_quota"`
-	QuotaUSD       float64  `json:"quota_usd"`
-	AllowedModels  []string `json:"allowed_models"`
-	Group          string   `json:"group"`
+	Name           string  `json:"name"`
+	Status         int16   `json:"status"`
+	UnlimitedQuota bool    `json:"unlimited_quota"`
+	QuotaUSD       float64 `json:"quota_usd"`
+	// RPMLimit caps this key's requests per minute; 0 means unlimited.
+	RPMLimit      int32    `json:"rpm_limit"`
+	AllowedModels []string `json:"allowed_models"`
+	Group         string   `json:"group"`
 	// Key sets the secret by hand. Empty generates one on create, and leaves
 	// the existing one untouched on update.
 	Key string `json:"key"`
@@ -181,6 +183,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		Status:         model.StatusEnabled,
 		UnlimitedQuota: in.UnlimitedQuota,
 		Quota:          billing.ParseUSD(in.QuotaUSD),
+		RPMLimit:       max(in.RPMLimit, 0),
 		AllowedModels:  nonNil(in.AllowedModels),
 		Group:          group,
 		ExpiresAt:      in.ExpiresAt,
@@ -233,6 +236,7 @@ func (s *Server) handleUpdateToken(w http.ResponseWriter, r *http.Request) {
 		Status:         normaliseStatus(in.Status),
 		UnlimitedQuota: in.UnlimitedQuota,
 		Quota:          billing.ParseUSD(in.QuotaUSD),
+		RPMLimit:       max(in.RPMLimit, 0),
 		AllowedModels:  nonNil(in.AllowedModels),
 		Group:          group,
 		ExpiresAt:      in.ExpiresAt,

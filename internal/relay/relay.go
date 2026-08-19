@@ -40,6 +40,9 @@ type Relay struct {
 	clients *clientPool
 	breaker *breaker
 	limiter *rpmLimiter
+	// tokenLimiter is the same sliding window keyed by token id, enforcing
+	// each key's own rpm_limit before any routing happens.
+	tokenLimiter *rpmLimiter
 	// stream notifies connected consoles about new log rows. Optional: the
 	// relay works without one.
 	stream *logstream.Broker
@@ -59,12 +62,13 @@ type Relay struct {
 
 func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config) *Relay {
 	rl := &Relay{
-		st:      st,
-		pricer:  pricer,
-		cfg:     cfg,
-		clients: newClientPool(),
-		breaker: newBreaker(),
-		limiter: newRPMLimiter(),
+		st:           st,
+		pricer:       pricer,
+		cfg:          cfg,
+		clients:      newClientPool(),
+		breaker:      newBreaker(),
+		limiter:      newRPMLimiter(),
+		tokenLimiter: newRPMLimiter(),
 	}
 	rl.capture.Store(DefaultCaptureLimit)
 	rl.retryBudget.Store(int64(cfg.MaxRetries))
@@ -260,6 +264,19 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p, status, err := rl.authenticate(ctx, r)
 	if err != nil {
 		writeError(w, status, "authentication_error", "", err.Error())
+		return
+	}
+
+	// The key's own rate limit, checked before the body is even read: a
+	// throttled request should cost nothing and reach no upstream. The
+	// channel limits further down belong to the operator; this one belongs
+	// to the token itself.
+	if allowed, retryAfter := rl.tokenLimiter.allow(p.token.ID, p.token.RPMLimit); !allowed {
+		wait := int(retryAfter.Seconds()) + 1
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", wait))
+		writeError(w, http.StatusTooManyRequests, "rate_limit_error", "",
+			fmt.Sprintf("this API key is limited to %d requests per minute; retry in %ds",
+				p.token.RPMLimit, wait))
 		return
 	}
 

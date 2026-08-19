@@ -39,6 +39,7 @@ type LogFilter struct {
 	UserID    int64
 	ChannelID int64
 	TokenID   int64
+	TokenName string
 	Model     string
 	Username  string
 	// Keyword matches loosely across the text columns, for when the operator
@@ -75,6 +76,9 @@ func (f LogFilter) build() (string, []any) {
 	}
 	if f.TokenID > 0 {
 		add("token_id = $%d", f.TokenID)
+	}
+	if f.TokenName != "" {
+		add("lower(token_name) = lower($%d)", f.TokenName)
 	}
 	if f.Model != "" {
 		add("model = $%d", f.Model)

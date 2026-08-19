@@ -22,6 +22,7 @@ const heartbeatInterval = 20 * time.Second
 type streamFilter struct {
 	userID    int64 // 0 = every user (administrator view)
 	channelID int64
+	tokenName string
 	model     string
 	username  string
 	keyword   string
@@ -33,6 +34,8 @@ func (f streamFilter) matches(entry *model.RequestLog) bool {
 	case f.userID > 0 && entry.UserID != f.userID:
 		return false
 	case f.channelID > 0 && entry.ChannelID != f.channelID:
+		return false
+	case f.tokenName != "" && !strings.EqualFold(entry.TokenName, f.tokenName):
 		return false
 	case f.model != "" && entry.Model != f.model:
 		return false
@@ -67,6 +70,7 @@ func matchesKeyword(entry *model.RequestLog, keyword string) bool {
 func streamFilterFrom(r *http.Request) streamFilter {
 	return streamFilter{
 		channelID: queryInt64(r, "channel_id"),
+		tokenName: r.URL.Query().Get("token_name"),
 		model:     r.URL.Query().Get("model"),
 		username:  r.URL.Query().Get("username"),
 		keyword:   strings.TrimSpace(r.URL.Query().Get("keyword")),

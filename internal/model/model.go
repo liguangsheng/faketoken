@@ -82,15 +82,18 @@ type UserGroup struct {
 }
 
 type Token struct {
-	ID             int64    `json:"id"`
-	UserID         int64    `json:"user_id"`
-	Name           string   `json:"name"`
-	KeyPrefix      string   `json:"key_prefix"`
-	Status         int16    `json:"status"`
-	UnlimitedQuota bool     `json:"unlimited_quota"`
-	Quota          int64    `json:"quota"`
-	UsedQuota      int64    `json:"used_quota"`
-	AllowedModels  []string `json:"allowed_models"`
+	ID             int64  `json:"id"`
+	UserID         int64  `json:"user_id"`
+	Name           string `json:"name"`
+	KeyPrefix      string `json:"key_prefix"`
+	Status         int16  `json:"status"`
+	UnlimitedQuota bool   `json:"unlimited_quota"`
+	Quota          int64  `json:"quota"`
+	UsedQuota      int64  `json:"used_quota"`
+	// RPMLimit caps how many requests this key may make per minute. 0 means
+	// unlimited. Enforced at the relay before any routing happens.
+	RPMLimit      int32    `json:"rpm_limit"`
+	AllowedModels []string `json:"allowed_models"`
 	// Group routes and prices this key. Empty follows the owning account's
 	// group, which is how every key behaved before this field existed.
 	Group      string     `json:"group"`
@@ -117,31 +120,31 @@ type Channel struct {
 	Models    []string `json:"models"`
 	// ModelPrefixes route a whole family ("gpt-4") without enumerating every
 	// snapshot name. They are only consulted when no exact model matches.
-	ModelPrefixes  []string          `json:"model_prefixes"`
-	ModelMapping   map[string]string `json:"model_mapping"`
-	Headers        map[string]string `json:"headers"`
-	TimeoutSecs    int32             `json:"timeout_secs"`
-	ProxyURL       string            `json:"proxy_url"`
-	PriceRatio     float64           `json:"price_ratio"`
+	ModelPrefixes []string          `json:"model_prefixes"`
+	ModelMapping  map[string]string `json:"model_mapping"`
+	Headers       map[string]string `json:"headers"`
+	TimeoutSecs   int32             `json:"timeout_secs"`
+	ProxyURL      string            `json:"proxy_url"`
+	PriceRatio    float64           `json:"price_ratio"`
 	// RPMLimit caps how many requests the channel may serve per minute. 0
 	// means unlimited; a channel left at 0 has no rate limiting applied.
-	RPMLimit       int32             `json:"rpm_limit"`
-	UsedQuota      int64             `json:"used_quota"`
-	RequestCount   int64             `json:"request_count"`
-	ErrorCount     int64             `json:"error_count"`
-	LastError      string            `json:"last_error"`
-	LastErrorAt    *time.Time        `json:"last_error_at"`
-	TestedAt       *time.Time        `json:"tested_at"`
-	ModelsSyncedAt *time.Time        `json:"models_synced_at"`
+	RPMLimit       int32      `json:"rpm_limit"`
+	UsedQuota      int64      `json:"used_quota"`
+	RequestCount   int64      `json:"request_count"`
+	ErrorCount     int64      `json:"error_count"`
+	LastError      string     `json:"last_error"`
+	LastErrorAt    *time.Time `json:"last_error_at"`
+	TestedAt       *time.Time `json:"tested_at"`
+	ModelsSyncedAt *time.Time `json:"models_synced_at"`
 	// TestModel is what the console probe sends. Empty falls back to the first
 	// served model, which is meaningless for a prefix-only channel.
-	TestModel string    `json:"test_model"`
+	TestModel string `json:"test_model"`
 	// SupportedProtocols is the set of upstream dialects the channel answers.
 	// The probe narrows it; the operator can edit it. Empty means every
 	// dialect, so an old channel keeps routing as it did before the column
 	// existed.
-	SupportedProtocols []string `json:"supported_protocols"`
-	Note               string   `json:"note"`
+	SupportedProtocols []string  `json:"supported_protocols"`
+	Note               string    `json:"note"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 

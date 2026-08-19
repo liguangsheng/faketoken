@@ -24,7 +24,17 @@ import (
 const (
 	// APIKeyPrefix is prepended to every relay key we hand out.
 	APIKeyPrefix = "sk-"
-	keyBytes     = 24
+
+	// keyAlphabet spells out every character a generated key may contain.
+	// Strictly alphanumeric: keys get pasted into curl commands, YAML and
+	// double-clicked terminal selections, where '-' and '_' invite quoting
+	// and word-boundary surprises.
+	keyAlphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+	// keyChars is the generated length after the prefix. 32 draws from a
+	// 62-character alphabet carry ~190 bits of entropy — on par with the 24
+	// raw bytes the previous base64 encoding packed into the same length.
+	keyChars = 32
 )
 
 var ErrInvalidToken = errors.New("invalid or expired session")
@@ -45,11 +55,26 @@ func CheckPassword(hash, plain string) bool {
 // GenerateAPIKey returns the raw key (shown to the user exactly once), its
 // sha256 hash used for lookups, and a masked prefix kept for display.
 func GenerateAPIKey() (raw, hash, prefix string, err error) {
-	buf := make([]byte, keyBytes)
-	if _, err = rand.Read(buf); err != nil {
-		return "", "", "", err
+	body := make([]byte, 0, keyChars)
+	buf := make([]byte, keyChars*2)
+	for len(body) < keyChars {
+		if _, err = rand.Read(buf); err != nil {
+			return "", "", "", err
+		}
+		for _, b := range buf {
+			// Rejection sampling keeps the draw uniform: 248 is the largest
+			// multiple of 62 that fits a byte, so anything above it is thrown
+			// away instead of folding unevenly onto the alphabet.
+			if b >= 248 {
+				continue
+			}
+			body = append(body, keyAlphabet[int(b)%len(keyAlphabet)])
+			if len(body) == keyChars {
+				break
+			}
+		}
 	}
-	raw = APIKeyPrefix + base64.RawURLEncoding.EncodeToString(buf)
+	raw = APIKeyPrefix + string(body)
 	hash = HashAPIKey(raw)
 	prefix = MaskAPIKey(raw)
 	return raw, hash, prefix, nil
