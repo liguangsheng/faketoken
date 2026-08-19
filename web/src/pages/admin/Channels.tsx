@@ -89,6 +89,17 @@ const MAX_PRIORITY = 1_000_000
 const MIN_WEIGHT = 1
 const MAX_WEIGHT = 1_000_000
 
+/**
+ * The picker's row list: what upstream just returned, plus anything the channel
+ * already serves that upstream did not offer. Without the second half a
+ * configured model that has since disappeared upstream would be invisible here
+ * while still counted as selected — "已选 3 / 共 2" and no way to see which.
+ */
+function withConfigured(upstream: string[], configured: string[]): string[] {
+  const known = new Set(upstream)
+  return [...upstream, ...configured.filter((model) => !known.has(model))]
+}
+
 function statusHint(channel: Channel) {
   if (channel.status === STATUS.ENABLED) return '已启用，点击停止向该渠道转发'
   return '已禁用，点击恢复转发'
@@ -252,7 +263,7 @@ export default function Channels() {
   // Only used when the clipboard is unavailable, which happens over plain HTTP.
   const [revealed, setRevealed] = useState<{ name: string; text: string } | null>(null)
   const [picker, setPicker] = useState<
-    { models: string[]; channel?: Channel; toForm?: boolean } | null
+    { models: string[]; upstream: string[]; channel?: Channel; toForm?: boolean } | null
   >(null)
   const [selectedModels, setSelectedModels] = useState<string[]>([])
   const [pickerFilter, setPickerFilter] = useState('')
@@ -473,8 +484,15 @@ export default function Channels() {
         message.warning('上游返回了空的模型列表')
         return
       }
-      setPicker({ channel, models: result.models })
-      setSelectedModels(channel.models.length ? channel.models : result.models)
+      // Preselect exactly what the channel serves today — never everything
+       // upstream offers. A blanket selection turns one stray click on 保存
+       // into a hundred newly routed models.
+      setPicker({
+        channel,
+        models: withConfigured(result.models, channel.models),
+        upstream: result.models,
+      })
+      setSelectedModels(channel.models)
       setPickerFilter('')
     } catch (error) {
       hide()
@@ -512,8 +530,12 @@ export default function Channels() {
       }
 
       const current: string[] = values.models ?? []
-      setPicker({ models: result.models, toForm: true })
-      setSelectedModels(current.length ? current : result.models)
+      setPicker({
+        models: withConfigured(result.models, current),
+        upstream: result.models,
+        toForm: true,
+      })
+      setSelectedModels(current)
       setPickerFilter('')
     } catch (error) {
       message.error(error instanceof Error ? error.message : '拉取失败')
@@ -1973,12 +1995,18 @@ export default function Channels() {
             ? `填入 ${selectedModels.length} 个模型`
             : `保存 ${selectedModels.length} 个模型`
         }
-        okButtonProps={{ disabled: selectedModels.length === 0 }}
+        okButtonProps={{
+          disabled: selectedModels.length === 0,
+          // Nothing selected is the honest starting point for a channel that
+          // serves nothing yet; say why the button is parked.
+          title: selectedModels.length === 0 ? '请先勾选要启用的模型，或点「全选」' : undefined,
+        }}
       >
         <Space style={{ marginBottom: 12 }} wrap>
           <Input
             allowClear
             placeholder="过滤模型"
+            aria-label="过滤模型"
             style={{ width: 220 }}
             value={pickerFilter}
             onChange={(event) => setPickerFilter(event.target.value)}
@@ -1996,6 +2024,7 @@ export default function Channels() {
           <Button onClick={() => setSelectedModels([])}>清空</Button>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             已选 {selectedModels.length} / 共 {picker?.models.length ?? 0}
+            {selectedModels.length === 0 && '（默认选中该渠道原有模型）'}
           </Typography.Text>
         </Space>
 
@@ -2017,6 +2046,16 @@ export default function Channels() {
               {visiblePickerModels.map((item) => (
                 <Checkbox key={item} value={item} className="mono">
                   {item}
+                  {/* Configured here but absent from this probe: keeping it
+                      ticked is fine, but it should not look like the upstream
+                      just confirmed it. */}
+                  {picker && !picker.upstream.includes(item) && (
+                    <Tooltip title="该模型已配置在渠道上，但本次拉取的上游列表里没有它">
+                      <Tag color="gold" style={{ marginInlineStart: 8 }}>
+                        上游未提供
+                      </Tag>
+                    </Tooltip>
+                  )}
                 </Checkbox>
               ))}
             </Checkbox.Group>
