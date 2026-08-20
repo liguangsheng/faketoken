@@ -76,6 +76,13 @@ export const NAV_SECTIONS: NavSection[] = [
     admin: true,
     items: [
       {
+        key: '/admin/logs',
+        label: '全局日志',
+        icon: <FileTextOutlined />,
+        description: '全部用户的逐次调用记录与完整正文',
+        admin: true,
+      },
+      {
         key: '/admin/channels',
         label: '渠道管理',
         icon: <ApiOutlined />,
@@ -101,13 +108,6 @@ export const NAV_SECTIONS: NavSection[] = [
         label: '模型价格',
         icon: <DollarOutlined />,
         description: '按「美元 / 100 万 Token」维护模型单价',
-        admin: true,
-      },
-      {
-        key: '/admin/logs',
-        label: '全局日志',
-        icon: <FileTextOutlined />,
-        description: '全部用户的逐次调用记录与完整正文',
         admin: true,
       },
       {

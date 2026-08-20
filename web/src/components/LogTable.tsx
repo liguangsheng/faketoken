@@ -778,9 +778,9 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
                       <span className="mono text-muted cell-stack__sub cell-stack__clip">
                         → {row.upstream_model}
                       </span>
-                    ) : (
+                    ) : !admin ? (
                       <span className="text-muted cell-stack__sub">未映射</span>
-                    )}
+                    ) : null}
                   </div>
                 </Tooltip>
               )
@@ -798,7 +798,7 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
                 >
                   {value}
                 </Tag>
-              ) : (
+              ) : admin ? null : (
                 <span className="text-muted">未指定</span>
               ),
           },
@@ -1238,9 +1238,11 @@ function LogMeta({ detail, admin }: { detail: RequestLog; admin?: boolean }) {
       <Descriptions.Item label="请求模型">
         <span className="mono">{detail.model}</span>
       </Descriptions.Item>
-      <Descriptions.Item label="上游模型">
-        <span className="mono">{detail.upstream_model || detail.model}</span>
-      </Descriptions.Item>
+      {(!admin || (detail.upstream_model && detail.upstream_model !== detail.model)) && (
+        <Descriptions.Item label="上游模型">
+          <span className="mono">{detail.upstream_model || detail.model}</span>
+        </Descriptions.Item>
+      )}
       <Descriptions.Item label="渠道">
         {detail.channel_id > 0 ? (
           <>
@@ -1260,15 +1262,17 @@ function LogMeta({ detail, admin }: { detail: RequestLog; admin?: boolean }) {
         <Tag color={statusTone(detail.status_code)}>{detail.status_code}</Tag>
         {detail.stream ? <Tag color="blue">流式</Tag> : <Tag>非流式</Tag>}
       </Descriptions.Item>
-      <Descriptions.Item label="思考强度">
-        {detail.reasoning_effort ? (
-          <Tag color={REASONING_TONE[detail.reasoning_effort] ?? 'default'}>
-            {detail.reasoning_effort}
-          </Tag>
-        ) : (
-          <span className="text-muted">未指定</span>
-        )}
-      </Descriptions.Item>
+      {(!admin || detail.reasoning_effort) && (
+        <Descriptions.Item label="思考强度">
+          {detail.reasoning_effort ? (
+            <Tag color={REASONING_TONE[detail.reasoning_effort] ?? 'default'}>
+              {detail.reasoning_effort}
+            </Tag>
+          ) : (
+            <span className="text-muted">未指定</span>
+          )}
+        </Descriptions.Item>
+      )}
       <Descriptions.Item label="客户端">
         {detail.client_type && detail.client_type !== 'unknown' ? (
           <Tag>{detail.client_type}</Tag>
