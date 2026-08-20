@@ -51,12 +51,15 @@ make dev          # 另开终端跑 Vite，热更新，自动代理 /api 与 /v1
 ### 测试
 
 ```bash
-make test         # 单元测试
+make test              # 单元测试
 
-# 端到端集成测试（需要一个可随意清空的库，会 DROP SCHEMA）
-make db-up
-TEST_DATABASE_URL='postgres://llmproxy:llmproxy@localhost:5433/llmproxy?sslmode=disable' \
-  go test ./internal/api -v
+# 端到端集成测试。用的是独立的一次性 Postgres（另一个端口 + tmpfs 存储，
+# 因为每次开场都会 DROP SCHEMA），跑完自动删掉容器，失败和 Ctrl-C 也一样。
+make test-integration
+
+# 想留着实例连着跑几轮，省掉每次约 2 秒的启动：
+make test-db           # 先手动起来，之后 make test-integration 不会再删它
+make test-db-down      # 用完手动下掉
 ```
 
 ## 客户端接入

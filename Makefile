@@ -32,15 +32,17 @@ prices: ## Refresh the built-in price table from models.dev
 	go run ./cmd/genprices
 	go test ./internal/billing -count=1
 
-test-db: ## Start the throwaway Postgres instance the integration tests use
+test-db: ## Start the throwaway Postgres instance and leave it up (for a tight test loop)
 	docker compose --profile test up -d --wait postgres-test
 
 test-db-down: ## Stop the throwaway instance and discard its data
 	docker compose --profile test rm -sf postgres-test
 
-test-integration: test-db ## Run the integration suite against the throwaway instance
-	TEST_DATABASE_URL="postgres://$${POSTGRES_USER:-llmproxy}:$${POSTGRES_PASSWORD:-llmproxy}@localhost:$${TEST_POSTGRES_PORT:-5434}/faketoken_test?sslmode=disable" \
-		go test ./internal/api -count=1
+# The instance is started and removed by the script, so a run leaves no second
+# Postgres behind on the host. KEEP_TEST_DB=1, or a prior `make test-db`, keeps
+# it up for the next run.
+test-integration: ## Run the integration suite on a throwaway instance, then remove it
+	./scripts/integration-test.sh
 
 db-up: ## Start only Postgres
 	docker compose up -d postgres
