@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/faketoken/faketoken/internal/auth"
+	"github.com/faketoken/faketoken/internal/keepalive"
 	"github.com/faketoken/faketoken/internal/model"
 	"github.com/faketoken/faketoken/internal/provider"
 	"github.com/faketoken/faketoken/internal/relay"
@@ -42,6 +43,12 @@ type channelInput struct {
 	// keep routing as they did before.
 	SupportedProtocols []string `json:"supported_protocols"`
 	Note               string   `json:"note"`
+	// Keepalive configuration. The window's own state (open, progress, when it
+	// last opened) is owned by the scheduler and the relay bookkeeping, and is
+	// never accepted from a request: saving the form must not reset a counter.
+	KeepaliveEnabled bool   `json:"keepalive_enabled"`
+	KeepaliveAt      string `json:"keepalive_at"`
+	KeepaliveTarget  int32  `json:"keepalive_target"`
 }
 
 func (in channelInput) toModel(id int64) *model.Channel {
@@ -66,6 +73,9 @@ func (in channelInput) toModel(id int64) *model.Channel {
 		TestModel:          strings.TrimSpace(in.TestModel),
 		SupportedProtocols: in.SupportedProtocols,
 		Note:               in.Note,
+		KeepaliveEnabled:   in.KeepaliveEnabled,
+		KeepaliveAt:        strings.TrimSpace(in.KeepaliveAt),
+		KeepaliveTarget:    in.KeepaliveTarget,
 	}
 	if ch.PriceRatio <= 0 {
 		ch.PriceRatio = 1
@@ -141,6 +151,22 @@ func (s *Server) handleChannelCredential(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// validKeepalive checks the schedule an operator typed. An unparseable time or
+// a zero target would leave a channel that says it is kept alive and never is,
+// so it is refused at write time rather than ignored by the scheduler.
+func validKeepalive(in channelInput) (string, bool) {
+	if !in.KeepaliveEnabled {
+		return "", true
+	}
+	if _, _, ok := keepalive.ParseAt(strings.TrimSpace(in.KeepaliveAt)); !ok {
+		return "keepalive needs a daily time as HH:MM, for example 03:00", false
+	}
+	if in.KeepaliveTarget < 1 {
+		return "keepalive needs a target of at least one successful request", false
+	}
+	return "", true
+}
+
 func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	var in channelInput
 	if !decode(w, r, &in) {
@@ -156,6 +182,10 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validAuthStyle(in.AuthStyle) {
 		fail(w, http.StatusBadRequest, "unsupported authentication style: "+in.AuthStyle)
+		return
+	}
+	if message, ok := validKeepalive(in); !ok {
+		fail(w, http.StatusBadRequest, message)
 		return
 	}
 
@@ -189,6 +219,10 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validAuthStyle(in.AuthStyle) {
 		fail(w, http.StatusBadRequest, "unsupported authentication style: "+in.AuthStyle)
+		return
+	}
+	if message, ok := validKeepalive(in); !ok {
+		fail(w, http.StatusBadRequest, message)
 		return
 	}
 

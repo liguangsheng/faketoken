@@ -18,6 +18,7 @@ import (
 	"github.com/faketoken/faketoken/internal/billing"
 	"github.com/faketoken/faketoken/internal/config"
 	"github.com/faketoken/faketoken/internal/db"
+	"github.com/faketoken/faketoken/internal/keepalive"
 	"github.com/faketoken/faketoken/internal/model"
 	"github.com/faketoken/faketoken/internal/relay"
 	"github.com/faketoken/faketoken/internal/store"
@@ -87,6 +88,13 @@ func run() error {
 	pricer.StartRefresh(ctx, time.Minute)
 	slog.Info("billing ready", "unpriced_policy", pricer.Settings().UnpricedPolicy)
 
+	// Once a minute is enough for a schedule configured to the minute. The
+	// zone is logged because it is the one thing that can quietly make every
+	// keepalive window fire at the wrong hour: the container runs in UTC unless
+	// TZ says otherwise.
+	keepalive.New(st).Start(ctx, time.Minute)
+	logKeepaliveSchedule(ctx, st)
+
 	jwt := auth.NewJWTManager(cfg.JWTSecret, cfg.SessionTTL)
 	rl := relay.New(st, pricer, cfg)
 	server := api.NewServer(cfg, st, jwt, pricer, rl)
@@ -118,6 +126,34 @@ func run() error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		return httpServer.Shutdown(shutdownCtx)
+	}
+}
+
+// logKeepaliveSchedule reports the zone the daily windows are read in, and when
+// each configured channel opens next. A channel set to 03:00 by an operator in
+// +08 opens at 11:00 their time if the process runs in UTC, and nothing else
+// about the deployment would reveal that.
+func logKeepaliveSchedule(ctx context.Context, st *store.Store) {
+	zone, offset := time.Now().Zone()
+	channels, err := st.ListKeepaliveChannels(ctx)
+	if err != nil {
+		slog.Warn("keepalive schedule unreadable", "error", err)
+		return
+	}
+	slog.Info("keepalive ready", "zone", zone, "utc_offset_hours", offset/3600,
+		"channels", len(channels))
+	now := time.Now()
+	for _, ch := range channels {
+		next, ok := keepalive.NextRun(ch, now)
+		if !ok {
+			slog.Warn("keepalive channel is configured but can never open",
+				"channel", ch.ID, "name", ch.Name, "at", ch.KeepaliveAt,
+				"target", ch.KeepaliveTarget)
+			continue
+		}
+		slog.Info("keepalive schedule", "channel", ch.ID, "name", ch.Name,
+			"at", ch.KeepaliveAt, "target", ch.KeepaliveTarget,
+			"next_run", next.Format(time.RFC3339))
 	}
 }
 

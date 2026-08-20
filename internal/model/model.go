@@ -148,6 +148,21 @@ type Channel struct {
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 
+	// Keepalive opens the channel on a daily schedule and closes it again once
+	// it has served KeepaliveTarget successful requests, for upstreams that
+	// reclaim an account which sees no traffic. The successes are ordinary
+	// relayed traffic: opening the channel is what lets routing reach it.
+	KeepaliveEnabled bool `json:"keepalive_enabled"`
+	// KeepaliveAt is "HH:MM" in the server's local zone.
+	KeepaliveAt     string `json:"keepalive_at"`
+	KeepaliveTarget int32  `json:"keepalive_target"`
+	// KeepaliveOpen reports whether a window is currently counting. Separate
+	// from KeepaliveOpenedAt, which is kept after the window closes so the
+	// scheduler knows today's run already happened.
+	KeepaliveOpen     bool       `json:"keepalive_open"`
+	KeepaliveSuccess  int32      `json:"keepalive_success"`
+	KeepaliveOpenedAt *time.Time `json:"keepalive_opened_at"`
+
 	// APIKey is decrypted on read and masked before leaving the API layer.
 	APIKey string `json:"api_key,omitempty"`
 }

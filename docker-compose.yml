@@ -84,6 +84,10 @@ services:
       BILLING_FALLBACK_CACHED_PRICE: ${BILLING_FALLBACK_CACHED_PRICE:-0}
       BILLING_FALLBACK_PER_REQUEST_PRICE: ${BILLING_FALLBACK_PER_REQUEST_PRICE:-0}
       WEB_DIR: /app/web
+      # The daily keepalive windows are read in this zone, not UTC. Without it
+      # the process runs in UTC and a channel set to 03:00 opens at 11:00 for an
+      # operator in +08 — same convention as BACKUP_AT below.
+      TZ: ${TZ:-Asia/Singapore}
       # Blank or unset falls back to the claim compiled into the binary.
       ARA_CLAIM: ${ARA_CLAIM:-}
     ports:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -44,7 +45,9 @@ func normaliseProtocols(in []string) []string {
 const channelColumns = `id, name, base_url, auth_style, api_key_enc, status, priority, weight,
 	channel_groups, models, model_mapping, headers, timeout_secs, proxy_url, price_ratio,
 	rpm_limit, used_quota, request_count, error_count, last_error, last_error_at, tested_at,
-	models_synced_at, note, created_at, updated_at, model_prefixes, test_model, supported_protocols`
+	models_synced_at, note, created_at, updated_at, model_prefixes, test_model, supported_protocols,
+	keepalive_enabled, keepalive_at, keepalive_target, keepalive_open, keepalive_success,
+	keepalive_opened_at`
 
 func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 	var c model.Channel
@@ -53,7 +56,9 @@ func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 		&c.Weight, &c.Groups, &c.Models, &c.ModelMapping, &c.Headers, &c.TimeoutSecs,
 		&c.ProxyURL, &c.PriceRatio, &c.RPMLimit, &c.UsedQuota, &c.RequestCount, &c.ErrorCount,
 		&c.LastError, &c.LastErrorAt, &c.TestedAt, &c.ModelsSyncedAt, &c.Note,
-		&c.CreatedAt, &c.UpdatedAt, &c.ModelPrefixes, &c.TestModel, &c.SupportedProtocols)
+		&c.CreatedAt, &c.UpdatedAt, &c.ModelPrefixes, &c.TestModel, &c.SupportedProtocols,
+		&c.KeepaliveEnabled, &c.KeepaliveAt, &c.KeepaliveTarget, &c.KeepaliveOpen,
+		&c.KeepaliveSuccess, &c.KeepaliveOpenedAt)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -95,14 +100,20 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
 
+	// Only the three keepalive configuration fields are written. The window
+	// state keeps its column defaults, which is also what makes CloneChannel
+	// produce a channel with no window running.
 	row := tx.QueryRow(ctx, `INSERT INTO channels
 		(name, base_url, auth_style, api_key_enc, status, priority, weight, channel_groups,
 		 models, model_mapping, headers, timeout_secs, proxy_url, price_ratio, rpm_limit, note,
-		 model_prefixes, test_model, supported_protocols)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING `+channelColumns,
+		 model_prefixes, test_model, supported_protocols,
+		 keepalive_enabled, keepalive_at, keepalive_target)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+		RETURNING `+channelColumns,
 		c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, enc, c.Status, c.Priority, c.Weight,
 		c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL, c.PriceRatio,
-		c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel, normaliseProtocols(c.SupportedProtocols))
+		c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel, normaliseProtocols(c.SupportedProtocols),
+		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget)
 	created, err := s.scanChannel(row)
 	if err != nil {
 		return nil, nameConflict(err, c.Name)
@@ -129,7 +140,8 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	args := []any{c.ID, c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, c.Status, c.Priority,
 		c.Weight, c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL,
 		c.PriceRatio, c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel,
-		normaliseProtocols(c.SupportedProtocols)}
+		normaliseProtocols(c.SupportedProtocols),
+		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget}
 	if c.APIKey != "" {
 		enc, err := s.cipher.Encrypt(c.APIKey)
 		if err != nil {
@@ -144,8 +156,14 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		channel_groups = $8, models = $9, model_mapping = $10, headers = $11,
 		timeout_secs = $12, proxy_url = $13, price_ratio = $14, rpm_limit = $15, note = $16,
 		model_prefixes = $17, test_model = $18, supported_protocols = $19,
+		keepalive_enabled = $20, keepalive_at = $21, keepalive_target = $22,
+		-- The form carries status, so saving a channel as disabled abandons its
+		-- keepalive window here just as the listing toggle does. Progress is
+		-- otherwise left alone: saving the form must not reset the counter.
+		keepalive_open = CASE WHEN $5::smallint <> %d::smallint
+		                     THEN FALSE ELSE keepalive_open END,
 		api_key_enc = %s, updated_at = now()
-		WHERE id = $1 RETURNING %s`, keyClause, channelColumns), args...)
+		WHERE id = $1 RETURNING %s`, model.StatusEnabled, keyClause, channelColumns), args...)
 
 	updated, err := s.scanChannel(row)
 	if err != nil {
@@ -317,11 +335,17 @@ func (s *Store) SetChannelStatus(ctx context.Context, id int64, status int16, re
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	// Taking a channel out of rotation abandons any keepalive window it was
+	// running: a disabled channel serves nothing, so the counter must not keep
+	// standing. keepalive_opened_at is left alone, which is what stops the
+	// scheduler reopening the channel for the same day.
 	if _, err := tx.Exec(ctx, `UPDATE channels
 		SET status = $2, last_error = CASE WHEN $3 = '' THEN last_error ELSE $3 END,
 		    last_error_at = CASE WHEN $3 = '' THEN last_error_at ELSE now() END,
+		    keepalive_open = CASE WHEN $2::smallint <> $4::smallint
+		                         THEN FALSE ELSE keepalive_open END,
 		    updated_at = now()
-		WHERE id = $1`, id, status, reason); err != nil {
+		WHERE id = $1`, id, status, reason, int16(model.StatusEnabled)); err != nil {
 		return err
 	}
 	enabled := status == model.StatusEnabled
@@ -348,8 +372,10 @@ func (s *Store) SetChannelsStatus(ctx context.Context, ids []int64, status int16
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	tag, err := tx.Exec(ctx, `UPDATE channels SET status = $2, updated_at = now()
-		WHERE id = ANY($1)`, ids, status)
+	tag, err := tx.Exec(ctx, `UPDATE channels SET status = $2, updated_at = now(),
+		keepalive_open = CASE WHEN $2::smallint <> $3::smallint
+		                     THEN FALSE ELSE keepalive_open END
+		WHERE id = ANY($1)`, ids, status, int16(model.StatusEnabled))
 	if err != nil {
 		return 0, err
 	}
@@ -708,15 +734,113 @@ func routingSources(ctx context.Context, tx pgx.Tx) ([]*model.Channel, error) {
 // RecordChannelResult updates the per-channel counters after a relayed request.
 func (s *Store) RecordChannelResult(ctx context.Context, id int64, cost int64, failure string) {
 	if failure == "" {
-		_, _ = s.pool.Exec(ctx, `UPDATE channels
-			SET request_count = request_count + 1, used_quota = used_quota + $2
-			WHERE id = $1`, id, cost)
+		// The keepalive counter rides along on the write that was happening
+		// anyway. It only advances while a window is open, so a channel an
+		// operator enabled by hand never accumulates progress.
+		var open bool
+		var success, target int32
+		if err := s.pool.QueryRow(ctx, `UPDATE channels
+			SET request_count = request_count + 1, used_quota = used_quota + $2,
+			    keepalive_success = keepalive_success + CASE WHEN keepalive_open THEN 1 ELSE 0 END
+			WHERE id = $1
+			RETURNING keepalive_open, keepalive_success, keepalive_target`, id, cost).
+			Scan(&open, &success, &target); err != nil {
+			return
+		}
+		// Closing is the point of the window, so it happens here rather than in
+		// the relay: this is the only place that knows a success just landed.
+		// Two concurrent successes can both see the target reached; closing
+		// twice is the same as closing once.
+		if open && target > 0 && success >= target {
+			if err := s.CloseKeepaliveWindow(ctx, id); err != nil {
+				slog.Error("keepalive close failed", "channel", id, "error", err)
+				return
+			}
+			slog.Info("keepalive target reached, channel disabled",
+				"channel", id, "successes", success, "target", target)
+		}
 		return
 	}
 	_, _ = s.pool.Exec(ctx, `UPDATE channels
 		SET request_count = request_count + 1, error_count = error_count + 1,
 		    last_error = $2, last_error_at = now()
 		WHERE id = $1`, id, truncate(failure, 500))
+}
+
+// ListKeepaliveChannels returns the channels configured for keepalive. Only
+// the scheduler calls this, once a minute, and the set is small — the decision
+// of whether a window is due is made in Go so it can be tested without a
+// database.
+func (s *Store) ListKeepaliveChannels(ctx context.Context) ([]*model.Channel, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+channelColumns+` FROM channels WHERE keepalive_enabled ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	channels := []*model.Channel{}
+	for rows.Next() {
+		c, err := s.scanChannel(rows)
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, c)
+	}
+	return channels, rows.Err()
+}
+
+// OpenKeepaliveWindow enables the channel and starts counting from zero.
+//
+// The routing tables carry their own copy of enabled, so they are flipped in
+// the same transaction as the status — exactly as SetChannelStatus does.
+// Without it the channel would read as enabled in the console while selection,
+// which only ever reads abilities, still could not reach it.
+func (s *Store) OpenKeepaliveWindow(ctx context.Context, id int64) error {
+	return s.setKeepaliveWindow(ctx, id, true)
+}
+
+// CloseKeepaliveWindow disables the channel and stops the counter. The opened-at
+// stamp is kept: it is what tells the scheduler today's window already ran.
+func (s *Store) CloseKeepaliveWindow(ctx context.Context, id int64) error {
+	return s.setKeepaliveWindow(ctx, id, false)
+}
+
+func (s *Store) setKeepaliveWindow(ctx context.Context, id int64, open bool) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	status := int16(model.StatusDisabled)
+	if open {
+		status = int16(model.StatusEnabled)
+	}
+	// Opening resets the counter and stamps the window; closing leaves both
+	// alone so the console can still show what the window achieved.
+	if open {
+		if _, err := tx.Exec(ctx, `UPDATE channels
+			SET status = $2, keepalive_open = TRUE, keepalive_success = 0,
+			    keepalive_opened_at = now(), updated_at = now()
+			WHERE id = $1`, id, status); err != nil {
+			return err
+		}
+	} else if _, err := tx.Exec(ctx, `UPDATE channels
+		SET status = $2, keepalive_open = FALSE, updated_at = now()
+		WHERE id = $1`, id, status); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE abilities SET enabled = $2 WHERE channel_id = $1`,
+		id, open); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE ability_prefixes SET enabled = $2 WHERE channel_id = $1`,
+		id, open); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) ReplaceChannelModels(ctx context.Context, channelID int64, models []string) error {

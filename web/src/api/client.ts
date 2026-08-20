@@ -72,6 +72,15 @@ export interface Channel {
   models_synced_at: string | null
   note: string
   created_at: string
+  /** Opens the channel daily and closes it again after enough successes. */
+  keepalive_enabled: boolean
+  /** "HH:MM" in the server's timezone. */
+  keepalive_at: string
+  keepalive_target: number
+  /** Whether a window is currently counting. Server-owned; never submitted. */
+  keepalive_open: boolean
+  keepalive_success: number
+  keepalive_opened_at: string | null
 }
 
 export interface RequestLog {

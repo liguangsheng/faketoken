@@ -22,6 +22,7 @@ import {
   Switch,
   Table,
   Tag,
+  TimePicker,
   Tooltip,
   Typography,
 } from 'antd'
@@ -39,6 +40,7 @@ import {
   WarningOutlined,
   WalletOutlined,
 } from '@ant-design/icons'
+import dayjs from 'dayjs'
 
 import {
   api,
@@ -98,6 +100,42 @@ const MAX_WEIGHT = 1_000_000
 function withConfigured(upstream: string[], configured: string[]): string[] {
   const known = new Set(upstream)
   return [...upstream, ...configured.filter((model) => !known.has(model))]
+}
+
+/**
+ * "HH:MM" into a dayjs the TimePicker can hold, and null for anything it cannot
+ * read. Done by hand rather than with dayjs' format parsing so the file does not
+ * have to register the customParseFormat plugin for one field; the date part is
+ * irrelevant, only the clock is stored.
+ */
+function parseClock(value: string | null | undefined) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec((value ?? '').trim())
+  if (!match) return null
+  const hour = Number(match[1])
+  const minute = Number(match[2])
+  if (hour > 23 || minute > 59) return null
+  return dayjs().hour(hour).minute(minute).second(0).millisecond(0)
+}
+
+/**
+ * What the keepalive state reads as in the table. A channel whose status flips
+ * on its own needs to say why, or the next operator to look assumes a colleague
+ * did it.
+ */
+function keepaliveTag(channel: Channel) {
+  if (!channel.keepalive_enabled) return null
+  if (channel.keepalive_open) {
+    return {
+      color: 'green',
+      text: `保活 ${channel.keepalive_success}/${channel.keepalive_target}`,
+      hint: `保活窗口进行中：已成功 ${channel.keepalive_success} 次，满 ${channel.keepalive_target} 次后自动禁用`,
+    }
+  }
+  return {
+    color: undefined,
+    text: `保活 ${channel.keepalive_at}`,
+    hint: `每天 ${channel.keepalive_at}（服务器时区）自动启用，成功 ${channel.keepalive_target} 次后自动禁用`,
+  }
 }
 
 function statusHint(channel: Channel) {
@@ -257,6 +295,9 @@ export default function Channels() {
   const [credentialFailed, setCredentialFailed] = useState(false)
   const credentialRequest = useRef(0)
   const [form] = Form.useForm()
+  // The schedule fields are meaningless until keepalive is on, and their
+  // validators must not fire while it is off.
+  const keepaliveOn = Boolean(Form.useWatch('keepalive_enabled', form))
 
   // channel is set when the picker saves straight to the server; toForm marks
   // the drawer flow, where the choice is written back into the edit form.
@@ -363,6 +404,7 @@ export default function Channels() {
             model_prefixes: (channel.model_prefixes ?? []).join('\n'),
             model_mapping: stringifyMapping(channel.model_mapping),
             headers: stringifyMapping(channel.headers),
+            keepalive_at: parseClock(channel.keepalive_at),
           }
         : {
             name: '',
@@ -384,6 +426,9 @@ export default function Channels() {
             test_model: '',
             supported_protocols: ['chat_completions', 'responses', 'messages'],
             note: '',
+            keepalive_enabled: false,
+            keepalive_at: null,
+            keepalive_target: 0,
           }),
       ...overrides,
     })
@@ -455,6 +500,10 @@ export default function Channels() {
       test_model: values.test_model ?? '',
       supported_protocols: values.supported_protocols ?? ['chat_completions', 'responses', 'messages'],
       note: values.note ?? '',
+      keepalive_enabled: Boolean(values.keepalive_enabled),
+      // The picker holds a dayjs; the server stores and validates "HH:MM".
+      keepalive_at: values.keepalive_at ? dayjs(values.keepalive_at).format('HH:mm') : '',
+      keepalive_target: Number(values.keepalive_target ?? 0),
     }
 
     setSaving(true)
@@ -1081,7 +1130,7 @@ export default function Channels() {
         tableLayout="fixed"
         // Sum of the column widths (plus selection/expand); without it a
         // mid-width window crushes every column instead of scrolling.
-        scroll={{ x: 1290 }}
+        scroll={{ x: 1312 }}
         rowClassName={(row) => (row.status !== STATUS.ENABLED ? 'row-disabled' : '')}
         rowSelection={{
           selectedRowKeys: selectedIds,
@@ -1320,26 +1369,44 @@ export default function Channels() {
             // the window first.
             title: '状态',
             dataIndex: 'status',
-            width: 82,
-            render: (_: number, row) => (
-              <Space size={4}>
-                <Tooltip title={statusHint(row)}>
-                  {/* A plain span keeps the tooltip anchored while the switch
-                      is loading and stops accepting pointer events. */}
-                  <span style={{ display: 'inline-flex' }}>
-                    <Switch
-                      size="small"
-                      checked={row.status === STATUS.ENABLED}
-                      loading={togglingId === row.id}
-                      aria-label={`启用或禁用渠道 ${row.name}`}
-                      onChange={(next) =>
-                        void setStatus(row, next ? STATUS.ENABLED : STATUS.DISABLED)
-                      }
-                    />
-                  </span>
-                </Tooltip>
-              </Space>
-            ),
+            // Wider than a switch needs: the keepalive marker sits underneath it
+            // and "保活 03:00" is the widest thing that appears there.
+            width: 104,
+            render: (_: number, row) => {
+              const keepalive = keepaliveTag(row)
+              return (
+                <div style={{ display: 'grid', gap: 4, justifyItems: 'start' }}>
+                  <Tooltip title={statusHint(row)}>
+                    {/* A plain span keeps the tooltip anchored while the switch
+                        is loading and stops accepting pointer events. */}
+                    <span style={{ display: 'inline-flex' }}>
+                      <Switch
+                        size="small"
+                        checked={row.status === STATUS.ENABLED}
+                        loading={togglingId === row.id}
+                        aria-label={`启用或禁用渠道 ${row.name}`}
+                        onChange={(next) =>
+                          void setStatus(row, next ? STATUS.ENABLED : STATUS.DISABLED)
+                        }
+                      />
+                    </span>
+                  </Tooltip>
+                  {/* Under the switch on purpose: this channel's status changes
+                      on its own, and without a marker the next operator to look
+                      assumes a colleague flipped it. */}
+                  {keepalive && (
+                    <Tooltip title={keepalive.hint}>
+                      <Tag
+                        color={keepalive.color}
+                        style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: '16px' }}
+                      >
+                        {keepalive.text}
+                      </Tag>
+                    </Tooltip>
+                  )}
+                </div>
+              )
+            },
           },
           {
             title: '操作',
@@ -1724,6 +1791,81 @@ export default function Channels() {
                     <Form.Item name="proxy_url" label="HTTP 代理" tooltip="例如 http://127.0.0.1:7890">
                       <Input placeholder="留空表示直连" />
                     </Form.Item>
+
+                    <Divider style={{ margin: '4px 0 12px' }} />
+
+                    {/* Keepalive owns the channel's status while it runs, which
+                        is why it sits with the other things that change how the
+                        channel behaves rather than in the main form. */}
+                    <Row gutter={16}>
+                      <Col xs={24} md={8}>
+                        <Form.Item
+                          name="keepalive_enabled"
+                          label="保活"
+                          valuePropName="checked"
+                          tooltip="为会回收闲置账号的上游准备：每天定时自动启用该渠道，攒够成功请求后自动禁用"
+                        >
+                          <Switch />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item
+                          name="keepalive_at"
+                          label="每天启用时间"
+                          tooltip="按服务器时区。服务端在该时刻停机时，启动后当天会补开一次"
+                          rules={[
+                            {
+                              // Only required once keepalive is on: a channel
+                              // that claims to be kept alive and never opens is
+                              // worse than a rejected form.
+                              validator: (_, value) =>
+                                !keepaliveOn || value
+                                  ? Promise.resolve()
+                                  : Promise.reject(new Error('开启保活需要填写时间')),
+                            },
+                          ]}
+                        >
+                          <TimePicker
+                            format="HH:mm"
+                            minuteStep={5}
+                            disabled={!keepaliveOn}
+                            placeholder="03:00"
+                            style={{ width: '100%' }}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item
+                          name="keepalive_target"
+                          label="目标成功次数"
+                          tooltip="窗口内累计这么多次成功请求后自动禁用该渠道。次数由真实流量产生，攒不满就一直开着"
+                          rules={[
+                            {
+                              validator: (_, value) =>
+                                !keepaliveOn || Number(value) >= 1
+                                  ? Promise.resolve()
+                                  : Promise.reject(new Error('至少 1 次')),
+                            },
+                          ]}
+                        >
+                          <InputNumber
+                            min={0}
+                            precision={0}
+                            disabled={!keepaliveOn}
+                            style={{ width: '100%' }}
+                          />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                    {keepaliveOn && editing?.keepalive_open && (
+                      <Alert
+                        type="info"
+                        showIcon
+                        style={{ marginBottom: 12 }}
+                        message={`保活窗口进行中：已成功 ${editing.keepalive_success}/${editing.keepalive_target} 次`}
+                        description="保存表单不会重置进度；把状态改为禁用会放弃本轮窗口，次日到点再开。"
+                      />
+                    )}
                   </>
                 ),
               },
