@@ -249,9 +249,9 @@ export default function Channels() {
 
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<Channel | null>(null)
-  // The advanced connection fields fold away: a new channel needs three
-  // fields, not seventeen.
-  const [connOpen, setConnOpen] = useState(false)
+  // The advanced fields fold away: a new channel needs three fields, not
+  // seventeen.
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [loadingCredential, setLoadingCredential] = useState(false)
   const [credentialFailed, setCredentialFailed] = useState(false)
@@ -349,7 +349,7 @@ export default function Channels() {
     const shouldRevealCredential = Boolean(channel && !overrideKey)
 
     setEditing(channel ?? null)
-    setConnOpen(Boolean(channel))
+    setAdvancedOpen(Boolean(channel))
     setLoadingCredential(shouldRevealCredential)
     setCredentialFailed(false)
     // Clears stale validation errors from the previous visit along with values.
@@ -1618,14 +1618,6 @@ export default function Channels() {
           </Form.Item>
 
           <Form.Item
-            name="model_prefixes"
-            label="模型前缀"
-            tooltip="每行一个前缀，例如 gpt-4 可覆盖 gpt-4o、gpt-4.1；只有当没有渠道精确匹配该模型时才生效"
-          >
-            <Input.TextArea rows={3} placeholder={'gpt-4\nclaude-'} />
-          </Form.Item>
-
-          <Form.Item
             name="model_mapping"
             label="模型映射"
             tooltip="每行 客户端模型=上游模型，转发时只改写 model 字段"
@@ -1636,17 +1628,17 @@ export default function Channels() {
           <Collapse
             ghost
             className="drawer-collapse"
-            activeKey={connOpen ? ['conn'] : []}
-            onChange={(keys) => setConnOpen(keys.length > 0)}
+            activeKey={advancedOpen ? ['advanced'] : []}
+            onChange={(keys) => setAdvancedOpen(keys.length > 0)}
             style={{ marginBottom: 8 }}
             items={[
               {
-                key: 'conn',
+                key: 'advanced',
                 label: (
                   <Typography.Text strong>
-                    连接选项
+                    高级设置
                     <Typography.Text type="secondary" style={{ fontSize: 12, marginInlineStart: 8 }}>
-                      超时 / 鉴权 / 协议 / 代理
+                      前缀 / 超时 / 鉴权 / 协议 / 代理
                     </Typography.Text>
                   </Typography.Text>
                 ),
@@ -1691,6 +1683,17 @@ export default function Channels() {
                         </Form.Item>
                       </Col>
                     </Row>
+
+                    {/* Sits next to 测试模型 because the two are coupled: a
+                        channel that only lists prefixes has no model list for
+                        the tester to draw a default from. */}
+                    <Form.Item
+                      name="model_prefixes"
+                      label="模型前缀"
+                      tooltip="每行一个前缀，例如 gpt-4 可覆盖 gpt-4o、gpt-4.1；只有当没有渠道精确匹配该模型时才生效"
+                    >
+                      <Input.TextArea rows={3} placeholder={'gpt-4\nclaude-'} />
+                    </Form.Item>
 
                     <Form.Item
                       name="test_model"
