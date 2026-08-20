@@ -11,3 +11,4 @@
 
 # database dumps
 /.backup/
+/.search/

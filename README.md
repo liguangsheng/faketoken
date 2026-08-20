@@ -94,6 +94,20 @@ curl "http://localhost:3200/v1beta/models/gemini-2.5-pro:generateContent" \
 
 **正文仅管理员可见**，普通用户的调用日志只有元数据，不含请求内容。
 
+控制台的关键字搜索**不覆盖正文**（只搜 ID、用户、密钥、模型、渠道、IP、错误这些短字段）。要在正文里检索，用命令行导出：
+
+```bash
+make search KEYWORD=海鸥                      # 默认搜请求+响应，导出到 .search/
+./scripts/search-logs.sh --help              # 全部选项
+
+./scripts/search-logs.sh -f req 海鸥          # 只搜请求正文
+./scripts/search-logs.sh -i -E 'err(or)?' -n 50   # 忽略大小写 + 正则 + 限量
+./scripts/search-logs.sh --no-bodies 海鸥     # 只要元数据和上下文片段，文件很小
+./scripts/search-logs.sh -o - 海鸥 | jq .     # 直接接管道，摘要走 stderr
+```
+
+命中概览打到终端，完整记录按 JSONL 落到 `.search/`（已 gitignore，权限 0600）。**只能搜到仍在保留窗口内的正文**，因此「没搜到」的准确含义是「最近 N 次调用里没有」。导出文件里是别人的原始 prompt，当数据库本身对待。
+
 ## 实时日志
 
 调用日志不再轮询，改由 `GET /api/logs/stream`（管理员为 `/api/admin/logs/stream`）以 SSE 推送。日志写入 Postgres**提交之后**才广播，因此实时看到的和刷新后看到的一致。
@@ -231,4 +245,5 @@ internal/relay        转发核心：选路、重试、熔断、流式、用量�
 internal/billing      价格表与费用计算
 internal/api          HTTP 路由与管理接口
 web/                  React + TypeScript + antd 控制台
+scripts/              运维脚本：夜间备份、集成测试实例、正文检索
 ```
