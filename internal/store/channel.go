@@ -46,6 +46,7 @@ const channelColumns = `id, name, base_url, auth_style, api_key_enc, status, pri
 	channel_groups, models, model_mapping, headers, timeout_secs, proxy_url, price_ratio,
 	rpm_limit, used_quota, request_count, error_count, last_error, last_error_at, tested_at,
 	models_synced_at, note, created_at, updated_at, model_prefixes, test_model, supported_protocols,
+	convert_messages_to_chat, convert_responses_to_chat,
 	keepalive_enabled, keepalive_at, keepalive_target, keepalive_open, keepalive_success,
 	keepalive_opened_at`
 
@@ -57,7 +58,7 @@ func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 		&c.ProxyURL, &c.PriceRatio, &c.RPMLimit, &c.UsedQuota, &c.RequestCount, &c.ErrorCount,
 		&c.LastError, &c.LastErrorAt, &c.TestedAt, &c.ModelsSyncedAt, &c.Note,
 		&c.CreatedAt, &c.UpdatedAt, &c.ModelPrefixes, &c.TestModel, &c.SupportedProtocols,
-		&c.KeepaliveEnabled, &c.KeepaliveAt, &c.KeepaliveTarget, &c.KeepaliveOpen,
+		&c.ConvertMessagesToChat, &c.ConvertResponsesToChat, &c.KeepaliveEnabled, &c.KeepaliveAt, &c.KeepaliveTarget, &c.KeepaliveOpen,
 		&c.KeepaliveSuccess, &c.KeepaliveOpenedAt)
 	if err != nil {
 		return nil, mapErr(err)
@@ -106,14 +107,14 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	row := tx.QueryRow(ctx, `INSERT INTO channels
 		(name, base_url, auth_style, api_key_enc, status, priority, weight, channel_groups,
 		 models, model_mapping, headers, timeout_secs, proxy_url, price_ratio, rpm_limit, note,
-		 model_prefixes, test_model, supported_protocols,
+		 model_prefixes, test_model, supported_protocols, convert_messages_to_chat, convert_responses_to_chat,
 		 keepalive_enabled, keepalive_at, keepalive_target)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
 		RETURNING `+channelColumns,
 		c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, enc, c.Status, c.Priority, c.Weight,
 		c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL, c.PriceRatio,
 		c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel, normaliseProtocols(c.SupportedProtocols),
-		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget)
+		c.ConvertMessagesToChat, c.ConvertResponsesToChat, c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget)
 	created, err := s.scanChannel(row)
 	if err != nil {
 		return nil, nameConflict(err, c.Name)
@@ -140,7 +141,7 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	args := []any{c.ID, c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, c.Status, c.Priority,
 		c.Weight, c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL,
 		c.PriceRatio, c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel,
-		normaliseProtocols(c.SupportedProtocols),
+		normaliseProtocols(c.SupportedProtocols), c.ConvertMessagesToChat, c.ConvertResponsesToChat,
 		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget}
 	if c.APIKey != "" {
 		enc, err := s.cipher.Encrypt(c.APIKey)
@@ -156,7 +157,8 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		channel_groups = $8, models = $9, model_mapping = $10, headers = $11,
 		timeout_secs = $12, proxy_url = $13, price_ratio = $14, rpm_limit = $15, note = $16,
 		model_prefixes = $17, test_model = $18, supported_protocols = $19,
-		keepalive_enabled = $20, keepalive_at = $21, keepalive_target = $22,
+		convert_messages_to_chat = $20, convert_responses_to_chat = $21,
+		keepalive_enabled = $22, keepalive_at = $23, keepalive_target = $24,
 		-- The form carries status, so saving a channel as disabled abandons its
 		-- keepalive window here just as the listing toggle does. Progress is
 		-- otherwise left alone: saving the form must not reset the counter.
@@ -485,12 +487,19 @@ func (s *Store) channelNameTaken(ctx context.Context, name string) (bool, error)
 // protocol is the upstream dialect the caller is using ("chat_completions",
 // "responses" or "messages"); an empty value skips the filter so callers that
 // do not care (the models list, tests) keep seeing every channel.
-func (s *Store) Candidates(ctx context.Context, group, requestModel, protocol string) ([]model.Candidate, error) {
+func (s *Store) Candidates(ctx context.Context, group, requestModel, protocol string,
+	allowConversions ...bool) ([]model.Candidate, error) {
+	allowMessagesConversion := len(allowConversions) > 0 && allowConversions[0]
+	allowResponsesConversion := len(allowConversions) > 1 && allowConversions[1]
 	exact, err := s.queryCandidates(ctx, `SELECT channel_id, priority, weight, rpm_limit
 		FROM abilities
 		WHERE group_name = $1 AND model = $2 AND enabled = TRUE
-			AND ($3 = '' OR supported_protocols = '{}' OR $3 = ANY(supported_protocols))
-		ORDER BY priority DESC`, group, requestModel, protocol)
+			AND ($3 = '' OR supported_protocols = '{}' OR $3 = ANY(supported_protocols)
+				OR ($4 AND $3 = 'messages' AND convert_messages_to_chat
+					AND (supported_protocols = '{}' OR 'chat_completions' = ANY(supported_protocols)))
+				OR ($5 AND $3 = 'responses' AND convert_responses_to_chat
+					AND (supported_protocols = '{}' OR 'chat_completions' = ANY(supported_protocols))))
+		ORDER BY priority DESC`, group, requestModel, protocol, allowMessagesConversion, allowResponsesConversion)
 	if err != nil || len(exact) > 0 {
 		return exact, err
 	}
@@ -499,13 +508,19 @@ func (s *Store) Candidates(ctx context.Context, group, requestModel, protocol st
 			SELECT DISTINCT ON (channel_id) channel_id, priority, weight, rpm_limit, length(prefix) AS depth
 			FROM ability_prefixes
 			WHERE group_name = $1 AND enabled = TRUE AND starts_with($2, prefix)
-				AND ($3 = '' OR supported_protocols = '{}' OR $3 = ANY(supported_protocols))
+				AND ($3 = '' OR supported_protocols = '{}' OR $3 = ANY(supported_protocols)
+					OR ($4 AND $3 = 'messages' AND convert_messages_to_chat
+						AND (supported_protocols = '{}' OR 'chat_completions' = ANY(supported_protocols)))
+					OR ($5 AND $3 = 'responses' AND convert_responses_to_chat
+						AND (supported_protocols = '{}' OR 'chat_completions' = ANY(supported_protocols))))
 			ORDER BY channel_id, length(prefix) DESC
-		) matched ORDER BY priority DESC, depth DESC`, group, requestModel, protocol)
+		) matched ORDER BY priority DESC, depth DESC`, group, requestModel, protocol, allowMessagesConversion, allowResponsesConversion)
 }
 
-func (s *Store) queryCandidates(ctx context.Context, sql, group, requestModel, protocol string) ([]model.Candidate, error) {
-	rows, err := s.pool.Query(ctx, sql, group, requestModel, protocol)
+func (s *Store) queryCandidates(ctx context.Context, sql, group, requestModel, protocol string,
+	allowMessagesConversion, allowResponsesConversion bool) ([]model.Candidate, error) {
+	rows, err := s.pool.Query(ctx, sql, group, requestModel, protocol,
+		allowMessagesConversion, allowResponsesConversion)
 	if err != nil {
 		return nil, err
 	}
@@ -604,7 +619,8 @@ func rebuildAbilities(ctx context.Context, tx pgx.Tx, c *model.Channel) error {
 				continue
 			}
 			seen[key] = struct{}{}
-			rows = append(rows, []any{g, m, c.ID, c.Priority, c.Weight, enabled, c.RPMLimit, protocols})
+			rows = append(rows, []any{g, m, c.ID, c.Priority, c.Weight, enabled, c.RPMLimit,
+				protocols, c.ConvertMessagesToChat, c.ConvertResponsesToChat})
 		}
 	}
 	if len(rows) == 0 {
@@ -613,7 +629,7 @@ func rebuildAbilities(ctx context.Context, tx pgx.Tx, c *model.Channel) error {
 
 	_, err := tx.CopyFrom(ctx,
 		pgx.Identifier{"abilities"},
-		[]string{"group_name", "model", "channel_id", "priority", "weight", "enabled", "rpm_limit", "supported_protocols"},
+		[]string{"group_name", "model", "channel_id", "priority", "weight", "enabled", "rpm_limit", "supported_protocols", "convert_messages_to_chat", "convert_responses_to_chat"},
 		pgx.CopyFromRows(rows))
 	return err
 }
@@ -644,7 +660,8 @@ func rebuildAbilityPrefixes(ctx context.Context, tx pgx.Tx, c *model.Channel) er
 				continue
 			}
 			seen[key] = struct{}{}
-			rows = append(rows, []any{g, p, c.ID, c.Priority, c.Weight, enabled, c.RPMLimit, protocols})
+			rows = append(rows, []any{g, p, c.ID, c.Priority, c.Weight, enabled, c.RPMLimit,
+				protocols, c.ConvertMessagesToChat, c.ConvertResponsesToChat})
 		}
 	}
 	if len(rows) == 0 {
@@ -653,7 +670,7 @@ func rebuildAbilityPrefixes(ctx context.Context, tx pgx.Tx, c *model.Channel) er
 
 	_, err := tx.CopyFrom(ctx,
 		pgx.Identifier{"ability_prefixes"},
-		[]string{"group_name", "prefix", "channel_id", "priority", "weight", "enabled", "rpm_limit", "supported_protocols"},
+		[]string{"group_name", "prefix", "channel_id", "priority", "weight", "enabled", "rpm_limit", "supported_protocols", "convert_messages_to_chat", "convert_responses_to_chat"},
 		pgx.CopyFromRows(rows))
 	return err
 }
@@ -710,7 +727,7 @@ func (s *Store) RebuildAllAbilities(ctx context.Context) error {
 func routingSources(ctx context.Context, tx pgx.Tx) ([]*model.Channel, error) {
 	rows, err := tx.Query(ctx, `SELECT id, status, priority, weight,
 		channel_groups, models, model_prefixes, model_mapping, rpm_limit,
-		supported_protocols FROM channels ORDER BY id`)
+		supported_protocols, convert_messages_to_chat, convert_responses_to_chat FROM channels ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -721,7 +738,7 @@ func routingSources(ctx context.Context, tx pgx.Tx) ([]*model.Channel, error) {
 		var c model.Channel
 		if err := rows.Scan(&c.ID, &c.Status, &c.Priority, &c.Weight,
 			&c.Groups, &c.Models, &c.ModelPrefixes, &c.ModelMapping, &c.RPMLimit,
-			&c.SupportedProtocols); err != nil {
+			&c.SupportedProtocols, &c.ConvertMessagesToChat, &c.ConvertResponsesToChat); err != nil {
 			return nil, err
 		}
 		channels = append(channels, &c)

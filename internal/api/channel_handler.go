@@ -41,8 +41,10 @@ type channelInput struct {
 	// SupportedProtocols narrows routing to the dialects the upstream answers.
 	// Empty means every dialect, so channels created before the field existed
 	// keep routing as they did before.
-	SupportedProtocols []string `json:"supported_protocols"`
-	Note               string   `json:"note"`
+	SupportedProtocols     []string `json:"supported_protocols"`
+	ConvertMessagesToChat  bool     `json:"convert_messages_to_chat"`
+	ConvertResponsesToChat bool     `json:"convert_responses_to_chat"`
+	Note                   string   `json:"note"`
 	// Keepalive configuration. The window's own state (open, progress, when it
 	// last opened) is owned by the scheduler and the relay bookkeeping, and is
 	// never accepted from a request: saving the form must not reset a counter.
@@ -53,29 +55,31 @@ type channelInput struct {
 
 func (in channelInput) toModel(id int64) *model.Channel {
 	ch := &model.Channel{
-		ID:                 id,
-		Name:               strings.TrimSpace(in.Name),
-		BaseURL:            strings.TrimSpace(in.BaseURL),
-		AuthStyle:          defaultString(in.AuthStyle, model.AuthStyleAuto),
-		APIKey:             strings.TrimSpace(in.APIKey),
-		Status:             normaliseChannelStatus(in.Status),
-		Priority:           in.Priority,
-		Weight:             max(in.Weight, 1),
-		Groups:             cleanList(in.Groups, "default"),
-		Models:             cleanList(in.Models),
-		ModelPrefixes:      cleanList(in.ModelPrefixes),
-		ModelMapping:       in.ModelMapping,
-		Headers:            in.Headers,
-		TimeoutSecs:        in.TimeoutSecs,
-		ProxyURL:           strings.TrimSpace(in.ProxyURL),
-		PriceRatio:         in.PriceRatio,
-		RPMLimit:           in.RPMLimit,
-		TestModel:          strings.TrimSpace(in.TestModel),
-		SupportedProtocols: in.SupportedProtocols,
-		Note:               in.Note,
-		KeepaliveEnabled:   in.KeepaliveEnabled,
-		KeepaliveAt:        strings.TrimSpace(in.KeepaliveAt),
-		KeepaliveTarget:    in.KeepaliveTarget,
+		ID:                     id,
+		Name:                   strings.TrimSpace(in.Name),
+		BaseURL:                strings.TrimSpace(in.BaseURL),
+		AuthStyle:              defaultString(in.AuthStyle, model.AuthStyleAuto),
+		APIKey:                 strings.TrimSpace(in.APIKey),
+		Status:                 normaliseChannelStatus(in.Status),
+		Priority:               in.Priority,
+		Weight:                 max(in.Weight, 1),
+		Groups:                 cleanList(in.Groups, "default"),
+		Models:                 cleanList(in.Models),
+		ModelPrefixes:          cleanList(in.ModelPrefixes),
+		ModelMapping:           in.ModelMapping,
+		Headers:                in.Headers,
+		TimeoutSecs:            in.TimeoutSecs,
+		ProxyURL:               strings.TrimSpace(in.ProxyURL),
+		PriceRatio:             in.PriceRatio,
+		RPMLimit:               in.RPMLimit,
+		TestModel:              strings.TrimSpace(in.TestModel),
+		SupportedProtocols:     in.SupportedProtocols,
+		ConvertMessagesToChat:  in.ConvertMessagesToChat,
+		ConvertResponsesToChat: in.ConvertResponsesToChat,
+		Note:                   in.Note,
+		KeepaliveEnabled:       in.KeepaliveEnabled,
+		KeepaliveAt:            strings.TrimSpace(in.KeepaliveAt),
+		KeepaliveTarget:        in.KeepaliveTarget,
 	}
 	if ch.PriceRatio <= 0 {
 		ch.PriceRatio = 1
@@ -167,6 +171,18 @@ func validKeepalive(in channelInput) (string, bool) {
 	return "", true
 }
 
+func validProtocolConversion(in channelInput) (string, bool) {
+	if (!in.ConvertMessagesToChat && !in.ConvertResponsesToChat) || len(in.SupportedProtocols) == 0 {
+		return "", true
+	}
+	for _, protocol := range in.SupportedProtocols {
+		if strings.TrimSpace(protocol) == model.ProtocolChatCompletions {
+			return "", true
+		}
+	}
+	return "protocol conversion requires chat_completions in supported_protocols", false
+}
+
 func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	var in channelInput
 	if !decode(w, r, &in) {
@@ -185,6 +201,10 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if message, ok := validKeepalive(in); !ok {
+		fail(w, http.StatusBadRequest, message)
+		return
+	}
+	if message, ok := validProtocolConversion(in); !ok {
 		fail(w, http.StatusBadRequest, message)
 		return
 	}
@@ -222,6 +242,10 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if message, ok := validKeepalive(in); !ok {
+		fail(w, http.StatusBadRequest, message)
+		return
+	}
+	if message, ok := validProtocolConversion(in); !ok {
 		fail(w, http.StatusBadRequest, message)
 		return
 	}

@@ -63,6 +63,8 @@ export interface Channel {
   rpm_limit: number
   test_model: string
   supported_protocols: string[]
+  convert_messages_to_chat: boolean
+  convert_responses_to_chat: boolean
   used_quota: number
   request_count: number
   error_count: number

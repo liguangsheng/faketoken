@@ -380,7 +380,8 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidates, err := rl.st.Candidates(ctx, p.group(), info.Model, protocolFromPath(r.URL.Path))
+	candidates, err := rl.st.Candidates(ctx, p.group(), info.Model, protocolFromPath(r.URL.Path),
+		r.URL.Path == "/v1/messages", r.URL.Path == "/v1/responses")
 	if err != nil {
 		rl.finish(entry, captured, started, http.StatusInternalServerError, err.Error())
 		writeError(w, http.StatusInternalServerError, "server_error", "", err.Error())
@@ -528,12 +529,36 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 	upstreamModel := ch.UpstreamModel(info.Model)
 	path := r.URL.Path
 	outBody := body
+	convertedMessages := ch.ConvertMessagesToChat &&
+		path == "/v1/messages" &&
+		ch.SupportsProtocol(model.ProtocolChatCompletions)
+	convertedResponses := ch.ConvertResponsesToChat &&
+		path == "/v1/responses" &&
+		ch.SupportsProtocol(model.ProtocolChatCompletions)
+	if convertedMessages {
+		var ok bool
+		outBody, ok = messagesToChat(body, upstreamModel)
+		if !ok {
+			return attemptOutcome{kind: outcomeRetry, status: http.StatusBadRequest,
+				message: "could not convert messages request to chat completions"}
+		}
+		path = messagesChatPath(path)
+	}
+	if convertedResponses {
+		var ok bool
+		outBody, ok = responsesToChat(body, upstreamModel)
+		if !ok {
+			return attemptOutcome{kind: outcomeRetry, status: http.StatusBadRequest,
+				message: "could not convert responses request to chat completions"}
+		}
+		path = responsesChatPath(path)
+	}
 
 	if upstreamModel != info.Model {
 		if provider.ModelInPath(path) {
 			path = provider.ReplaceGeminiModelInPath(path, info.Model, upstreamModel)
 		}
-		if info.IsJSON && len(body) > 0 {
+		if info.IsJSON && len(body) > 0 && !convertedMessages && !convertedResponses {
 			outBody = rewriteModel(body, upstreamModel)
 		}
 	}
@@ -559,6 +584,10 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 		return attemptOutcome{kind: outcomeRetry, status: http.StatusBadGateway, message: err.Error()}
 	}
 	copyRequestHeaders(req.Header, r.Header)
+	if convertedMessages {
+		req.Header.Del("Anthropic-Version")
+		req.Header.Del("Anthropic-Beta")
+	}
 	provider.ApplyAuth(req, ch.APIKey, ch.AuthStyle)
 	// Channel headers merge last by design: operators can override an unusual
 	// upstream's authentication header without storing the key in plaintext a
@@ -605,8 +634,26 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 
 	// From here the upstream owns the response: status, headers and bytes are
 	// forwarded verbatim, including non-retryable 4xx errors.
-	copyResponseHeaders(w.Header(), resp.Header)
-	contentType := resp.Header.Get("Content-Type")
+	upstreamBody := io.ReadCloser(resp.Body)
+	responseHeaders := resp.Header
+	if convertedMessages && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var err error
+		upstreamBody, responseHeaders, err = convertChatResponse(resp)
+		if err != nil {
+			return attemptOutcome{kind: outcomeRetry, status: http.StatusBadGateway,
+				message: "could not convert chat completions response: " + err.Error()}
+		}
+	}
+	if convertedResponses && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var err error
+		upstreamBody, responseHeaders, err = convertChatResponseToResponses(resp)
+		if err != nil {
+			return attemptOutcome{kind: outcomeRetry, status: http.StatusBadGateway,
+				message: "could not convert chat completions response to responses: " + err.Error()}
+		}
+	}
+	copyResponseHeaders(w.Header(), responseHeaders)
+	contentType := responseHeaders.Get("Content-Type")
 	isStream := info.Stream || strings.Contains(strings.ToLower(contentType), "event-stream")
 	if isStream {
 		w.Header().Set("X-Accel-Buffering", "no")
@@ -614,7 +661,8 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 	w.WriteHeader(resp.StatusCode)
 
 	sniff := newUsageSniffer(contentType, rl.captureLimit())
-	_, bodyTTFB, pumpErr := pump(w, resp.Body, sniff, isStream, rl.cfg.StreamIdleTimeout, cancel)
+	_, bodyTTFB, pumpErr := pump(w, upstreamBody, sniff, isStream, rl.cfg.StreamIdleTimeout, cancel)
+	_ = upstreamBody.Close()
 
 	usage, hasUsage := sniff.Usage()
 	captured, captureTruncated := sniff.Capture()
