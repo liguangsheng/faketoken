@@ -31,6 +31,7 @@ import {
   CloudDownloadOutlined,
   CopyOutlined,
   DeleteOutlined,
+  EditOutlined,
   EllipsisOutlined,
   ImportOutlined,
   PlusOutlined,
@@ -1130,7 +1131,7 @@ export default function Channels() {
         tableLayout="fixed"
         // Sum of the column widths (plus selection/expand); without it a
         // mid-width window crushes every column instead of scrolling.
-        scroll={{ x: 1312 }}
+        scroll={{ x: 1280 }}
         rowClassName={(row) => (row.status !== STATUS.ENABLED ? 'row-disabled' : '')}
         rowSelection={{
           selectedRowKeys: selectedIds,
@@ -1410,19 +1411,18 @@ export default function Channels() {
           },
           {
             title: '操作',
-            width: 104,
+            // Just the menu trigger now, so the column no longer has to hold a
+            // text button beside it.
+            width: 72,
             render: (_, row) => (
               <Space size={0}>
-                {/* Editing is the high-frequency action; it earns a direct
-                    click instead of two through the menu. */}
-                <Button size="small" type="link" onClick={() => openDrawer(row)}>
-                  编辑
-                </Button>
                 <Dropdown
                   menu={{
-                    // Ordered by use: probes first, copies next, billing later,
-                    // deletion isolated at the end.
+                    // Editing first, then probes, copies, billing, with deletion
+                    // isolated at the end.
                     items: [
+                      { key: 'edit', icon: <EditOutlined />, label: '编辑渠道' },
+                      { type: 'divider' as const },
                       { key: 'test', icon: <ThunderboltOutlined />, label: '模型测试' },
                       { key: 'models', icon: <CloudDownloadOutlined />, label: '拉取模型' },
                       { type: 'divider' as const },
@@ -1435,7 +1435,8 @@ export default function Channels() {
                       { key: 'delete', icon: <DeleteOutlined />, label: '删除渠道', danger: true },
                     ],
                     onClick: ({ key }) => {
-                      if (key === 'test') openTest(row)
+                      if (key === 'edit') openDrawer(row)
+                      else if (key === 'test') openTest(row)
                       else if (key === 'models') void fetchModels(row)
                       else if (key === 'balance-new-api') void showBalance(row, 'new-api')
                       else if (key === 'balance-sub2api') void showBalance(row, 'sub2api')
