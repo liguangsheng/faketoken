@@ -269,9 +269,20 @@ func (s *Store) ListChannels(ctx context.Context, f ChannelFilter) ([]*model.Cha
 	}
 
 	args = append(args, f.Limit, f.Offset)
+	// Enabled first, then the routing order itself: priority descending, and
+	// within one priority the weight that decides how the traffic splits. That
+	// makes the list read top-down as "what actually serves requests" — a
+	// disabled channel sorted among the live ones by its old priority looks
+	// like part of the routing when it is not.
+	//
+	// id last as the tiebreaker: with a paginated list, two rows equal on every
+	// sort key must still have one fixed order, or a row can appear on two
+	// pages or on none.
 	rows, err := s.pool.Query(ctx, fmt.Sprintf(
-		`SELECT %s FROM channels WHERE %s ORDER BY priority DESC, id DESC LIMIT $%d OFFSET $%d`,
-		channelColumns, where, len(args)-1, len(args)), args...)
+		`SELECT %s FROM channels WHERE %s
+		ORDER BY (status = %d) DESC, priority DESC, weight DESC, id DESC
+		LIMIT $%d OFFSET $%d`,
+		channelColumns, where, model.StatusEnabled, len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -409,6 +409,56 @@ func TestChannelSearchSpansEveryDescriptiveField(t *testing.T) {
 	}
 }
 
+// The list is ordered the way traffic is: enabled channels first, then by
+// priority, then by the weight that splits one priority band. A disabled
+// channel sorted among the live ones by its old priority reads as part of the
+// routing when it serves nothing.
+func TestChannelListOrdersEnabledFirstThenPriorityThenWeight(t *testing.T) {
+	h := newHarness(t)
+
+	// Insertion order matches none of the sort keys, and the heavier of the two
+	// priority-500 channels is created first on purpose: with a descending id
+	// as the only tiebreaker the lighter one would come out on top, so the
+	// weight step is what has to put the heavier one there.
+	for _, c := range []struct {
+		name     string
+		status   int16
+		priority int32
+		weight   int32
+	}{
+		{"disabled-top-priority", model.StatusDisabled, 900, 50},
+		{"enabled-high-priority-heavier", model.StatusEnabled, 500, 9},
+		{"enabled-low-priority", model.StatusEnabled, 10, 99},
+		{"enabled-high-priority", model.StatusEnabled, 500, 1},
+		{"disabled-low-priority", model.StatusDisabled, 5, 1},
+	} {
+		h.createChannel(channelInput{
+			Name: c.name, BaseURL: "https://" + c.name + ".test", APIKey: "k",
+			Status: c.status, Priority: c.priority, Weight: c.weight,
+			Models: []string{"gpt-4o"},
+		})
+	}
+
+	var listed page[*model.Channel]
+	resp := h.do(http.MethodGet, "/api/admin/channels", h.admin, nil, &listed)
+	resp.Body.Close()
+
+	want := []string{
+		"enabled-high-priority-heavier", // priority 500, weight 9, lower id
+		"enabled-high-priority",         // priority 500, weight 1
+		"enabled-low-priority",          // priority 10 — weight 99 does not lift it
+		"disabled-top-priority",         // disabled, despite priority 900
+		"disabled-low-priority",
+	}
+	got := make([]string, 0, len(listed.Data))
+	for _, c := range listed.Data {
+		got = append(got, c.Name)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("channel order\n got %v\nwant %v", got, want)
+	}
+}
+
 // The console masks the upstream key everywhere it is listed, so moving a
 // channel elsewhere used to mean reading it out of the database. This endpoint
 // exists to hand it over deliberately — and only to an administrator.
