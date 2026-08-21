@@ -307,6 +307,7 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Only the cheap half is done here; the body is converted later, off the
 	// path the caller is waiting on.
 	captured := captureRequest(r, body)
+	protocol := protocolFromPath(r.URL.Path)
 
 	// Checked before routing, pricing or quota: a blocked body should cost
 	// nothing beyond reading it, and must never reach an upstream.
@@ -380,7 +381,7 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidates, err := rl.st.Candidates(ctx, p.group(), info.Model, protocolFromPath(r.URL.Path),
+	candidates, err := rl.st.Candidates(ctx, p.group(), info.Model, protocol,
 		r.URL.Path == "/v1/messages", r.URL.Path == "/v1/responses")
 	if err != nil {
 		rl.finish(entry, captured, started, http.StatusInternalServerError, err.Error())
@@ -466,7 +467,7 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 		attempts++
 		entry.Retries = int32(attempts - 1)
 
-		outcome := rl.attempt(w, r, ch, entry, info, body)
+		outcome := rl.attempt(w, r, ch, entry, info, protocolFromPath(r.URL.Path), body)
 		switch outcome.kind {
 		case outcomeDone:
 			rl.breaker.succeed(ch.ID)
@@ -522,7 +523,7 @@ type attemptOutcome struct {
 // straight to the client; on a retryable failure it consumes and reports the
 // upstream error without touching the client connection.
 func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Channel,
-	entry *model.RequestLog, info requestInfo, body []byte) attemptOutcome {
+	entry *model.RequestLog, info requestInfo, protocol string, body []byte) attemptOutcome {
 
 	baseURL := ch.BaseURL
 
@@ -595,6 +596,32 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 	for k, v := range ch.Headers {
 		req.Header.Set(k, v)
 	}
+	// The UA lock is keyed by the protocol actually sent upstream. A converted
+	// Messages/Responses request is Chat Completions on the wire, so it shares
+	// that protocol's lock rather than creating a second identity.
+	upstreamProtocol := protocol
+	if convertedMessages || convertedResponses {
+		upstreamProtocol = model.ProtocolChatCompletions
+	}
+	incomingUA := strings.TrimSpace(r.Header.Get("User-Agent"))
+	lockedUA := ""
+	if upstreamProtocol != "" {
+		var lockErr error
+		lockedUA, lockErr = rl.st.GetChannelUserAgent(ctx, ch.ID, upstreamProtocol)
+		if lockErr != nil {
+			return attemptOutcome{kind: outcomeRetry, status: http.StatusInternalServerError,
+				message: "could not read the channel User-Agent configuration: " + lockErr.Error()}
+		}
+		// An explicitly configured value always wins, even when automatic
+		// locking is disabled, and wins over the channel's additional headers.
+		if lockedUA != "" {
+			req.Header.Set("User-Agent", lockedUA)
+		} else if ch.LockUserAgent && incomingUA != "" {
+			// Automatic mode also outranks an attached User-Agent while it is
+			// waiting for the first successful response to establish the lock.
+			req.Header.Set("User-Agent", incomingUA)
+		}
+	}
 	req.ContentLength = int64(len(outBody))
 
 	client, err := rl.clients.get(ch.ProxyURL)
@@ -661,7 +688,7 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 	w.WriteHeader(resp.StatusCode)
 
 	sniff := newUsageSniffer(contentType, rl.captureLimit())
-	_, bodyTTFB, pumpErr := pump(w, upstreamBody, sniff, isStream, rl.cfg.StreamIdleTimeout, cancel)
+	written, bodyTTFB, pumpErr := pump(w, upstreamBody, sniff, isStream, rl.cfg.StreamIdleTimeout, cancel)
 	_ = upstreamBody.Close()
 
 	usage, hasUsage := sniff.Usage()
@@ -683,6 +710,22 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 	if pumpErr != nil {
 		out.kind = outcomeAborted
 		out.message = "stream interrupted: " + pumpErr.Error()
+	}
+	if (pumpErr == nil || written > 0) && resp.StatusCode >= 200 && resp.StatusCode < 300 &&
+		ch.LockUserAgent && lockedUA == "" && incomingUA != "" && upstreamProtocol != "" {
+		// A normal response locks after it has been fully relayed. Streaming
+		// clients may close after receiving useful content; written > 0 treats
+		// that accepted 2xx response as successful for UA learning as well.
+		lockCtx, lockCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		winner, lockErr := rl.st.AutoLockChannelUserAgent(lockCtx, ch.ID, upstreamProtocol, incomingUA)
+		lockCancel()
+		if lockErr != nil {
+			slog.Warn("could not auto-lock channel User-Agent", "channel_id", ch.ID,
+				"protocol", upstreamProtocol, "error", lockErr)
+		} else if winner != "" && winner != incomingUA {
+			slog.Info("channel User-Agent auto-lock race resolved", "channel_id", ch.ID,
+				"protocol", upstreamProtocol)
+		}
 	}
 	return out
 }

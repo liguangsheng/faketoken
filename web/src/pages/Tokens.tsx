@@ -391,7 +391,7 @@ export default function Tokens() {
         // Must cover the sum of the column widths below. If it is smaller the
         // browser shrinks every column to fit, and the crushed cells collide
         // instead of scrolling.
-        scroll={{ x: 1460 }}
+        scroll={{ x: 1580 }}
         locale={{
           emptyText: loadError ? (
             <EmptyState

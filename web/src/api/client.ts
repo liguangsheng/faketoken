@@ -65,6 +65,8 @@ export interface Channel {
   supported_protocols: string[]
   convert_messages_to_chat: boolean
   convert_responses_to_chat: boolean
+  lock_user_agent: boolean
+  locked_user_agents: Record<string, string>
   used_quota: number
   request_count: number
   error_count: number
@@ -512,6 +514,11 @@ export const api = {
      */
     setChannelRouting: (id: number, priority: number, weight: number) =>
       request<Channel>('PUT', `/api/admin/channels/${id}/routing`, { priority, weight }),
+    clearChannelUserAgent: (id: number, protocol: 'responses' | 'chat_completions' | 'messages') =>
+      request<Channel>(
+        'POST',
+        `/api/admin/channels/${id}/user-agent/clear${qs({ protocol })}`,
+      ),
     testChannel: (
       id: number,
       body: {

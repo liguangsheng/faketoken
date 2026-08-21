@@ -143,12 +143,17 @@ type Channel struct {
 	// The probe narrows it; the operator can edit it. Empty means every
 	// dialect, so an old channel keeps routing as it did before the column
 	// existed.
-	SupportedProtocols     []string  `json:"supported_protocols"`
-	ConvertMessagesToChat  bool      `json:"convert_messages_to_chat"`
-	ConvertResponsesToChat bool      `json:"convert_responses_to_chat"`
-	Note                   string    `json:"note"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	SupportedProtocols     []string `json:"supported_protocols"`
+	ConvertMessagesToChat  bool     `json:"convert_messages_to_chat"`
+	ConvertResponsesToChat bool     `json:"convert_responses_to_chat"`
+	// LockUserAgent enables automatic learning when an upstream protocol has no
+	// configured User-Agent. LockedUserAgents itself is always effective: its
+	// values may be entered manually or learned after a successful request.
+	LockUserAgent    bool              `json:"lock_user_agent"`
+	LockedUserAgents map[string]string `json:"locked_user_agents"`
+	Note             string            `json:"note"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
 
 	// Keepalive opens the channel on a daily schedule and closes it again once
 	// it has served KeepaliveTarget successful requests, for upstreams that

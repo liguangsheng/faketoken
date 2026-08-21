@@ -1462,6 +1462,136 @@ func TestRelayForwardsClientHeadersButStripsCredentials(t *testing.T) {
 	}
 }
 
+func TestChannelUserAgentLocksPerProtocolAndCanClear(t *testing.T) {
+	h := newHarness(t)
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1, 1)
+	})
+	id := h.createChannel(channelInput{
+		Name: "ua-lock", Type: "openai", BaseURL: up.URL, APIKey: "upstream-key",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"}, LockUserAgent: true,
+	})
+	key := h.createKey()
+
+	send := func(path, ua string, wantStatus int) {
+		req, err := http.NewRequest(http.MethodPost, h.server.URL+path,
+			strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", ua)
+		resp, err := h.server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != wantStatus {
+			t.Fatalf("%s with UA %q: HTTP %d, want %d", path, ua, resp.StatusCode, wantStatus)
+		}
+	}
+
+	send("/v1/chat/completions", "chat-first", http.StatusOK)
+	if got := up.headers().Get("User-Agent"); got != "chat-first" {
+		t.Fatalf("first chat User-Agent = %q", got)
+	}
+	channel, err := h.store.GetChannel(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := channel.LockedUserAgents[model.ProtocolChatCompletions]; got != "chat-first" {
+		t.Fatalf("successful chat request did not auto-lock UA: %q", got)
+	}
+	send("/v1/chat/completions", "chat-second", http.StatusOK)
+	if got := up.requests.Load(); got != 2 {
+		t.Fatalf("second request count=%d, want 2", got)
+	}
+	if got := up.headers().Get("User-Agent"); got != "chat-first" {
+		t.Fatalf("locked chat User-Agent = %q, want chat-first", got)
+	}
+
+	send("/v1/messages", "messages-first", http.StatusOK)
+	if got := up.headers().Get("User-Agent"); got != "messages-first" {
+		t.Fatalf("messages User-Agent = %q, want messages-first", got)
+	}
+	send("/v1/responses", "responses-first", http.StatusOK)
+	if got := up.headers().Get("User-Agent"); got != "responses-first" {
+		t.Fatalf("responses User-Agent = %q, want responses-first", got)
+	}
+
+	clearURL := fmt.Sprintf("/api/admin/channels/%d/user-agent/clear?protocol=chat_completions", id)
+	resp := h.do(http.MethodPost, clearURL, h.admin, nil, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clear chat User-Agent: HTTP %d", resp.StatusCode)
+	}
+	send("/v1/chat/completions", "chat-third", http.StatusOK)
+	if got := up.headers().Get("User-Agent"); got != "chat-third" {
+		t.Fatalf("relocked chat User-Agent = %q, want chat-third", got)
+	}
+}
+
+func TestChannelUserAgentManualConfigOverridesHeadersWithoutAutoLocking(t *testing.T) {
+	h := newHarness(t)
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1, 1)
+	})
+	id := h.createChannel(channelInput{
+		Name: "ua-manual", Type: "openai", BaseURL: up.URL, APIKey: "upstream-key",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+		Headers:          map[string]string{"User-Agent": "header-ua"},
+		LockedUserAgents: map[string]string{model.ProtocolChatCompletions: "manual-ua"},
+	})
+	key := h.createKey()
+	resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}`)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("manual UA request: HTTP %d", resp.StatusCode)
+	}
+	if got := up.headers().Get("User-Agent"); got != "manual-ua" {
+		t.Fatalf("upstream User-Agent = %q, want manual-ua", got)
+	}
+	ch, err := h.store.GetChannel(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.LockUserAgent {
+		t.Fatal("manual UA unexpectedly enabled automatic locking")
+	}
+	if got := ch.LockedUserAgents[model.ProtocolChatCompletions]; got != "manual-ua" {
+		t.Fatalf("manual UA was not retained: %q", got)
+	}
+}
+
+func TestChannelUserAgentAutoLockHappensOnlyAfterSuccess(t *testing.T) {
+	h := newHarness(t)
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no", http.StatusBadRequest)
+	})
+	id := h.createChannel(channelInput{
+		Name: "ua-auto-failure", Type: "openai", BaseURL: up.URL, APIKey: "upstream-key",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"}, LockUserAgent: true,
+	})
+	resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", h.createKey(),
+		`{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}`)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("failed auto-lock request: HTTP %d", resp.StatusCode)
+	}
+	ch, err := h.store.GetChannel(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ch.LockedUserAgents[model.ProtocolChatCompletions]; got != "" {
+		t.Fatalf("failed request auto-locked UA %q", got)
+	}
+}
+
 func TestChannelHeadersOverrideGeneratedAuthentication(t *testing.T) {
 	h := newHarness(t)
 

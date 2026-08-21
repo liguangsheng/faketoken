@@ -428,6 +428,8 @@ export default function Channels() {
             supported_protocols: ['chat_completions', 'responses', 'messages'],
             convert_messages_to_chat: false,
             convert_responses_to_chat: false,
+            lock_user_agent: false,
+            locked_user_agents: {},
             note: '',
             keepalive_enabled: false,
             keepalive_at: null,
@@ -504,6 +506,13 @@ export default function Channels() {
       supported_protocols: values.supported_protocols ?? ['chat_completions', 'responses', 'messages'],
       convert_messages_to_chat: Boolean(values.convert_messages_to_chat),
       convert_responses_to_chat: Boolean(values.convert_responses_to_chat),
+      lock_user_agent: Boolean(values.lock_user_agent),
+      locked_user_agents: Object.fromEntries(
+        TEST_PROTOCOLS.flatMap((protocol) => {
+          const value = String(values.locked_user_agents?.[protocol.value] ?? '').trim()
+          return value ? [[protocol.value, value]] : []
+        }),
+      ),
       note: values.note ?? '',
       keepalive_enabled: Boolean(values.keepalive_enabled),
       // The picker holds a dayjs; the server stores and validates "HH:MM".
@@ -731,6 +740,16 @@ export default function Channels() {
       message.error(error instanceof Error ? error.message : '操作失败')
     } finally {
       setTogglingId(null)
+    }
+  }
+
+  const clearUserAgent = async (channel: Channel, protocol: TestProtocol) => {
+    try {
+      const updated = await api.admin.clearChannelUserAgent(channel.id, protocol)
+      setRows((current) => current.map((row) => (row.id === updated.id ? updated : row)))
+      message.success(`${channel.name} 的 ${TEST_PROTOCOLS.find((item) => item.value === protocol)?.label ?? protocol} UA 已清除`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '清除 UA 失败')
     }
   }
 
@@ -1539,6 +1558,54 @@ export default function Channels() {
                   </Space>
                 </Card>
               </Col>
+              <Col xs={24} lg={6}>
+                <Card
+                  size="small"
+                  title="User-Agent 锁定"
+                  extra={
+                    <Space size={4}>
+                      {row.lock_user_agent && <Tag color="green">自动锁定</Tag>}
+                      {Object.values(row.locked_user_agents ?? {}).some(Boolean) ? (
+                        <Tag color="blue">已有配置</Tag>
+                      ) : (
+                        <Tag>暂无配置</Tag>
+                      )}
+                    </Space>
+                  }
+                >
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    {TEST_PROTOCOLS.map((protocol) => {
+                      const value = row.locked_user_agents?.[protocol.value] ?? ''
+                      return (
+                        <div key={protocol.value} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                          <Typography.Text type="secondary" style={{ minWidth: 92 }}>
+                            {protocol.label}
+                          </Typography.Text>
+                          <Typography.Text
+                            className="mono"
+                            type={value ? undefined : 'secondary'}
+                            ellipsis={{ tooltip: value || '尚未锁定' }}
+                            style={{ flex: 1, minWidth: 0 }}
+                          >
+                            {value || '尚未锁定'}
+                          </Typography.Text>
+                          <Tooltip title={value ? '清除该协议的 UA 配置' : '当前没有可清除的 UA'}>
+                            <Button
+                              type="text"
+                              size="small"
+                              danger
+                              disabled={!value}
+                              icon={<DeleteOutlined />}
+                              aria-label={`清除 ${protocol.label} User-Agent`}
+                              onClick={() => void clearUserAgent(row, protocol.value)}
+                            />
+                          </Tooltip>
+                        </div>
+                      )
+                    })}
+                  </Space>
+                </Card>
+              </Col>
             </Row>
           ),
         }}
@@ -1546,7 +1613,7 @@ export default function Channels() {
 
       <Drawer
         open={drawerOpen}
-        width={narrow ? '100%' : 640}
+        width={narrow ? '100%' : 760}
         title={editing ? `编辑渠道：${editing.name}` : '新建渠道'}
         onClose={closeDrawer}
         // Sticky at the bottom: after a 17-field form, save is where the eye
@@ -1824,6 +1891,69 @@ export default function Channels() {
                     >
                       <Switch checkedChildren="开启" unCheckedChildren="关闭" />
                     </Form.Item>
+
+                    <Card size="small" title="User-Agent 锁定配置" style={{ marginBottom: 12 }}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        style={{ marginBottom: 12 }}
+                        message="按上游协议分别配置"
+                        description="填写后始终作为发往上游的 User-Agent，并覆盖附加请求头中的 User-Agent。留空时，开启自动锁定后会在请求成功时记录本次请求的 UA。"
+                      />
+                      <Form.Item
+                        name="lock_user_agent"
+                        label="自动锁定 User-Agent"
+                        valuePropName="checked"
+                        tooltip="仅控制留空配置时是否在请求成功后自动记录请求 UA；手动填写的 UA 不受此开关影响。"
+                      >
+                        <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                      </Form.Item>
+                      <Space direction="vertical" size={14} style={{ width: '100%' }}>
+                        {TEST_PROTOCOLS.map((protocol) => {
+                          const value = editing?.locked_user_agents?.[protocol.value] ?? ''
+                          return (
+                            <div key={protocol.value} style={{ width: '100%' }}>
+                              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                                <Typography.Text strong>{protocol.label}</Typography.Text>
+                                {editing && (
+                                  <Button
+                                    size="small"
+                                    danger
+                                    disabled={!value}
+                                    onClick={async () => {
+                                      try {
+                                        const updated = await api.admin.clearChannelUserAgent(editing.id, protocol.value)
+                                        setEditing(updated)
+                                        form.setFieldsValue({
+                                          lock_user_agent: updated.lock_user_agent,
+                                          locked_user_agents: updated.locked_user_agents,
+                                        })
+                                        setRows((current) => current.map((row) => (row.id === updated.id ? updated : row)))
+                                        message.success('已清除该协议 UA 配置')
+                                      } catch (error) {
+                                        message.error(error instanceof Error ? error.message : '清除 UA 失败')
+                                      }
+                                    }}
+                                  >
+                                    清除
+                                  </Button>
+                                )}
+                              </Space>
+                              <Form.Item
+                                name={['locked_user_agents', protocol.value]}
+                                style={{ marginBottom: 0, marginTop: 6 }}
+                              >
+                                <Input.TextArea
+                                  className="mono"
+                                  autoSize={{ minRows: 2, maxRows: 5 }}
+                                  placeholder={`${protocol.label} 的上游 UA（可留空）`}
+                                />
+                              </Form.Item>
+                            </div>
+                          )
+                        })}
+                      </Space>
+                    </Card>
 
                     <Form.Item name="headers" label="附加请求头" tooltip="每行 Header-Name=value">
                       <Input.TextArea rows={2} placeholder={'X-Custom=value'} />

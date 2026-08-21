@@ -41,10 +41,12 @@ type channelInput struct {
 	// SupportedProtocols narrows routing to the dialects the upstream answers.
 	// Empty means every dialect, so channels created before the field existed
 	// keep routing as they did before.
-	SupportedProtocols     []string `json:"supported_protocols"`
-	ConvertMessagesToChat  bool     `json:"convert_messages_to_chat"`
-	ConvertResponsesToChat bool     `json:"convert_responses_to_chat"`
-	Note                   string   `json:"note"`
+	SupportedProtocols     []string          `json:"supported_protocols"`
+	ConvertMessagesToChat  bool              `json:"convert_messages_to_chat"`
+	ConvertResponsesToChat bool              `json:"convert_responses_to_chat"`
+	LockUserAgent          bool              `json:"lock_user_agent"`
+	LockedUserAgents       map[string]string `json:"locked_user_agents"`
+	Note                   string            `json:"note"`
 	// Keepalive configuration. The window's own state (open, progress, when it
 	// last opened) is owned by the scheduler and the relay bookkeeping, and is
 	// never accepted from a request: saving the form must not reset a counter.
@@ -76,6 +78,8 @@ func (in channelInput) toModel(id int64) *model.Channel {
 		SupportedProtocols:     in.SupportedProtocols,
 		ConvertMessagesToChat:  in.ConvertMessagesToChat,
 		ConvertResponsesToChat: in.ConvertResponsesToChat,
+		LockUserAgent:          in.LockUserAgent,
+		LockedUserAgents:       cleanUserAgentLocks(in.LockedUserAgents),
 		Note:                   in.Note,
 		KeepaliveEnabled:       in.KeepaliveEnabled,
 		KeepaliveAt:            strings.TrimSpace(in.KeepaliveAt),
@@ -91,6 +95,41 @@ func (in channelInput) toModel(id int64) *model.Channel {
 		ch.Headers = map[string]string{}
 	}
 	return ch
+}
+
+func cleanUserAgentLocks(in map[string]string) map[string]string {
+	out := make(map[string]string, len(validUserAgentProtocols))
+	for protocol := range validUserAgentProtocols {
+		if value := strings.TrimSpace(in[protocol]); value != "" {
+			out[protocol] = value
+		}
+	}
+	return out
+}
+
+var validUserAgentProtocols = map[string]bool{
+	model.ProtocolChatCompletions: true,
+	model.ProtocolResponses:       true,
+	model.ProtocolMessages:        true,
+}
+
+func (s *Server) handleClearChannelUserAgent(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		fail(w, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	protocol := strings.TrimSpace(r.URL.Query().Get("protocol"))
+	if !validUserAgentProtocols[protocol] {
+		fail(w, http.StatusBadRequest, "protocol must be chat_completions, responses, or messages")
+		return
+	}
+	updated, err := s.store.ClearChannelUserAgent(r.Context(), id, protocol)
+	if err != nil {
+		failErr(w, err)
+		return
+	}
+	ok(w, mask(updated))
 }
 
 // mask hides the upstream credential; the console never needs the real value.

@@ -47,6 +47,7 @@ const channelColumns = `id, name, base_url, auth_style, api_key_enc, status, pri
 	rpm_limit, used_quota, request_count, error_count, last_error, last_error_at, tested_at,
 	models_synced_at, note, created_at, updated_at, model_prefixes, test_model, supported_protocols,
 	convert_messages_to_chat, convert_responses_to_chat,
+	lock_user_agent, locked_user_agents,
 	keepalive_enabled, keepalive_at, keepalive_target, keepalive_open, keepalive_success,
 	keepalive_opened_at`
 
@@ -58,7 +59,8 @@ func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 		&c.ProxyURL, &c.PriceRatio, &c.RPMLimit, &c.UsedQuota, &c.RequestCount, &c.ErrorCount,
 		&c.LastError, &c.LastErrorAt, &c.TestedAt, &c.ModelsSyncedAt, &c.Note,
 		&c.CreatedAt, &c.UpdatedAt, &c.ModelPrefixes, &c.TestModel, &c.SupportedProtocols,
-		&c.ConvertMessagesToChat, &c.ConvertResponsesToChat, &c.KeepaliveEnabled, &c.KeepaliveAt, &c.KeepaliveTarget, &c.KeepaliveOpen,
+		&c.ConvertMessagesToChat, &c.ConvertResponsesToChat, &c.LockUserAgent, &c.LockedUserAgents,
+		&c.KeepaliveEnabled, &c.KeepaliveAt, &c.KeepaliveTarget, &c.KeepaliveOpen,
 		&c.KeepaliveSuccess, &c.KeepaliveOpenedAt)
 	if err != nil {
 		return nil, mapErr(err)
@@ -86,6 +88,9 @@ func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 	if c.SupportedProtocols == nil {
 		c.SupportedProtocols = []string{}
 	}
+	if c.LockedUserAgents == nil {
+		c.LockedUserAgents = map[string]string{}
+	}
 	return &c, nil
 }
 
@@ -108,13 +113,14 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		(name, base_url, auth_style, api_key_enc, status, priority, weight, channel_groups,
 		 models, model_mapping, headers, timeout_secs, proxy_url, price_ratio, rpm_limit, note,
 		 model_prefixes, test_model, supported_protocols, convert_messages_to_chat, convert_responses_to_chat,
-		 keepalive_enabled, keepalive_at, keepalive_target)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+		 lock_user_agent, locked_user_agents, keepalive_enabled, keepalive_at, keepalive_target)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
 		RETURNING `+channelColumns,
 		c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, enc, c.Status, c.Priority, c.Weight,
 		c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL, c.PriceRatio,
 		c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel, normaliseProtocols(c.SupportedProtocols),
-		c.ConvertMessagesToChat, c.ConvertResponsesToChat, c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget)
+		c.ConvertMessagesToChat, c.ConvertResponsesToChat, c.LockUserAgent, c.LockedUserAgents,
+		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget)
 	created, err := s.scanChannel(row)
 	if err != nil {
 		return nil, nameConflict(err, c.Name)
@@ -142,7 +148,7 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		c.Weight, c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL,
 		c.PriceRatio, c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel,
 		normaliseProtocols(c.SupportedProtocols), c.ConvertMessagesToChat, c.ConvertResponsesToChat,
-		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget}
+		c.LockUserAgent, c.LockedUserAgents, c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget}
 	if c.APIKey != "" {
 		enc, err := s.cipher.Encrypt(c.APIKey)
 		if err != nil {
@@ -158,7 +164,8 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		timeout_secs = $12, proxy_url = $13, price_ratio = $14, rpm_limit = $15, note = $16,
 		model_prefixes = $17, test_model = $18, supported_protocols = $19,
 		convert_messages_to_chat = $20, convert_responses_to_chat = $21,
-		keepalive_enabled = $22, keepalive_at = $23, keepalive_target = $24,
+		lock_user_agent = $22, locked_user_agents = $23,
+		keepalive_enabled = $24, keepalive_at = $25, keepalive_target = $26,
 		-- The form carries status, so saving a channel as disabled abandons its
 		-- keepalive window here just as the listing toggle does. Progress is
 		-- otherwise left alone: saving the form must not reset the counter.
@@ -178,6 +185,52 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		return nil, err
 	}
 	return updated, nil
+}
+
+// GetChannelUserAgent reads the current protocol-specific value. It is used
+// immediately before dispatch so a clear or an edit made in the console takes
+// effect without waiting for the routing snapshot to refresh.
+func (s *Store) GetChannelUserAgent(ctx context.Context, id int64, protocol string) (string, error) {
+	protocol = strings.TrimSpace(protocol)
+	if protocol == "" {
+		return "", ErrInvalidInput
+	}
+	var value string
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(locked_user_agents ->> $2, '')
+		FROM channels WHERE id = $1`, id, protocol).Scan(&value)
+	return strings.TrimSpace(value), mapErr(err)
+}
+
+// AutoLockChannelUserAgent learns a value only after the upstream call has
+// succeeded. The conditional update makes concurrent successful first calls
+// converge on one winner, while a manually configured value remains intact.
+func (s *Store) AutoLockChannelUserAgent(ctx context.Context, id int64, protocol, candidate string) (string, error) {
+	protocol = strings.TrimSpace(protocol)
+	candidate = strings.TrimSpace(candidate)
+	if protocol == "" || candidate == "" {
+		return candidate, nil
+	}
+	var locked string
+	err := s.pool.QueryRow(ctx, `UPDATE channels SET
+		locked_user_agents = CASE
+			WHEN lock_user_agent AND COALESCE(locked_user_agents ->> $2, '') = ''
+			THEN jsonb_set(locked_user_agents, ARRAY[$2], to_jsonb($3::text), true)
+			ELSE locked_user_agents
+		END,
+		updated_at = now()
+		WHERE id = $1
+		RETURNING COALESCE(locked_user_agents ->> $2, '')`, id, protocol, candidate).Scan(&locked)
+	return strings.TrimSpace(locked), mapErr(err)
+}
+
+func (s *Store) ClearChannelUserAgent(ctx context.Context, id int64, protocol string) (*model.Channel, error) {
+	protocol = strings.TrimSpace(protocol)
+	if protocol == "" {
+		return nil, ErrInvalidInput
+	}
+	return s.scanChannel(s.pool.QueryRow(ctx, `UPDATE channels
+		SET locked_user_agents = locked_user_agents - $2, updated_at = now()
+		WHERE id = $1 RETURNING `+channelColumns, id, protocol))
 }
 
 // SetChannelRouting writes just the two selection knobs. It exists next to the
