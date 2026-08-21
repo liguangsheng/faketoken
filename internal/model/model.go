@@ -146,6 +146,9 @@ type Channel struct {
 	SupportedProtocols     []string `json:"supported_protocols"`
 	ConvertMessagesToChat  bool     `json:"convert_messages_to_chat"`
 	ConvertResponsesToChat bool     `json:"convert_responses_to_chat"`
+	// AllowAttachments controls whether multimodal conversation content such
+	// as images, documents, files and audio may be sent through this channel.
+	AllowAttachments bool `json:"allow_attachments"`
 	// LockUserAgent enables automatic learning when an upstream protocol has no
 	// configured User-Agent. LockedUserAgents itself is always effective: its
 	// values may be entered manually or learned after a successful request.

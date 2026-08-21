@@ -65,6 +65,7 @@ export interface Channel {
   supported_protocols: string[]
   convert_messages_to_chat: boolean
   convert_responses_to_chat: boolean
+  allow_attachments: boolean
   lock_user_agent: boolean
   locked_user_agents: Record<string, string>
   used_quota: number

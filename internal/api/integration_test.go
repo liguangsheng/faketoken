@@ -1592,6 +1592,45 @@ func TestChannelUserAgentAutoLockHappensOnlyAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestChannelCanRejectConversationAttachmentsBeforeUpstream(t *testing.T) {
+	h := newHarness(t)
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "should not be reached", 1, 1)
+	})
+	allow := false
+	h.createChannel(channelInput{
+		Name: "text-only", Type: "openai", BaseURL: up.URL, APIKey: "upstream-key",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"}, AllowAttachments: &allow,
+	})
+	key := h.createKey()
+	body := `{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}]}`
+	resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key, body)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("attachment request: HTTP %d, want 429: %s", resp.StatusCode, raw)
+	}
+	if !strings.Contains(string(raw), "attachments_not_allowed") {
+		t.Fatalf("unexpected attachment rejection: %s", raw)
+	}
+	if !strings.Contains(string(raw), "请求不能携带附件") {
+		t.Fatalf("attachment rejection message is unclear: %s", raw)
+	}
+	if strings.Contains(string(raw), "text-only") || strings.Contains(string(raw), "channel") {
+		t.Fatalf("attachment rejection leaked channel information: %s", raw)
+	}
+	if got := up.requests.Load(); got != 0 {
+		t.Fatalf("attachment rejection reached upstream %d time(s)", got)
+	}
+
+	plain := h.relayRequest(http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"gpt-4o","messages":[{"role":"user","content":"plain text"}]}`)
+	plain.Body.Close()
+	if plain.StatusCode != http.StatusOK {
+		t.Fatalf("plain text request: HTTP %d, want 200", plain.StatusCode)
+	}
+}
+
 func TestChannelHeadersOverrideGeneratedAuthentication(t *testing.T) {
 	h := newHarness(t)
 

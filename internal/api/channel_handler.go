@@ -44,6 +44,7 @@ type channelInput struct {
 	SupportedProtocols     []string          `json:"supported_protocols"`
 	ConvertMessagesToChat  bool              `json:"convert_messages_to_chat"`
 	ConvertResponsesToChat bool              `json:"convert_responses_to_chat"`
+	AllowAttachments       *bool             `json:"allow_attachments"`
 	LockUserAgent          bool              `json:"lock_user_agent"`
 	LockedUserAgents       map[string]string `json:"locked_user_agents"`
 	Note                   string            `json:"note"`
@@ -78,6 +79,7 @@ func (in channelInput) toModel(id int64) *model.Channel {
 		SupportedProtocols:     in.SupportedProtocols,
 		ConvertMessagesToChat:  in.ConvertMessagesToChat,
 		ConvertResponsesToChat: in.ConvertResponsesToChat,
+		AllowAttachments:       in.AllowAttachments == nil || *in.AllowAttachments,
 		LockUserAgent:          in.LockUserAgent,
 		LockedUserAgents:       cleanUserAgentLocks(in.LockedUserAgents),
 		Note:                   in.Note,

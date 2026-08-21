@@ -428,6 +428,7 @@ export default function Channels() {
             supported_protocols: ['chat_completions', 'responses', 'messages'],
             convert_messages_to_chat: false,
             convert_responses_to_chat: false,
+            allow_attachments: true,
             lock_user_agent: false,
             locked_user_agents: {},
             note: '',
@@ -506,6 +507,7 @@ export default function Channels() {
       supported_protocols: values.supported_protocols ?? ['chat_completions', 'responses', 'messages'],
       convert_messages_to_chat: Boolean(values.convert_messages_to_chat),
       convert_responses_to_chat: Boolean(values.convert_responses_to_chat),
+      allow_attachments: values.allow_attachments !== false,
       lock_user_agent: Boolean(values.lock_user_agent),
       locked_user_agents: Object.fromEntries(
         TEST_PROTOCOLS.flatMap((protocol) => {
@@ -1854,6 +1856,15 @@ export default function Channels() {
                           </Checkbox>
                         ))}
                       </Checkbox.Group>
+                    </Form.Item>
+
+                    <Form.Item
+                      name="allow_attachments"
+                      label="允许附件"
+                      valuePropName="checked"
+                      tooltip="关闭后，包含图片、文档、文件或音频等附件的会话请求会直接被拒绝，不会发送到上游。"
+                    >
+                      <Switch checkedChildren="允许" unCheckedChildren="拒绝" />
                     </Form.Item>
 
                     <Form.Item

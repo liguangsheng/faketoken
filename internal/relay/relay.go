@@ -448,6 +448,12 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 		if err != nil {
 			continue
 		}
+		if !ch.AllowAttachments && hasConversationAttachment(r.Header.Get("Content-Type"), body) {
+			const message = "请求不能携带附件"
+			rl.finish(entry, captured, started, http.StatusTooManyRequests, message)
+			writeError(w, http.StatusTooManyRequests, "invalid_request_error", "attachments_not_allowed", message)
+			return
+		}
 
 		// Per-channel RPM cap. A channel over its rate is treated like a
 		// cooling breaker: skipped this pass, not counted as an attempt, so

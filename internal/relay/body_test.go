@@ -107,3 +107,27 @@ func TestInspect(t *testing.T) {
 		})
 	}
 }
+
+func TestHasConversationAttachment(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "messages image like log 7105", body: `{"messages":[{"role":"user","content":[{"type":"text","text":"judge"},{"type":"image","source":{"type":"url","url":"https://example.test/a.jpg"}}]}]}`, want: true},
+		{name: "messages document", body: `{"messages":[{"content":[{"type":"document","source":{"type":"base64","data":"AA=="}}]}]}`, want: true},
+		{name: "chat image url", body: `{"messages":[{"content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}]}`, want: true},
+		{name: "responses input file", body: `{"input":[{"role":"user","content":[{"type":"input_file","file_id":"file_1"}]}]}`, want: true},
+		{name: "gemini inline data", body: `{"contents":[{"parts":[{"text":"look"},{"inlineData":{"mimeType":"image/png","data":"AA=="}}]}]}`, want: true},
+		{name: "generic attachments", body: `{"messages":[{"content":"look","attachments":[{"url":"https://example.test/a.pdf"}]}]}`, want: true},
+		{name: "plain text", body: `{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`},
+		{name: "tools are not attachments", body: `{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"1","name":"weather","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"1","content":"sunny"}]}]}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasConversationAttachment("application/json", []byte(tc.body)); got != tc.want {
+				t.Fatalf("hasConversationAttachment() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

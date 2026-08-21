@@ -92,6 +92,65 @@ func multipartModel(body []byte) string {
 	return strings.TrimSpace(string(rest[:end]))
 }
 
+// hasConversationAttachment reports whether a JSON conversation payload
+// contains non-text user input. It intentionally recognises the common shapes
+// across Messages, Chat Completions, Responses and Gemini without treating
+// tool calls/results, thinking blocks or ordinary metadata as attachments.
+func hasConversationAttachment(contentType string, body []byte) bool {
+	if !strings.Contains(strings.ToLower(contentType), "json") || len(body) == 0 {
+		return false
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	return attachmentValue(payload, "")
+}
+
+var attachmentTypes = map[string]bool{
+	"image": true, "image_url": true, "input_image": true,
+	"document": true, "file": true, "input_file": true,
+	"audio": true, "input_audio": true,
+	"video": true, "input_video": true,
+	"inline_data": true, "file_data": true,
+}
+
+func attachmentValue(value any, parentKey string) bool {
+	switch typed := value.(type) {
+	case []any:
+		if parentKey == "attachments" || parentKey == "files" || parentKey == "images" {
+			return len(typed) > 0
+		}
+		for _, item := range typed {
+			if attachmentValue(item, parentKey) {
+				return true
+			}
+		}
+	case map[string]any:
+		if typ, _ := typed["type"].(string); attachmentTypes[strings.ToLower(strings.TrimSpace(typ))] {
+			return true
+		}
+		for key, item := range typed {
+			normalized := strings.ToLower(strings.TrimSpace(key))
+			switch normalized {
+			case "image_url", "input_audio", "inline_data", "inlinedata", "file_data", "filedata":
+				if item != nil {
+					return true
+				}
+			case "attachments", "files", "images":
+				if attachmentValue(item, normalized) {
+					return true
+				}
+			default:
+				if attachmentValue(item, normalized) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // rewriteModel swaps the top-level "model" value while leaving every other
 // byte of the payload exactly as the client sent it. Falls back to a
 // re-encode only if the splice is not possible.
