@@ -5125,6 +5125,97 @@ func TestReasoningEffortAndClientTypeAreLogged(t *testing.T) {
 	}
 }
 
+// The channel's own vocabulary is applied on the way out: a caller asking for a
+// level this upstream has never heard of is rewritten into the one it accepts,
+// rather than having the whole request rejected.
+func TestChannelRewritesReasoningEffort(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1, 1)
+	})
+	h.createChannel(channelInput{
+		Name: "effort-map", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-5"}, Groups: []string{"default"},
+		ReasoningEffortMapping: map[string]string{"max": "xhigh"},
+	})
+	key := h.createKey()
+
+	resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"gpt-5","reasoning_effort":"max","temperature":0.7}`)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	body := up.body()
+	if !strings.Contains(body, `"reasoning_effort":"xhigh"`) {
+		t.Fatalf("upstream did not receive the mapped level: %s", body)
+	}
+	if strings.Contains(body, `"max"`) {
+		t.Fatalf("the original level was still sent: %s", body)
+	}
+	// Everything around the rewritten field has to survive untouched, exactly
+	// as it does for a model rewrite.
+	if !strings.Contains(body, `"temperature":0.7`) {
+		t.Fatalf("the rest of the payload was altered: %s", body)
+	}
+
+	// The log says what was asked for and what went out, so an operator can see
+	// the substitution happened rather than guessing from a bare level.
+	entry := h.waitForLog(t, 1)
+	if entry.ReasoningEffort != "max → xhigh" {
+		t.Fatalf("reasoning effort = %q, want %q", entry.ReasoningEffort, "max → xhigh")
+	}
+}
+
+// A channel with no rule for the level the caller sent must stay transparent.
+func TestChannelWithoutMatchingEffortRuleForwardsVerbatim(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1, 1)
+	})
+	h.createChannel(channelInput{
+		Name: "effort-partial", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-5"}, Groups: []string{"default"},
+		ReasoningEffortMapping: map[string]string{"max": "xhigh"},
+	})
+	key := h.createKey()
+
+	resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"gpt-5","reasoning_effort":"low"}`)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	if body := up.body(); !strings.Contains(body, `"reasoning_effort":"low"`) {
+		t.Fatalf("an unmapped level was not forwarded verbatim: %s", body)
+	}
+	entry := h.waitForLog(t, 1)
+	if entry.ReasoningEffort != "low" {
+		t.Fatalf("reasoning effort = %q, want low", entry.ReasoningEffort)
+	}
+}
+
+// The rule survives the round trip through the console API, including the
+// case-folding the store applies to the level names.
+func TestChannelEffortMappingRoundTrip(t *testing.T) {
+	h := newHarness(t)
+
+	id := h.createChannel(channelInput{
+		Name: "effort-persist", Type: "openai", BaseURL: "https://up.test", APIKey: "k",
+		Models: []string{"gpt-5"}, Groups: []string{"default"},
+		ReasoningEffortMapping: map[string]string{"MAX": "xhigh", "  ": "ignored", "medium": "  "},
+	})
+
+	saved := h.channel(id)
+	if got := saved.ReasoningEffortMapping["max"]; got != "xhigh" {
+		t.Fatalf("mapping did not persist folded: %+v", saved.ReasoningEffortMapping)
+	}
+	// A half-filled row is a line still being typed, not a rule.
+	if len(saved.ReasoningEffortMapping) != 1 {
+		t.Fatalf("incomplete rules were kept: %+v", saved.ReasoningEffortMapping)
+	}
+}
+
 func TestLogStreamPushesNewEntries(t *testing.T) {
 	h := newHarness(t)
 

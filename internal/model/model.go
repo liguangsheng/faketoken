@@ -146,6 +146,10 @@ type Channel struct {
 	SupportedProtocols     []string `json:"supported_protocols"`
 	ConvertMessagesToChat  bool     `json:"convert_messages_to_chat"`
 	ConvertResponsesToChat bool     `json:"convert_responses_to_chat"`
+	// ReasoningEffortMapping renames the thinking level a caller asked for into
+	// the one this upstream accepts ("max" -> "xhigh"). Keys are lowercase; an
+	// empty map forwards whatever the client sent.
+	ReasoningEffortMapping map[string]string `json:"reasoning_effort_mapping"`
 	// AllowAttachments controls whether multimodal conversation content such
 	// as images, documents, files and audio may be sent through this channel.
 	AllowAttachments bool `json:"allow_attachments"`

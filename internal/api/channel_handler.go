@@ -44,6 +44,7 @@ type channelInput struct {
 	SupportedProtocols     []string          `json:"supported_protocols"`
 	ConvertMessagesToChat  bool              `json:"convert_messages_to_chat"`
 	ConvertResponsesToChat bool              `json:"convert_responses_to_chat"`
+	ReasoningEffortMapping map[string]string `json:"reasoning_effort_mapping"`
 	AllowAttachments       *bool             `json:"allow_attachments"`
 	LockUserAgent          bool              `json:"lock_user_agent"`
 	LockedUserAgents       map[string]string `json:"locked_user_agents"`
@@ -79,6 +80,7 @@ func (in channelInput) toModel(id int64) *model.Channel {
 		SupportedProtocols:     in.SupportedProtocols,
 		ConvertMessagesToChat:  in.ConvertMessagesToChat,
 		ConvertResponsesToChat: in.ConvertResponsesToChat,
+		ReasoningEffortMapping: cleanEffortMapping(in.ReasoningEffortMapping),
 		AllowAttachments:       in.AllowAttachments == nil || *in.AllowAttachments,
 		LockUserAgent:          in.LockUserAgent,
 		LockedUserAgents:       cleanUserAgentLocks(in.LockedUserAgents),
@@ -107,6 +109,45 @@ func cleanUserAgentLocks(in map[string]string) map[string]string {
 		}
 	}
 	return out
+}
+
+// cleanEffortMapping folds the levels an operator typed to lowercase and drops
+// the half-filled rows the console's key/value editor leaves behind. The store
+// normalises again on write; doing it here as well is what makes the channel
+// returned by a create or update already show what was actually stored.
+func cleanEffortMapping(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for from, to := range in {
+		from = strings.ToLower(strings.TrimSpace(from))
+		to = strings.TrimSpace(to)
+		if from == "" || to == "" {
+			continue
+		}
+		out[from] = to
+	}
+	return out
+}
+
+// validEffortMapping refuses a rule that maps a level onto whitespace or onto a
+// value carrying JSON punctuation. The rename is spliced into the request body
+// as a JSON string, so a stray quote or brace is either meaningless to the
+// upstream or a rejected request, and either way the operator meant something
+// else.
+func validEffortMapping(in channelInput) (string, bool) {
+	for from, to := range in.ReasoningEffortMapping {
+		from = strings.TrimSpace(from)
+		to = strings.TrimSpace(to)
+		// One side filled and the other empty is a row still being typed; it is
+		// dropped rather than refused, so saving the form is never blocked by a
+		// leftover blank line.
+		if from == "" || to == "" {
+			continue
+		}
+		if strings.ContainsAny(to, "\"'{}[]\\\n\r\t") || strings.ContainsAny(from, "\"'{}[]\\\n\r\t") {
+			return "思考强度映射只能填写等级名称，不能包含引号、括号或换行", false
+		}
+	}
+	return "", true
 }
 
 var validUserAgentProtocols = map[string]bool{
@@ -249,6 +290,10 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, message)
 		return
 	}
+	if message, ok := validEffortMapping(in); !ok {
+		fail(w, http.StatusBadRequest, message)
+		return
+	}
 
 	created, err := s.store.CreateChannel(r.Context(), in.toModel(0))
 	if err != nil {
@@ -287,6 +332,10 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if message, ok := validProtocolConversion(in); !ok {
+		fail(w, http.StatusBadRequest, message)
+		return
+	}
+	if message, ok := validEffortMapping(in); !ok {
 		fail(w, http.StatusBadRequest, message)
 		return
 	}

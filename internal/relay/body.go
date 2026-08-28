@@ -14,6 +14,10 @@ type requestInfo struct {
 	Model  string
 	Stream bool
 	IsJSON bool
+	// Effort is the thinking level the caller asked for, kept because each
+	// attempt may rename it for its own channel and needs the original to
+	// start from.
+	Effort string
 }
 
 func inspect(path, contentType string, body []byte) requestInfo {
@@ -47,6 +51,7 @@ func inspect(path, contentType string, body []byte) requestInfo {
 	if info.Model == "" && strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
 		info.Model = multipartModel(body)
 	}
+	info.Effort = reasoningEffort(body, info.IsJSON)
 	return info
 }
 
@@ -174,35 +179,72 @@ func rewriteModel(body []byte, newModel string) []byte {
 	return out
 }
 
-// spliceTopLevelString locates the byte range of a top-level key's value and
-// replaces just those bytes, preserving key order, whitespace and the exact
-// formatting of every other field.
+// spliceTopLevelString replaces just the bytes of a top-level key's value,
+// preserving key order, whitespace and the exact formatting of every other
+// field.
 func spliceTopLevelString(body []byte, key, value string) ([]byte, bool) {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	tok, err := dec.Token()
+	start, end, ok := topLevelValueRange(body, key)
+	if !ok {
+		return nil, false
+	}
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		return nil, false
 	}
-	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+	out := make([]byte, 0, len(body)-(end-start)+len(encoded))
+	out = append(out, body[:start]...)
+	out = append(out, encoded...)
+	out = append(out, body[end:]...)
+	return out, true
+}
+
+// spliceNestedString does the same one level down, for the dialects that put a
+// value inside a config object ("reasoning": {"effort": ...}). The nested object
+// is itself valid JSON, so its own range is spliced and stitched back in.
+func spliceNestedString(body []byte, outerKey, innerKey, value string) ([]byte, bool) {
+	outerStart, outerEnd, ok := topLevelValueRange(body, outerKey)
+	if !ok {
 		return nil, false
+	}
+	inner, ok := spliceTopLevelString(body[outerStart:outerEnd], innerKey, value)
+	if !ok {
+		return nil, false
+	}
+	out := make([]byte, 0, outerStart+len(inner)+len(body)-outerEnd)
+	out = append(out, body[:outerStart]...)
+	out = append(out, inner...)
+	out = append(out, body[outerEnd:]...)
+	return out, true
+}
+
+// topLevelValueRange locates the byte range of a top-level key's value, so a
+// caller can rewrite that value without re-encoding the document around it.
+func topLevelValueRange(body []byte, key string) (int, int, bool) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil {
+		return 0, 0, false
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return 0, 0, false
 	}
 
 	for dec.More() {
 		keyTok, err := dec.Token()
 		if err != nil {
-			return nil, false
+			return 0, 0, false
 		}
 		name, ok := keyTok.(string)
 		if !ok {
-			return nil, false
+			return 0, 0, false
 		}
-		afterKey := dec.InputOffset()
+		afterKey := int(dec.InputOffset())
 
 		var raw json.RawMessage
 		if err := dec.Decode(&raw); err != nil {
-			return nil, false
+			return 0, 0, false
 		}
-		end := dec.InputOffset()
+		end := int(dec.InputOffset())
 
 		if name != key {
 			continue
@@ -213,24 +255,15 @@ func spliceTopLevelString(body []byte, key, value string) ([]byte, bool) {
 			start++
 		}
 		if start >= end || body[start] != ':' {
-			return nil, false
+			return 0, 0, false
 		}
 		start++
 		for start < end && isJSONSpace(body[start]) {
 			start++
 		}
-
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return nil, false
-		}
-		out := make([]byte, 0, len(body)-int(end-start)+len(encoded))
-		out = append(out, body[:start]...)
-		out = append(out, encoded...)
-		out = append(out, body[end:]...)
-		return out, true
+		return start, end, true
 	}
-	return nil, false
+	return 0, 0, false
 }
 
 func isJSONSpace(b byte) bool {

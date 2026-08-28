@@ -72,5 +72,5 @@ search: ## Search the captured request/response bodies, export to .search/ (KEYW
 backups: ## List the dumps currently retained
 	@ls -lh $${BACKUP_DIR:-./.backup}/*.dump 2>/dev/null || echo "no dumps yet"
 
-clean: ## Remove build artefacts
-	rm -rf bin web/dist
+clean: ## Remove build artefacts and web/node_modules
+	rm -rf bin web/dist web/node_modules

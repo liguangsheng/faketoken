@@ -404,6 +404,7 @@ export default function Channels() {
             models: channel.models,
             model_prefixes: (channel.model_prefixes ?? []).join('\n'),
             model_mapping: stringifyMapping(channel.model_mapping),
+            reasoning_effort_mapping: stringifyMapping(channel.reasoning_effort_mapping),
             headers: stringifyMapping(channel.headers),
             keepalive_at: parseClock(channel.keepalive_at),
           }
@@ -419,6 +420,7 @@ export default function Channels() {
             models: [],
             model_prefixes: '',
             model_mapping: '',
+            reasoning_effort_mapping: '',
             headers: '',
             timeout_secs: 0,
             proxy_url: '',
@@ -498,6 +500,7 @@ export default function Channels() {
       models: values.models ?? [],
       model_prefixes: parseList(values.model_prefixes ?? ''),
       model_mapping: parseMapping(values.model_mapping ?? ''),
+      reasoning_effort_mapping: parseMapping(values.reasoning_effort_mapping ?? ''),
       headers: parseMapping(values.headers ?? ''),
       timeout_secs: Number(values.timeout_secs ?? 0),
       proxy_url: values.proxy_url ?? '',
@@ -1545,6 +1548,11 @@ export default function Channels() {
                     {stringifyMapping(row.model_mapping) || '未配置'}
                   </pre>
                 </Card>
+                <Card size="small" title="思考强度映射" style={{ marginTop: 12 }}>
+                  <pre className="code-block" style={{ maxHeight: 120 }}>
+                    {stringifyMapping(row.reasoning_effort_mapping) || '未配置'}
+                  </pre>
+                </Card>
               </Col>
               <Col xs={24} lg={6}>
                 <Card size="small" title="运行状态">
@@ -1901,6 +1909,18 @@ export default function Channels() {
                       ]}
                     >
                       <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                    </Form.Item>
+
+                    {/* Sits with the other upstream-compatibility settings: it
+                        exists because upstreams disagree about what the
+                        thinking levels are called, not because anyone wants to
+                        change how hard the model thinks. */}
+                    <Form.Item
+                      name="reasoning_effort_mapping"
+                      label="思考强度映射"
+                      tooltip="每行 客户端强度=上游强度，例如 max=xhigh。转发时只改写请求里的思考强度字段（reasoning_effort / reasoning.effort / output_config.effort），没有对应规则的强度原样透传"
+                    >
+                      <Input.TextArea rows={2} placeholder={'max=xhigh\nminimal=low'} />
                     </Form.Item>
 
                     <Card size="small" title="User-Agent 锁定配置" style={{ marginBottom: 12 }}>

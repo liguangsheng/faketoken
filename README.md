@@ -14,6 +14,7 @@ Go + React + Postgres 实现的多用户 LLM API 网关。核心目标是**尽�
 | 熔断 | 连续失败的渠道进入指数退避冷却，成功后自动恢复 |
 | 模型拉取 | 一键从上游 `/models` 拉取模型清单，勾选后写入渠道并即时生效 |
 | 模型映射 | `客户端模型 = 上游模型`，转发时只改写 `model` 字段（或 Gemini 的 URL 段） |
+| 思考强度映射 | `客户端强度 = 上游强度`（如 `max=xhigh`），改写发往上游的思考强度等级；上游不认识的等级不再整条请求被拒 |
 | 前缀路由 | 渠道可配模型前缀（`gpt-4`）覆盖整个系列；精确匹配优先，前缀只在无人精确命中时兜底 |
 | 渠道运维 | 按状态/类型/分组/模型筛选、批量启停删除、批量测试、复制渠道、查询上游余额 |
 | 渠道保活 | 会回收闲置账号的上游：每天定时自动启用渠道，攒够 N 次成功请求后自动禁用 |
@@ -157,6 +158,7 @@ level=INFO msg="keepalive schedule" channel=12 name=... at=03:00 target=10 next_
 - 剔除逐跳头（`Connection`、`Transfer-Encoding` 等）
 - 剔除 `Accept-Encoding`，交给 Go transport 协商，从而能读到明文用量
 - 命中模型映射时改写 `model` 字段——用字节切片替换，不重新序列化 JSON，因此字段顺序、空白、大整数精度全部保持原样
+- 命中思考强度映射时改写强度等级（`reasoning_effort` / `reasoning.effort` / `output_config.effort`），同样是字节切片替换。只改等级名称，不碰 Anthropic 的 `budget_tokens` 与 Gemini 的 `thinkingBudget`——把等级换算成 token 预算是另一回事，猜错要花真金白银
 
 **响应方向**
 - 状态码、响应头、响应体全部原样返回，包括上游返回的 4xx 错误详情

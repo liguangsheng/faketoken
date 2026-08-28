@@ -299,9 +299,9 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Method:    r.Method,
 		Stream:    info.Stream,
 		ClientIP:  clientIP(r),
-		// Read from what the caller already sent; nothing is added to the
-		// bytes that go upstream.
-		ReasoningEffort: reasoningEffort(body, info.IsJSON),
+		// Read from what the caller already sent. A channel with a thinking-level
+		// mapping rewrites this per attempt to say what the upstream received.
+		ReasoningEffort: info.Effort,
 		ClientType:      clientType(r),
 	}
 	// Only the cheap half is done here; the body is converted later, off the
@@ -567,6 +567,27 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 		}
 		if info.IsJSON && len(body) > 0 && !convertedMessages && !convertedResponses {
 			outBody = rewriteModel(body, upstreamModel)
+		}
+	}
+
+	// Applied to outBody rather than body so it composes with everything above:
+	// a mapped model, a converted dialect, or both. The converters copy the
+	// caller's own reasoning fields through, so the rename lands on the
+	// converted payload just as it does on a verbatim one.
+	//
+	// The log line is rebuilt on every attempt rather than only when a rule
+	// fires. Each retry is a different channel with its own vocabulary, so a
+	// rename by a channel that then failed must not be left standing against
+	// the one that actually answered.
+	entry.ReasoningEffort = info.Effort
+	if info.IsJSON && len(outBody) > 0 {
+		rewritten, from, to := rewriteReasoningEffort(outBody, ch.ReasoningEffortMapping)
+		if from != "" {
+			outBody = rewritten
+			// Keeps what the caller asked for and says what was sent instead: a
+			// row reading plain "xhigh" would hide that the client requested
+			// "max", which is the whole point of having the rule.
+			entry.ReasoningEffort = from + " → " + to
 		}
 	}
 

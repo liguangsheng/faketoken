@@ -65,6 +65,8 @@ export interface Channel {
   supported_protocols: string[]
   convert_messages_to_chat: boolean
   convert_responses_to_chat: boolean
+  /** Renames the thinking level on the way upstream, e.g. `{max: 'xhigh'}`. */
+  reasoning_effort_mapping: Record<string, string>
   allow_attachments: boolean
   lock_user_agent: boolean
   locked_user_agents: Record<string, string>
