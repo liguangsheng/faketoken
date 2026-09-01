@@ -444,6 +444,60 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
     [],
   )
 
+  // The toggle belongs next to the meters it governs, but those only render on
+  // the admin board; elsewhere it falls back into the filter row.
+  const liveToggle = (
+    <Tooltip title={range ? '选择了时间范围，实时推送已暂停' : '由服务端推送新记录，无需轮询'}>
+      {/* The label element makes the caption part of the toggle's hit area. */}
+      <label
+        style={{
+          alignItems: 'center',
+          cursor: range ? 'not-allowed' : 'pointer',
+          display: 'inline-flex',
+        }}
+      >
+        <Space size={6}>
+          <Switch
+            size="small"
+            checked={live}
+            disabled={Boolean(range)}
+            aria-label="实时推送"
+            onChange={(value) => {
+              setLive(value)
+              // Re-enabling reconnects a fresh stream, which cannot know
+              // what it missed; reload the first page to close the gap.
+              if (value && page === 1) void load()
+            }}
+          />
+          <Badge
+            status={
+              !live || range
+                ? 'default'
+                : streamState === 'live'
+                  ? 'processing'
+                  : streamState === 'connecting'
+                    ? 'warning'
+                    : 'error'
+            }
+            text={
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {!live || range
+                  ? '实时推送'
+                  : streamState === 'live'
+                    ? canStream
+                      ? '实时推送中'
+                      : '已暂停（非首页）'
+                    : streamState === 'connecting'
+                      ? '连接中…'
+                      : '已断开，重试中'}
+              </Typography.Text>
+            }
+          />
+        </Space>
+      </label>
+    </Tooltip>
+  )
+
   return (
     <>
       {showRate && admin && (
@@ -456,6 +510,7 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
             active={rateActive}
             idleHint={idleHint}
           />
+          {liveToggle}
         </Space>
       )}
       <Space wrap style={{ marginBottom: 12 }} size={8}>
@@ -547,61 +602,7 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
         <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
           刷新
         </Button>
-        <Tooltip
-          title={
-            range
-              ? '选择了时间范围，实时推送已暂停'
-              : '由服务端推送新记录，无需轮询'
-          }
-        >
-          {/* The label element makes the caption part of the toggle's hit area. */}
-          <label
-            style={{
-              alignItems: 'center',
-              cursor: range ? 'not-allowed' : 'pointer',
-              display: 'inline-flex',
-            }}
-          >
-            <Space size={6}>
-              <Switch
-                size="small"
-                checked={live}
-                disabled={Boolean(range)}
-                aria-label="实时推送"
-                onChange={(value) => {
-                  setLive(value)
-                  // Re-enabling reconnects a fresh stream, which cannot know
-                  // what it missed; reload the first page to close the gap.
-                  if (value && page === 1) void load()
-                }}
-              />
-              <Badge
-                status={
-                  !live || range
-                    ? 'default'
-                    : streamState === 'live'
-                      ? 'processing'
-                      : streamState === 'connecting'
-                        ? 'warning'
-                        : 'error'
-                }
-                text={
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {!live || range
-                      ? '实时推送'
-                      : streamState === 'live'
-                        ? canStream
-                          ? '实时推送中'
-                          : '已暂停（非首页）'
-                        : streamState === 'connecting'
-                          ? '连接中…'
-                          : '已断开，重试中'}
-                  </Typography.Text>
-                }
-              />
-            </Space>
-          </label>
-        </Tooltip>
+        {!(showRate && admin) && liveToggle}
         {pending > 0 && (
           <Button type="link" size="small" onClick={() => setPage(1)}>
             有 {pending} 条新记录
