@@ -139,6 +139,35 @@ func TestClientType(t *testing.T) {
 			want:    "opencode",
 		},
 		{
+			// What pi sends on every provider path: its own name plus a
+			// platform comment, no version.
+			name:    "pi",
+			headers: map[string]string{"User-Agent": "pi (linux 7.2.2-arch1-1; x64)"},
+			want:    "pi",
+		},
+		{
+			name:    "pi with a version",
+			headers: map[string]string{"User-Agent": "pi/0.84.4 (linux; node/v24.2.0; x64)"},
+			want:    "pi",
+		},
+		{
+			// pi's Codex path names itself in the originator too. The label
+			// is the tool, not the protocol it happens to speak.
+			name: "pi via originator",
+			headers: map[string]string{
+				"Originator": "pi",
+				"User-Agent": "pi (linux 7.2.2-arch1-1; x64)",
+			},
+			want: "pi",
+		},
+		{
+			// Two letters that hide inside half the agent strings in this
+			// table. Only the product position may claim them.
+			name:    "pi is not matched inside another name",
+			headers: map[string]string{"User-Agent": "raspberry-pi/1.0 (api; httpx)"},
+			want:    "python",
+		},
+		{
 			name:    "openai sdk",
 			headers: map[string]string{"User-Agent": "OpenAI/Python 1.55.0 openai-python"},
 			want:    "openai-sdk",

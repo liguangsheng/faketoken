@@ -116,6 +116,19 @@ func formatTokenBudget(tokens int) string {
 	return strconv.Itoa(tokens) + " tokens"
 }
 
+// isPi reports whether a self-reported identity string names pi. Only the
+// product token counts — everything up to the first version, separator or
+// platform comment — so "pi", "pi/0.84.4 (linux; node/v24.2.0; x64)" and
+// "pi (linux 7.2.2-arch1-1; x64)" all pass, while "openai-python" and
+// "raspberry-pi/1.0" do not.
+func isPi(value string) bool {
+	product := strings.TrimSpace(value)
+	if i := strings.IndexAny(product, "/ \t;("); i >= 0 {
+		product = product[:i]
+	}
+	return strings.EqualFold(product, "pi")
+}
+
 // clientType labels the caller from the headers its SDK or CLI already sends.
 //
 // Every branch is a guess from a self-reported string, so this is only ever a
@@ -129,6 +142,15 @@ func clientType(r *http.Request) string {
 		return strings.NewReplacer("_", "-", " ", "-").Replace(lowered)
 	}
 	both := normalize(r.Header.Get("Originator")) + " " + normalize(r.Header.Get("User-Agent"))
+
+	// pi calls itself just "pi" — "pi (linux 7.2.2; x64)" as a user agent, and
+	// "pi" as an originator on its Codex path. Two letters are far too short to
+	// look for inside the joined string: "api", "openai-python" and "httpx" all
+	// contain them. So pi is matched only where a client states its own name,
+	// which is why this sits outside the substring switch below.
+	if isPi(r.Header.Get("Originator")) || isPi(r.Header.Get("User-Agent")) {
+		return "pi"
+	}
 
 	switch {
 	case strings.Contains(both, "codex-desktop"):
