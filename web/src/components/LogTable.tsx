@@ -636,13 +636,29 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
         loading={loading}
         dataSource={rows}
         rowClassName={(row) => (enteringRowIDs.has(row.id) ? 'log-row--enter' : '')}
-        // Must cover the sum of the column widths below, taking the admin view
-        // (which adds the 用户 column) as the widest case. A smaller value makes
-        // the browser shrink every column to fit, and the crushed cells collide
-        // instead of scrolling.
+        // Must exceed the sum of the fixed column widths below, taking the admin
+        // view (which adds the 用户 column) as the widest case. A smaller value
+        // makes the browser shrink every column to fit, and the crushed cells
+        // collide instead of scrolling. The surplus over that sum is what the
+        // width-less 错误 column gets, so trimming a fixed column widens 错误
+        // rather than narrowing the table.
         scroll={{ x: 1670 }}
         onRow={(row) => ({
-          onClick: () => openDetail(row),
+          onClick: (event) => {
+            // A drag-select also emits a click on the row in some browsers.
+            // Only suppress that click when the active selection touches this
+            // row, so a selection elsewhere on the page never blocks a normal
+            // single-click open.
+            const selection = window.getSelection()
+            if (selection && !selection.isCollapsed) {
+              const rowElement = event.currentTarget
+              const touchesRow = [selection.anchorNode, selection.focusNode].some(
+                (node) => node !== null && rowElement.contains(node),
+              )
+              if (touchesRow) return
+            }
+            openDetail(row)
+          },
           // Rows are the only way into the detail drawer, so they must be
           // reachable without a mouse.
           tabIndex: 0,
@@ -821,7 +837,9 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
           {
             title: '状态',
             dataIndex: 'status_code',
-            width: 120,
+            // Keep room for the status, stream and retry tags without letting
+            // the last tag run into the duration column.
+            width: 140,
             render: (code: number, row: RequestLog) => (
               <Space size={4}>
                 <Tag color={statusTone(code)}>{code}</Tag>
@@ -852,7 +870,7 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
               </Tooltip>
             ),
             dataIndex: 'duration_ms',
-            width: 160,
+            width: 120,
             align: 'left',
             render: (value: number, row: RequestLog) => {
               const ratio = value > 0 && row.ttfb_ms > 0 ? Math.min(row.ttfb_ms / value, 1) : 0
@@ -891,14 +909,19 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
             },
           },
           {
-            // Input / output / total spelled out. The cache breakdown lives in
-            // the detail drawer, where there is room to explain it.
+            // Stacked, not side by side: on one line the column had to fit
+            // "1.2M→128k" and cost the 错误 column the width it needed more.
+            // Stacked, the widest thing in the cell is one compact number, so
+            // both directions remain readable without making this column
+            // compete with the error text for the table's spare width.
+            // ↑ input, ↓ output; the total is their sum and lives in the cell
+            // tooltip, with the cache split in the detail drawer.
             title: (
-              <Tooltip title="输入 → 输出 · 合计">
+              <Tooltip title="Tokens：↑ 输入 · ↓ 输出，合计悬停单元格可见">
                 <span>Tokens</span>
               </Tooltip>
             ),
-            width: 150,
+            width: 100,
             align: 'right',
             render: (_: unknown, row: RequestLog) => (
               <Tooltip
@@ -906,10 +929,15 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
                   row.completion_tokens,
                 )} · 合计 ${formatNumber(row.total_tokens)}`}
               >
-                <span className="mono" style={{ whiteSpace: 'nowrap' }}>
-                  {formatCompact(row.prompt_tokens)}→{formatCompact(row.completion_tokens)}
-                  <span className="text-muted"> · {formatCompact(row.total_tokens)}</span>
-                </span>
+                <div className="cell-stack">
+                  <span className="mono">
+                    <span className="text-muted">↑</span>
+                    {formatCompact(row.prompt_tokens)}
+                  </span>
+                  <span className="mono text-muted cell-stack__sub">
+                    ↓{formatCompact(row.completion_tokens)}
+                  </span>
+                </div>
               </Tooltip>
             ),
           },
