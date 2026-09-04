@@ -19,6 +19,13 @@ func newClientPool() *clientPool {
 	return &clientPool{clients: map[string]*http.Client{}}
 }
 
+// HTTPClient hands out the pooled client for one proxy setting ("" for a direct
+// connection) so callers outside this package reuse its connections and its
+// no-redirect policy instead of building a second client of their own.
+func (rl *Relay) HTTPClient(proxyURL string) (*http.Client, error) {
+	return rl.clients.get(proxyURL)
+}
+
 func (p *clientPool) get(proxyURL string) (*http.Client, error) {
 	p.mu.RLock()
 	c, ok := p.clients[proxyURL]

@@ -142,6 +142,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/admin/logs", s.requireAdmin(s.handlePurgeLogs))
 	mux.HandleFunc("GET /api/admin/stats", s.requireAdmin(s.handleAdminStats))
 
+	// The test page's way past a gateway that refuses the browser's CORS
+	// preflight; see handlePlaygroundRelay for why it is administrator-only.
+	mux.HandleFunc("POST /api/admin/playground/relay", s.requireAdmin(s.handlePlaygroundRelay))
+
 	// ---- single page app
 	mux.Handle("/", s.spaHandler())
 

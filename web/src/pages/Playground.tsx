@@ -3,6 +3,7 @@ import type { KeyboardEvent } from 'react'
 import {
   App,
   Alert,
+  AutoComplete,
   Button,
   Card,
   Col,
@@ -25,13 +26,19 @@ import {
 } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 
-import { api } from '../api/client'
+import { api, session } from '../api/client'
+import { useAuth } from '../auth/AuthContext'
 import EmptyState from '../components/EmptyState'
 import PageHeader from '../components/PageHeader'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 import { copyTextToClipboard } from '../utils/clipboard'
 import { formatDuration, formatNumber } from '../utils/format'
 
+const HOST_STORAGE = 'faketoken-playground-host'
+const PROTOCOL_STORAGE = 'faketoken-playground-protocol'
+const PROXY_STORAGE = 'faketoken-playground-proxy'
+const PROXY_PATH = '/api/admin/playground/relay'
 const KEYS_STORAGE = 'faketoken-playground-keys'
 const REMEMBER_STORAGE = 'faketoken-playground-remember'
 const MAX_REMEMBERED = 5
@@ -62,6 +69,241 @@ const readKeys = (): string[] => {
 const maskKey = (key: string) =>
   key.length > 12 ? `${key.slice(0, 7)}…${key.slice(-4)}` : key
 
+type ModelsState = 'loading' | 'ready' | 'error' | 'need-key'
+
+/** Addresses a browser reaches over plain HTTP rather than TLS. */
+const LOCAL_HOST = /^(localhost|127\.|0\.0\.0\.0|\[?::1\]?|192\.168\.|10\.)/i
+
+/**
+ * Turns what was typed into the prefix a request hangs off: `''` for this site,
+ * `null` when it cannot be read as an address. A bare `host:port` gets a scheme,
+ * and a trailing `/v1` is dropped so a base URL copied from a provider — or from
+ * this console's own quick-import field — can be pasted as-is.
+ */
+const normalizeHost = (raw: string): string | null => {
+  const input = raw.trim()
+  if (!input) return ''
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(input)
+    ? input
+    : `${LOCAL_HOST.test(input) ? 'http' : 'https'}://${input}`
+  try {
+    const url = new URL(withScheme)
+    if (!/^https?:$/.test(url.protocol) || !url.hostname) return null
+    return `${url.origin}${url.pathname.replace(/\/+$/, '').replace(/\/v1$/i, '')}`
+  } catch {
+    return null
+  }
+}
+
+type Dict = Record<string, unknown>
+
+const isDict = (value: unknown): value is Dict =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+/** Walks a path of keys, giving up quietly on anything unexpected. */
+const dig = (value: unknown, ...path: string[]): unknown => {
+  let current = value
+  for (const key of path) {
+    if (!isDict(current)) return undefined
+    current = current[key]
+  }
+  return current
+}
+
+const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
+const asText = (value: unknown): string => (typeof value === 'string' ? value : '')
+const asCount = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined
+
+const openAIUsage = (value: unknown): Usage | null => {
+  if (!isDict(value)) return null
+  const prompt = asCount(value.prompt_tokens)
+  const completion = asCount(value.completion_tokens)
+  if (prompt === undefined && completion === undefined) return null
+  return {
+    ...(prompt === undefined ? {} : { prompt_tokens: prompt }),
+    ...(completion === undefined ? {} : { completion_tokens: completion }),
+  }
+}
+
+/** Both native dialects count as input/output rather than prompt/completion. */
+const nativeUsage = (value: unknown): Usage | null => {
+  if (!isDict(value)) return null
+  const prompt = asCount(value.input_tokens)
+  const completion = asCount(value.output_tokens)
+  if (prompt === undefined && completion === undefined) return null
+  return {
+    ...(prompt === undefined ? {} : { prompt_tokens: prompt }),
+    ...(completion === undefined ? {} : { completion_tokens: completion }),
+  }
+}
+
+/**
+ * Folds in what a frame reported without letting it erase what it did not
+ * mention: Anthropic sends the input count on the opening frame and the output
+ * count on the closing one, so a plain overwrite would lose half the total.
+ */
+const mergeUsage = (base: Usage | null, next: Usage | null): Usage | null => {
+  if (!next) return base
+  const merged: Usage = { ...(base ?? {}) }
+  if (next.prompt_tokens !== undefined) merged.prompt_tokens = next.prompt_tokens
+  if (next.completion_tokens !== undefined) merged.completion_tokens = next.completion_tokens
+  return merged
+}
+
+type Protocol = 'chat_completions' | 'messages' | 'responses'
+
+interface RequestInput {
+  model: string
+  /** Already trimmed; empty means no system turn. */
+  system: string
+  prompt: string
+  stream: boolean
+}
+
+interface StreamEvent {
+  /** What this frame appends to the answer. */
+  delta: string
+  /** Counts this frame carried, merged over what came before. */
+  usage: Usage | null
+}
+
+interface ProtocolSpec {
+  label: string
+  path: string
+  headers?: Record<string, string>
+  body: (input: RequestInput) => Dict
+  /** Text of a whole reply; '' when the shape is not recognised. */
+  text: (payload: unknown) => string
+  usage: (payload: unknown) => Usage | null
+  event: (chunk: unknown) => StreamEvent
+}
+
+/** Anthropic rejects a request without it; a smoke test never needs more. */
+const MESSAGES_MAX_TOKENS = 4096
+
+const PROTOCOLS: Record<Protocol, ProtocolSpec> = {
+  chat_completions: {
+    label: 'Chat Completions',
+    path: '/v1/chat/completions',
+    body: ({ model, system, prompt, stream }) => ({
+      model,
+      messages: [
+        ...(system ? [{ role: 'system', content: system }] : []),
+        { role: 'user', content: prompt },
+      ],
+      stream,
+      ...(stream ? { stream_options: { include_usage: true } } : {}),
+    }),
+    text: (payload) => asText(dig(asArray(dig(payload, 'choices'))[0], 'message', 'content')),
+    usage: (payload) => openAIUsage(dig(payload, 'usage')),
+    event: (chunk) => ({
+      delta: asText(dig(asArray(dig(chunk, 'choices'))[0], 'delta', 'content')),
+      usage: openAIUsage(dig(chunk, 'usage')),
+    }),
+  },
+  messages: {
+    label: 'Messages',
+    path: '/v1/messages',
+    // Upstream Anthropic refuses a request without it, and the relay only
+    // forwards what the client sent.
+    headers: { 'Anthropic-Version': '2023-06-01' },
+    body: ({ model, system, prompt, stream }) => ({
+      model,
+      max_tokens: MESSAGES_MAX_TOKENS,
+      ...(system ? { system } : {}),
+      messages: [{ role: 'user', content: prompt }],
+      stream,
+    }),
+    text: (payload) =>
+      asArray(dig(payload, 'content'))
+        .map((block) => asText(dig(block, 'text')))
+        .join(''),
+    usage: (payload) => nativeUsage(dig(payload, 'usage')),
+    event: (chunk) => ({
+      // Tool arguments and thinking arrive as deltas of their own; only the
+      // text ones belong in the answer pane.
+      delta:
+        asText(dig(chunk, 'type')) === 'content_block_delta'
+          ? asText(dig(chunk, 'delta', 'text'))
+          : '',
+      usage:
+        nativeUsage(dig(chunk, 'usage')) ?? nativeUsage(dig(chunk, 'message', 'usage')),
+    }),
+  },
+  responses: {
+    label: 'Responses',
+    path: '/v1/responses',
+    body: ({ model, system, prompt, stream }) => ({
+      model,
+      ...(system ? { instructions: system } : {}),
+      input: prompt,
+      stream,
+    }),
+    // Reasoning items carry no `content`, so flattening skips them on its own.
+    text: (payload) =>
+      asArray(dig(payload, 'output'))
+        .flatMap((item) => asArray(dig(item, 'content')))
+        .map((part) => asText(dig(part, 'text')))
+        .join(''),
+    usage: (payload) => nativeUsage(dig(payload, 'usage')),
+    event: (chunk) => ({
+      delta:
+        asText(dig(chunk, 'type')) === 'response.output_text.delta'
+          ? asText(dig(chunk, 'delta'))
+          : '',
+      usage:
+        nativeUsage(dig(chunk, 'usage')) ?? nativeUsage(dig(chunk, 'response', 'usage')),
+    }),
+  },
+}
+
+const PROTOCOL_ORDER: Protocol[] = ['chat_completions', 'messages', 'responses']
+
+interface CallInit {
+  method: 'GET' | 'POST'
+  headers: Record<string, string>
+  body?: string
+  signal?: AbortSignal
+}
+
+/**
+ * One call to the target: straight from the browser, or handed to this server
+ * to make on the page's behalf.
+ *
+ * The direct call is preceded by a CORS preflight, which a gateway that leaves
+ * OPTIONS unhandled on its relay routes rejects — the request itself would have
+ * succeeded, but the browser never sends it. Going through the server turns it
+ * into a same-origin call, where no preflight applies. The reply is streamed
+ * back verbatim, so both paths are read the same way.
+ */
+const callTarget = (base: string, path: string, viaProxy: boolean, init: CallInit) => {
+  const url = `${base}${path}`
+  if (!viaProxy) {
+    return fetch(url, {
+      method: init.method,
+      headers: init.headers,
+      body: init.body,
+      signal: init.signal,
+    })
+  }
+  const token = session.get()
+  return fetch(PROXY_PATH, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ method: init.method, url, headers: init.headers, body: init.body ?? '' }),
+    signal: init.signal,
+  })
+}
+
+const readProtocol = (): Protocol => {
+  const stored = localStorage.getItem(PROTOCOL_STORAGE)
+  return stored && stored in PROTOCOLS ? (stored as Protocol) : 'chat_completions'
+}
+
 const IS_MAC = /mac/i.test(navigator.platform)
 
 /** How close to the bottom (px) still counts as "following the stream". */
@@ -69,9 +311,15 @@ const FOLLOW_SLACK = 48
 
 export default function Playground() {
   const { message, modal } = App.useApp()
+  const { isAdmin } = useAuth()
   const [models, setModels] = useState<string[]>([])
-  const [modelsState, setModelsState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [modelsState, setModelsState] = useState<ModelsState>('loading')
   const [model, setModel] = useState<string>()
+  const [host, setHost] = useState(() => localStorage.getItem(HOST_STORAGE) ?? '')
+  const [protocol, setProtocol] = useState<Protocol>(readProtocol)
+  const [viaServer, setViaServer] = useState(
+    () => localStorage.getItem(PROXY_STORAGE) === '1',
+  )
   const [savedKeys, setSavedKeys] = useState<string[]>(readKeys)
   const [remember, setRemember] = useState(
     () => localStorage.getItem(REMEMBER_STORAGE) !== '0',
@@ -93,20 +341,69 @@ export default function Playground() {
   const responseCardRef = useRef<HTMLDivElement | null>(null)
   const narrow = useMediaQuery('(max-width: 991px)')
 
+  const spec = PROTOCOLS[protocol]
+  // Only an administrator can ask the server to fetch, and only another host
+  // needs it: this site is already the page's own origin.
+  const proxyEnabled = viaServer && isAdmin
+  // Where the request goes, recomputed as it is typed so the hint under the
+  // field tracks the input.
+  const hostBase = useMemo(() => normalizeHost(host), [host])
+  // The model list trails the typing instead of firing a request per keystroke.
+  const debouncedHost = useDebouncedValue(host)
+  const debouncedKey = useDebouncedValue(apiKey)
+  const modelBase = useMemo(() => normalizeHost(debouncedHost), [debouncedHost])
+  // The local list comes from the session, so a key being typed must not
+  // reload it; only another host's list is read with the key.
+  const modelKey = modelBase ? debouncedKey.trim() : ''
+  const modelProxied = Boolean(modelBase) && proxyEnabled
+  // A reply from the host that was in the field a moment ago must not land in
+  // the list belonging to the current one.
+  const modelsSeq = useRef(0)
+
   const loadModels = useCallback(() => {
+    const seq = ++modelsSeq.current
+    const apply = (list: string[], state: ModelsState) => {
+      if (modelsSeq.current !== seq) return
+      setModels(list)
+      setModel((current) => current ?? list[0])
+      setModelsState(state)
+    }
+
+    if (modelBase === null) {
+      apply([], 'error')
+      return
+    }
+    if (modelBase === '') {
+      setModelsState('loading')
+      api
+        .myModels()
+        .then((result) => apply(result.data ?? [], 'ready'))
+        .catch(() => apply([], 'error'))
+      return
+    }
+    // Another deployment has no session behind it: its model list only comes
+    // back for a key it issued itself.
+    if (!modelKey) {
+      apply([], 'need-key')
+      return
+    }
     setModelsState('loading')
-    api
-      .myModels()
-      .then((result) => {
-        setModels(result.data ?? [])
-        setModel((current) => current ?? result.data?.[0])
-        setModelsState('ready')
+    callTarget(modelBase, '/v1/models', modelProxied, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${modelKey}` },
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return response.json() as Promise<{ data?: { id?: string }[] }>
       })
-      .catch(() => {
-        setModels([])
-        setModelsState('error')
-      })
-  }, [])
+      .then((payload) =>
+        apply(
+          (payload.data ?? []).map((item) => item.id).filter((id): id is string => !!id),
+          'ready',
+        ),
+      )
+      .catch(() => apply([], 'error'))
+  }, [modelBase, modelKey, modelProxied])
 
   useEffect(() => {
     loadModels()
@@ -183,6 +480,12 @@ export default function Playground() {
   }
 
   const send = async () => {
+    if (hostBase === null) {
+      message.warning('服务地址读不出来，填成 https://api.example.com 这样')
+      document.getElementById('pg-host')?.focus()
+      return
+    }
+    const proxied = Boolean(hostBase) && proxyEnabled
     const key = apiKey.trim()
     if (!key) {
       message.warning('请先填入 API 密钥（在「API 密钥」页面创建时复制）')
@@ -224,21 +527,14 @@ export default function Playground() {
     let failed = false
 
     try {
-      const response = await fetch('/v1/chat/completions', {
+      const response = await callTarget(hostBase, spec.path, proxied, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${key}`,
+          ...spec.headers,
         },
-        body: JSON.stringify({
-          model,
-          messages: [
-            ...(system.trim() ? [{ role: 'system', content: system.trim() }] : []),
-            { role: 'user', content: prompt },
-          ],
-          stream,
-          ...(stream ? { stream_options: { include_usage: true } } : {}),
-        }),
+        body: JSON.stringify(spec.body({ model, system: system.trim(), prompt, stream })),
         signal: controller.signal,
       })
 
@@ -254,9 +550,11 @@ export default function Playground() {
       if (!stream) {
         // No first-byte metric here: the whole body arrives at once, so the
         // number would just repeat the total.
-        const payload = await response.json()
-        usage = payload.usage ?? null
-        text = payload.choices?.[0]?.message?.content ?? JSON.stringify(payload, null, 2)
+        const payload: unknown = await response.json()
+        usage = spec.usage(payload)
+        // An unrecognised shape is still worth seeing: a gateway that answers
+        // in its own envelope is exactly what a test page is for.
+        text = spec.text(payload) || JSON.stringify(payload, null, 2)
         setOutput(text)
         return
       }
@@ -277,9 +575,9 @@ export default function Playground() {
           const payload = line.slice(5).trim()
           if (!payload || payload === '[DONE]') continue
           try {
-            const chunk = JSON.parse(payload)
-            if (chunk.usage) usage = chunk.usage
-            const delta = chunk.choices?.[0]?.delta?.content ?? ''
+            const event = spec.event(JSON.parse(payload))
+            usage = mergeUsage(usage, event.usage)
+            const delta = event.delta
             if (delta) {
               if (!ttfb) ttfb = performance.now() - startedAt
               text += delta
@@ -296,11 +594,22 @@ export default function Playground() {
         // "Failed to fetch" says nothing actionable; name the likely cause and
         // keep the raw error underneath as detail.
         const detail = String(error)
-        setErrorText(
-          error instanceof TypeError
-            ? `无法连接到服务，请检查网络或服务是否在运行。\n${detail}`
-            : detail,
-        )
+        if (!(error instanceof TypeError)) {
+          setErrorText(detail)
+        } else if (!hostBase) {
+          setErrorText(`无法连接到服务，请检查网络或服务是否在运行。\n${detail}`)
+        } else {
+          // The browser reports a refused preflight as an ordinary network
+          // failure, so the way past it has to be named here or it is never
+          // found.
+          const hint =
+            isAdmin && !proxied
+              ? '\n如果对方不响应 CORS 预检，打开上面的「通过本站服务端代发」再试。'
+              : ''
+          setErrorText(
+            `无法连接到 ${hostBase}，请检查地址是否正确、服务是否在运行，以及它是否允许跨域调用。${hint}\n${detail}`,
+          )
+        }
       }
     } finally {
       const aborted = controller.signal.aborted
@@ -366,6 +675,60 @@ export default function Playground() {
           <Card title="请求">
             <Space direction="vertical" size={14} style={{ width: '100%' }}>
               <div>
+                <label className="field-label" htmlFor="pg-host">
+                  服务地址
+                </label>
+                <Input
+                  id="pg-host"
+                  allowClear
+                  style={{ marginTop: 6 }}
+                  status={hostBase === null ? 'error' : undefined}
+                  placeholder={window.location.origin}
+                  value={host}
+                  onChange={(event) => {
+                    setHost(event.target.value)
+                    localStorage.setItem(HOST_STORAGE, event.target.value)
+                  }}
+                />
+                <Typography.Text
+                  type={hostBase === null ? 'danger' : 'secondary'}
+                  style={{ display: 'block', fontSize: 12, marginTop: 6 }}
+                >
+                  {hostBase === null
+                    ? '地址读不出来，填成 https://api.example.com 这样'
+                    : hostBase
+                      ? `请求发往 ${hostBase}${spec.path}${
+                          proxyEnabled ? '（经本站服务端代发）' : ''
+                        }，计费与日志都记在那边`
+                      : `留空就是当前站点，请求发往 ${spec.path}`}
+                </Typography.Text>
+                {isAdmin && Boolean(hostBase) && (
+                  <label
+                    style={{
+                      alignItems: 'center',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      gap: 8,
+                      marginTop: 8,
+                    }}
+                  >
+                    <Switch
+                      size="small"
+                      checked={viaServer}
+                      aria-label="通过本站服务端代发"
+                      onChange={(checked) => {
+                        setViaServer(checked)
+                        localStorage.setItem(PROXY_STORAGE, checked ? '1' : '0')
+                      }}
+                    />
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      通过本站服务端代发（对方不响应 CORS 预检时用）
+                    </Typography.Text>
+                  </label>
+                )}
+              </div>
+
+              <div>
                 <label className="field-label" htmlFor="pg-key">
                   API 密钥
                 </label>
@@ -396,7 +759,13 @@ export default function Playground() {
                   type="secondary"
                   style={{ display: 'block', fontSize: 12, marginTop: 6 }}
                 >
-                  还没有密钥？<Link to="/tokens">去创建</Link>
+                  {hostBase ? (
+                    '请填那个服务签发的密钥，本站的密钥它不认。'
+                  ) : (
+                    <>
+                      还没有密钥？<Link to="/tokens">去创建</Link>
+                    </>
+                  )}
                 </Typography.Text>
                 <label
                   style={{
@@ -433,30 +802,60 @@ export default function Playground() {
               </div>
 
               <div>
+                <label className="field-label" htmlFor="pg-protocol">
+                  协议
+                </label>
+                <Select
+                  id="pg-protocol"
+                  style={{ marginTop: 6, width: '100%' }}
+                  value={protocol}
+                  onChange={(value: Protocol) => {
+                    setProtocol(value)
+                    localStorage.setItem(PROTOCOL_STORAGE, value)
+                  }}
+                  options={PROTOCOL_ORDER.map((value) => ({
+                    value,
+                    label: `${PROTOCOLS[value].label}  ·  ${PROTOCOLS[value].path}`,
+                  }))}
+                />
+              </div>
+
+              <div>
                 <label className="field-label" htmlFor="pg-model">
                   模型
                 </label>
-                <Select
+                {/* AutoComplete rather than Select: a host that exposes no
+                    /v1/models, or refuses the cross-origin read, still has to be
+                    testable by typing the model name. */}
+                <AutoComplete
                   id="pg-model"
+                  allowClear
                   style={{ marginTop: 6, width: '100%' }}
-                  placeholder="选择模型"
-                  showSearch
-                  loading={modelsState === 'loading'}
+                  placeholder="选择或输入模型"
                   value={model}
-                  onChange={setModel}
+                  onChange={(value?: string) => setModel(value || undefined)}
+                  filterOption={(input, option) =>
+                    String(option?.value ?? '')
+                      .toLowerCase()
+                      .includes(input.toLowerCase())
+                  }
                   options={modelOptions}
                   notFoundContent={
-                    modelsState === 'error' ? (
+                    modelsState === 'loading' ? (
+                      '加载中…'
+                    ) : modelsState === 'error' ? (
                       <Space direction="vertical" size={4} style={{ padding: 4 }}>
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                          模型列表加载失败
+                          模型列表加载失败，可直接输入模型名
                         </Typography.Text>
                         <Button type="link" size="small" style={{ padding: 0 }} onClick={loadModels}>
                           重试
                         </Button>
                       </Space>
+                    ) : modelsState === 'need-key' ? (
+                      '填入该服务的密钥后自动拉取模型'
                     ) : models.length === 0 ? (
-                      '当前分组暂无可用模型'
+                      '暂无可用模型，可直接输入模型名'
                     ) : (
                       '没有匹配的模型'
                     )
