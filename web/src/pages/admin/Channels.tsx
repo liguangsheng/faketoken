@@ -135,7 +135,7 @@ function keepaliveTag(channel: Channel) {
   return {
     color: undefined,
     text: `保活 ${channel.keepalive_at}`,
-    hint: `每天 ${channel.keepalive_at}（服务器时区）自动启用，成功 ${channel.keepalive_target} 次后自动禁用`,
+    hint: `每天 ${channel.keepalive_at}（服务器时区）起，若渠道处于禁用状态则自动启用，成功 ${channel.keepalive_target} 次后自动禁用；到点时本来就是启用状态则不接管`,
   }
 }
 
@@ -2005,7 +2005,7 @@ export default function Channels() {
                           name="keepalive_enabled"
                           label="保活"
                           valuePropName="checked"
-                          tooltip="为会回收闲置账号的上游准备：每天定时自动启用该渠道，攒够成功请求后自动禁用"
+                          tooltip="为会回收闲置账号的上游准备：每天定时把禁用中的渠道自动启用，攒够成功请求后自动禁用。到点时渠道本来就是启用状态，则不开窗、不接管"
                         >
                           <Switch />
                         </Form.Item>
@@ -2014,7 +2014,7 @@ export default function Channels() {
                         <Form.Item
                           name="keepalive_at"
                           label="每天启用时间"
-                          tooltip="按服务器时区。服务端在该时刻停机时，启动后当天会补开一次"
+                          tooltip="按服务器时区。服务端在该时刻停机时，启动后当天会补开一次。过了这个时刻，渠道一旦被禁用就会立刻开窗"
                           rules={[
                             {
                               // Only required once keepalive is on: a channel

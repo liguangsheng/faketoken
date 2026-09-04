@@ -88,6 +88,20 @@ func Due(ch *model.Channel, now time.Time) bool {
 	if ch == nil || !ch.KeepaliveEnabled || ch.KeepaliveTarget < 1 {
 		return false
 	}
+	// A channel already in rotation needs nothing from keepalive: it is being
+	// offered real traffic, which is the whole point of a window. Opening one
+	// anyway would end the day worse than it started — the target would be
+	// reached and the channel disabled, turning a channel somebody deliberately
+	// left on off.
+	//
+	// The status is re-read on every tick rather than only at the trigger
+	// minute, so a channel switched off later the same day still gets its
+	// window then. Only the status matters here: the breaker keeps a failing
+	// channel out of rotation without touching it, so a channel in cooldown
+	// still reads as enabled and is left alone.
+	if ch.Status == model.StatusEnabled {
+		return false
+	}
 	hour, minute, ok := ParseAt(ch.KeepaliveAt)
 	if !ok {
 		return false
@@ -106,6 +120,11 @@ func Due(ch *model.Channel, now time.Time) bool {
 
 // NextRun is the instant the channel's next window opens, for the startup log
 // that makes a timezone mistake visible before it costs a day.
+//
+// It answers with the next trigger point, which is what checking a timezone
+// needs. A channel that is enabled when that instant arrives is skipped and
+// opens whenever it is switched off later that day instead, so the log reads as
+// the earliest a window could open rather than a promise that one will.
 func NextRun(ch *model.Channel, now time.Time) (time.Time, bool) {
 	if ch == nil || !ch.KeepaliveEnabled || ch.KeepaliveTarget < 1 {
 		return time.Time{}, false

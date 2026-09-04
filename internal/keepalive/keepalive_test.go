@@ -17,7 +17,10 @@ func at(day, hour, minute int) time.Time {
 
 func channel(opts ...func(*model.Channel)) *model.Channel {
 	ch := &model.Channel{
-		ID:               1,
+		ID: 1,
+		// Disabled is the state a window exists to lift; an enabled channel is
+		// left alone, which the cases below cover explicitly.
+		Status:           model.StatusDisabled,
 		KeepaliveEnabled: true,
 		KeepaliveAt:      "03:00",
 		KeepaliveTarget:  5,
@@ -31,6 +34,8 @@ func channel(opts ...func(*model.Channel)) *model.Channel {
 func openedAt(t time.Time) func(*model.Channel) {
 	return func(ch *model.Channel) { ch.KeepaliveOpenedAt = &t }
 }
+
+func enabled(ch *model.Channel) { ch.Status = model.StatusEnabled }
 
 func TestDue(t *testing.T) {
 	for _, tc := range []struct {
@@ -95,6 +100,30 @@ func TestDue(t *testing.T) {
 			ch:   channel(openedAt(at(19, 22, 0))),
 			now:  at(20, 3, 0),
 			want: true,
+		},
+		{
+			// Already carrying traffic, so there is nothing to keep alive. The
+			// window would otherwise end by disabling a channel that was on.
+			name: "enabled at the trigger",
+			ch:   channel(enabled),
+			now:  at(20, 3, 0),
+			want: false,
+		},
+		{
+			// Switched off hours after the trigger passed: the day's window has
+			// not run, so it opens now rather than waiting for tomorrow.
+			name: "switched off later the same day",
+			ch:   channel(openedAt(at(19, 3, 0))),
+			now:  at(20, 10, 0),
+			want: true,
+		},
+		{
+			// Same day, but the window already ran and closed at its target.
+			// One window a day still holds, however the status got here.
+			name: "enabled by hand after today's window, then switched off",
+			ch:   channel(openedAt(at(20, 3, 0))),
+			now:  at(20, 10, 0),
+			want: false,
 		},
 		{
 			name: "keepalive off",
@@ -184,6 +213,11 @@ func TestNextRun(t *testing.T) {
 	now := at(20, 5, 0)
 	if next, ok := NextRun(channel(openedAt(at(19, 3, 0))), now); !ok || !next.Equal(now) {
 		t.Fatalf("next run while due = %v (%v), want %v", next, ok, now)
+	}
+	// Enabled past today's trigger: the log names tomorrow's trigger, the
+	// earliest instant a window could open on its own.
+	if next, ok := NextRun(channel(enabled), at(20, 5, 0)); !ok || !next.Equal(at(21, 3, 0)) {
+		t.Fatalf("next run for an enabled channel = %v (%v), want %v", next, ok, at(21, 3, 0))
 	}
 	if _, ok := NextRun(channel(func(ch *model.Channel) { ch.KeepaliveEnabled = false }),
 		at(20, 1, 0)); ok {
