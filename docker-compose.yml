@@ -7,7 +7,11 @@ services:
   postgres:
     image: postgres:18-alpine
     container_name: faketoken-postgres
-    restart: unless-stopped
+    # `always` rather than `unless-stopped`: the difference only shows up across a
+    # reboot. unless-stopped remembers a manual `compose stop` and leaves the
+    # container down on the next daemon start, so a stack that was stopped before
+    # shutdown never comes back on its own. `always` starts it regardless.
+    restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-llmproxy}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-llmproxy}
@@ -64,7 +68,7 @@ services:
   server:
     build: .
     container_name: faketoken
-    restart: unless-stopped
+    restart: always
     depends_on:
       postgres:
         condition: service_healthy
@@ -109,7 +113,7 @@ services:
   backup:
     image: postgres:18-alpine
     container_name: faketoken-backup
-    restart: unless-stopped
+    restart: always
     depends_on:
       postgres:
         condition: service_healthy
