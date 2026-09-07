@@ -129,6 +129,14 @@ func isPi(value string) bool {
 	return strings.EqualFold(product, "pi")
 }
 
+// isSpore reports whether a user agent opens with spore's product token.
+// spore states its own name first — "spore/1.2.3 (linux; x64)" — so a prefix
+// is enough, and unlike a substring test it will not claim an agent string
+// that merely mentions the word further along.
+func isSpore(value string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "spore")
+}
+
 // clientType labels the caller from the headers its SDK or CLI already sends.
 //
 // Every branch is a guess from a self-reported string, so this is only ever a
@@ -150,6 +158,11 @@ func clientType(r *http.Request) string {
 	// which is why this sits outside the substring switch below.
 	if isPi(r.Header.Get("Originator")) || isPi(r.Header.Get("User-Agent")) {
 		return "pi"
+	}
+	// spore is claimed the same way, from the front of its own agent string,
+	// so a client that wraps spore in a longer name is not mislabelled.
+	if isSpore(r.Header.Get("User-Agent")) {
+		return "spore"
 	}
 
 	switch {

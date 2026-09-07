@@ -173,6 +173,37 @@ func TestClientType(t *testing.T) {
 			want:    "openai-sdk",
 		},
 		{
+			// spore names itself at the front of the agent string.
+			name:    "spore",
+			headers: map[string]string{"User-Agent": "spore/1.2.3 (linux; x64)"},
+			want:    "spore",
+		},
+		{
+			name:    "spore with nothing after its name",
+			headers: map[string]string{"User-Agent": "spore"},
+			want:    "spore",
+		},
+		{
+			name:    "spore is matched regardless of case",
+			headers: map[string]string{"User-Agent": "Spore/1.2.3"},
+			want:    "spore",
+		},
+		{
+			// The prefix wins over anything the agent string mentions later,
+			// so a spore build speaking the Codex protocol still reads as spore.
+			name: "spore keeps its label when it names another tool later",
+			headers: map[string]string{
+				"User-Agent": "spore/1.2.3 (codex; linux)",
+			},
+			want: "spore",
+		},
+		{
+			// Only the front of the string may claim the name.
+			name:    "spore is not claimed from the middle of another agent",
+			headers: map[string]string{"User-Agent": "curl/8.5.0 (spore)"},
+			want:    "curl",
+		},
+		{
 			name:    "curl",
 			headers: map[string]string{"User-Agent": "curl/8.5.0"},
 			want:    "curl",
