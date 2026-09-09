@@ -168,6 +168,36 @@ func TestClientType(t *testing.T) {
 			want:    "python",
 		},
 		{
+			// evo names itself the same way pi does.
+			name:    "evo",
+			headers: map[string]string{"User-Agent": "evo/0.1.0 (linux; x64)"},
+			want:    "evo",
+		},
+		{
+			name:    "evo with nothing after its name",
+			headers: map[string]string{"User-Agent": "evo"},
+			want:    "evo",
+		},
+		{
+			name:    "evo is matched regardless of case",
+			headers: map[string]string{"User-Agent": "Evo/0.1.0"},
+			want:    "evo",
+		},
+		{
+			name: "evo via originator",
+			headers: map[string]string{
+				"Originator": "evo",
+				"User-Agent": "evo/0.1.0 (linux; x64)",
+			},
+			want: "evo",
+		},
+		{
+			// Three letters that sit inside plenty of unrelated names.
+			name:    "evo is not matched inside another name",
+			headers: map[string]string{"User-Agent": "evolution-mail/3.0 (curl)"},
+			want:    "curl",
+		},
+		{
 			name:    "openai sdk",
 			headers: map[string]string{"User-Agent": "OpenAI/Python 1.55.0 openai-python"},
 			want:    "openai-sdk",

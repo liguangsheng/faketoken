@@ -116,17 +116,25 @@ func formatTokenBudget(tokens int) string {
 	return strconv.Itoa(tokens) + " tokens"
 }
 
-// isPi reports whether a self-reported identity string names pi. Only the
-// product token counts — everything up to the first version, separator or
-// platform comment — so "pi", "pi/0.84.4 (linux; node/v24.2.0; x64)" and
-// "pi (linux 7.2.2-arch1-1; x64)" all pass, while "openai-python" and
-// "raspberry-pi/1.0" do not.
-func isPi(value string) bool {
+// productToken returns the leading product name of a self-reported identity
+// string: everything up to the first version, separator or platform comment.
+// "pi", "pi/0.84.4 (linux; node/v24.2.0; x64)" and "pi (linux 7.2.2; x64)" all
+// yield "pi", while "raspberry-pi/1.0" yields "raspberry-pi".
+func productToken(value string) string {
 	product := strings.TrimSpace(value)
 	if i := strings.IndexAny(product, "/ \t;("); i >= 0 {
 		product = product[:i]
 	}
-	return strings.EqualFold(product, "pi")
+	return product
+}
+
+// namesProduct reports whether either self-reported header claims the given
+// product by name. Short names need this rather than a substring test: "pi"
+// and "evo" both hide inside unrelated agent strings ("openai-python",
+// "raspberry-pi", "evolution"), so only the product position may claim them.
+func namesProduct(r *http.Request, name string) bool {
+	return strings.EqualFold(productToken(r.Header.Get("Originator")), name) ||
+		strings.EqualFold(productToken(r.Header.Get("User-Agent")), name)
 }
 
 // isSpore reports whether a user agent opens with spore's product token.
@@ -156,8 +164,14 @@ func clientType(r *http.Request) string {
 	// look for inside the joined string: "api", "openai-python" and "httpx" all
 	// contain them. So pi is matched only where a client states its own name,
 	// which is why this sits outside the substring switch below.
-	if isPi(r.Header.Get("Originator")) || isPi(r.Header.Get("User-Agent")) {
+	if namesProduct(r, "pi") {
 		return "pi"
+	}
+	// evo is the same case: three letters that appear inside "evolution" and
+	// any number of unrelated names, so it is claimed only from the product
+	// position of a header the client set itself.
+	if namesProduct(r, "evo") {
+		return "evo"
 	}
 	// spore is claimed the same way, from the front of its own agent string,
 	// so a client that wraps spore in a longer name is not mislabelled.
