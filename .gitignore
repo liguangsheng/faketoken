@@ -12,3 +12,6 @@
 # database dumps
 /.backup/
 /.search/
+
+# agent task logs
+/.pi/
