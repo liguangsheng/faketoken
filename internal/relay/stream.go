@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -23,12 +24,17 @@ const maxSniffBytes = 8 << 20
 type usageSniffer struct {
 	// captureMax bounds the bytes kept for the session log, independently of
 	// the larger buffer used for token accounting.
-	captureMax  int
-	sse         bool
-	acc         provider.UsageAccumulator
-	buf         bytes.Buffer
-	over        bool
-	inSSE       bytes.Buffer // partial SSE line carried across chunk boundaries
+	captureMax int
+	sse        bool
+	acc        provider.UsageAccumulator
+	failure    provider.StreamErrorAccumulator
+	buf        bytes.Buffer
+	over       bool
+	inSSE      bytes.Buffer // partial SSE line carried across chunk boundaries
+	// event is the name of the SSE event the next data line belongs to. An
+	// upstream that labels the event `error` but sends an unlabelled payload is
+	// only recognisable by carrying the name across the two lines.
+	event       string
 	capture     bytes.Buffer
 	captureOver bool
 }
@@ -88,8 +94,17 @@ func (s *usageSniffer) feedSSE(p []byte) {
 		line := bytes.TrimRight(data[:idx], "\r")
 		s.inSSE.Next(idx + 1)
 
+		if name, ok := bytes.CutPrefix(line, []byte("event:")); ok {
+			s.event = string(bytes.TrimSpace(name))
+			continue
+		}
 		payload, ok := bytes.CutPrefix(line, []byte("data:"))
 		if !ok {
+			// A blank line closes the event, so the name must not leak into
+			// whatever event comes next.
+			if len(line) == 0 {
+				s.event = ""
+			}
 			continue
 		}
 		payload = bytes.TrimSpace(payload)
@@ -97,7 +112,52 @@ func (s *usageSniffer) feedSSE(p []byte) {
 			continue
 		}
 		s.acc.Feed(payload)
+		if !s.failure.Feed(payload) && isErrorEventName(s.event) {
+			// The payload did not identify itself, but the event line did.
+			s.failure.Feed(errorEventPayload(s.event, payload))
+		}
 	}
+}
+
+// isErrorEventName reports SSE event names that declare a failure. Covers
+// Anthropic's bare `error` and the dotted names the Responses API uses
+// (`response.failed`, `response.incomplete`, `error.*`).
+func isErrorEventName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "":
+		return false
+	case "error", "response.failed", "response.incomplete":
+		return true
+	}
+	return strings.HasSuffix(name, ".error") || strings.HasSuffix(name, "_error")
+}
+
+// errorEventPayload rewrites an unlabelled payload as the error the event line
+// says it is, so the shared detector can read it. The upstream's own text is
+// preserved when it sent any.
+func errorEventPayload(event string, payload []byte) []byte {
+	var named struct {
+		Message string `json:"message"`
+		Detail  string `json:"detail"`
+	}
+	message := ""
+	if json.Unmarshal(payload, &named) == nil {
+		message = strings.TrimSpace(named.Message)
+		if message == "" {
+			message = strings.TrimSpace(named.Detail)
+		}
+	}
+	if message == "" {
+		message = "upstream sent an SSE " + event + " event"
+	}
+	wrapped, err := json.Marshal(map[string]any{
+		"error": map[string]any{"message": message, "type": event},
+	})
+	if err != nil {
+		return payload
+	}
+	return wrapped
 }
 
 func (s *usageSniffer) Usage() (model.Usage, bool) {
@@ -105,6 +165,15 @@ func (s *usageSniffer) Usage() (model.Usage, bool) {
 		s.acc.Feed(s.buf.Bytes())
 	}
 	return s.acc.Result()
+}
+
+// StreamError reports a failure the upstream delivered inside the body: an SSE
+// error event, or a JSON error object in a body that came with a 2xx status.
+func (s *usageSniffer) StreamError() (provider.StreamError, bool) {
+	if !s.sse && s.buf.Len() > 0 {
+		s.failure.Feed(s.buf.Bytes())
+	}
+	return s.failure.Result()
 }
 
 // Body returns the buffered non-streamed body, used to surface upstream error

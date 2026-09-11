@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/faketoken/faketoken/internal/provider"
 )
 
 // messagesToChat translates an Anthropic Messages request into the OpenAI
@@ -494,6 +496,12 @@ func (s *responsesStream) Close() error {
 }
 
 func (s *responsesStream) consume(payload []byte) {
+	// Same reasoning as the Messages converter: an error chunk must not be
+	// silently turned into a completed response with no output.
+	if failure, failed := provider.ExtractStreamError(payload); failed {
+		s.fail(failure)
+		return
+	}
 	var chunk struct {
 		ID      string `json:"id"`
 		Model   string `json:"model"`
@@ -598,6 +606,36 @@ func (s *responsesStream) startTool(index int, callID, name string) *responsesTo
 		"item":         map[string]any{"id": tool.itemID, "type": "function_call", "status": "in_progress", "call_id": tool.callID, "name": tool.name, "arguments": ""},
 	})
 	return tool
+}
+
+// fail ends the converted stream with response.failed, which is how the
+// Responses dialect reports an upstream failure. response.completed is never
+// emitted afterwards: it would claim the request succeeded.
+func (s *responsesStream) fail(failure provider.StreamError) {
+	if s.finished {
+		return
+	}
+	if !s.started {
+		s.started = true
+		s.event("response.created", map[string]any{"type": "response.created", "response": map[string]any{"id": s.id, "object": "response", "status": "in_progress", "model": s.model, "output": []any{}}})
+	}
+	errCode := failure.Type
+	if errCode == "" || errCode == "error" {
+		errCode = "server_error"
+	}
+	message := failure.Message
+	if message == "" {
+		message = "upstream reported an error"
+	}
+	s.event("response.failed", map[string]any{
+		"type": "response.failed",
+		"response": map[string]any{
+			"id": s.id, "object": "response", "status": "failed", "model": s.model,
+			"output": []any{},
+			"error":  map[string]any{"code": errCode, "message": message},
+		},
+	})
+	s.finished = true
 }
 
 func (s *responsesStream) finish() {
@@ -816,6 +854,14 @@ func readSSEData(reader *bufio.Reader) ([]byte, bool, error) {
 }
 
 func (s *convertedStream) consume(payload []byte) {
+	// An upstream that fails mid-stream sends an error chunk instead of a
+	// delta. Dropping it would hand the caller a well-formed but empty
+	// message, and would hide the failure from the log as well, so it is
+	// forwarded as the Anthropic error event the client is expecting.
+	if failure, failed := provider.ExtractStreamError(payload); failed {
+		s.fail(failure)
+		return
+	}
 	var chunk struct {
 		ID      string    `json:"id"`
 		Model   string    `json:"model"`
@@ -924,6 +970,28 @@ func (s *convertedStream) ensureBlock(sourceIndex int, kind, id, name string) st
 		"type": "content_block_start", "index": block.index, "content_block": content,
 	})
 	return block
+}
+
+// fail ends the converted stream with an Anthropic error event. Nothing more is
+// emitted afterwards: a message_stop after an error would tell the client the
+// message completed normally.
+func (s *convertedStream) fail(failure provider.StreamError) {
+	if s.finished {
+		return
+	}
+	errType := failure.Type
+	if errType == "" || errType == "error" {
+		errType = "api_error"
+	}
+	message := failure.Message
+	if message == "" {
+		message = "upstream reported an error"
+	}
+	s.event("error", map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": errType, "message": message},
+	})
+	s.finished = true
 }
 
 func (s *convertedStream) finish() {

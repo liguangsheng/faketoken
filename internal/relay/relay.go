@@ -476,7 +476,18 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 		outcome := rl.attempt(w, r, ch, entry, info, protocolFromPath(r.URL.Path), body)
 		switch outcome.kind {
 		case outcomeDone:
-			rl.breaker.succeed(ch.ID)
+			if outcome.streamFailed {
+				// The client already has the upstream's 2xx and its bytes, so
+				// this cannot be retried — but the channel just failed, and
+				// leaving the breaker to think otherwise would keep sending
+				// traffic to an upstream that is refusing it.
+				rl.breaker.fail(ch.ID, outcome.retryAfter)
+				slog.Warn("upstream reported an error inside a successful response",
+					"channel", ch.Name, "channel_id", ch.ID, "model", info.Model,
+					"status", outcome.status, "error", outcome.message)
+			} else {
+				rl.breaker.succeed(ch.ID)
+			}
 			rl.settle(p, entry, captured, ch, outcome, started)
 			return
 		case outcomeAborted:
@@ -513,9 +524,14 @@ const (
 )
 
 type attemptOutcome struct {
-	kind              outcomeKind
-	status            int
-	message           string
+	kind    outcomeKind
+	status  int
+	message string
+	// streamFailed marks a call the upstream answered 2xx and then failed
+	// inside the body — an SSE error event, or a JSON error object. The status
+	// stays whatever went over the wire, so this flag is the only thing that
+	// tells the breaker and the channel counters that the call did not work.
+	streamFailed      bool
 	usage             model.Usage
 	hasUsage          bool
 	ttfb              time.Duration
@@ -733,16 +749,29 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 	}
 	if resp.StatusCode >= 400 {
 		out.message = upstreamErrorMessage(sniff.Body())
+	} else if failure, failed := sniff.StreamError(); failed {
+		// A 2xx that carries an error object is a failure the status line hides.
+		// Gateways under load answer 200 text/event-stream, ping a few times and
+		// then end the stream with `{"type":"error",...}`; scored on the status
+		// alone that call would be logged as a clean success.
+		out.streamFailed = true
+		out.message = streamFailureMessage(failure)
+		out.retryAfter = parseRetryAfter(resp.Header)
 	}
 	if pumpErr != nil {
 		out.kind = outcomeAborted
 		out.message = "stream interrupted: " + pumpErr.Error()
+		// A broken pipe is the caller leaving, not the channel misbehaving.
+		out.streamFailed = false
 	}
 	if (pumpErr == nil || written > 0) && resp.StatusCode >= 200 && resp.StatusCode < 300 &&
+		!out.streamFailed &&
 		ch.LockUserAgent && lockedUA == "" && incomingUA != "" && upstreamProtocol != "" {
 		// A normal response locks after it has been fully relayed. Streaming
 		// clients may close after receiving useful content; written > 0 treats
 		// that accepted 2xx response as successful for UA learning as well.
+		// A 2xx that failed inside the body teaches nothing: the upstream never
+		// accepted the call, so its User-Agent is unproven.
 		lockCtx, lockCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		winner, lockErr := rl.st.AutoLockChannelUserAgent(lockCtx, ch.ID, upstreamProtocol, incomingUA)
 		lockCancel()
@@ -809,6 +838,26 @@ func upstreamErrorMessage(body []byte) string {
 		body = body[:500]
 	}
 	return strings.TrimSpace(string(body))
+}
+
+// streamFailureMessage renders an in-body failure for the log. The upstream's
+// own status is spelled out because the log row shows the 2xx we relayed, and
+// without it a 429 hidden inside a 200 looks like an unexplained failure.
+func streamFailureMessage(failure provider.StreamError) string {
+	parts := make([]string, 0, 3)
+	if failure.Status != 0 {
+		parts = append(parts, fmt.Sprintf("HTTP %d", failure.Status))
+	}
+	if failure.Type != "" {
+		parts = append(parts, failure.Type)
+	}
+	if failure.Message != "" {
+		parts = append(parts, failure.Message)
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "upstream reported an error")
+	}
+	return "上游在响应体中返回错误：" + strings.Join(parts, ": ")
 }
 
 // ------------------------------------------------------------- bookkeeping
@@ -886,7 +935,7 @@ func (rl *Relay) settle(p *principal, entry *model.RequestLog, captured *capture
 			}
 		}
 		failure := ""
-		if out.status >= 400 {
+		if out.status >= 400 || out.streamFailed {
 			failure = entry.Error
 		}
 		rl.st.RecordChannelResult(ctx, ch.ID, entry.Cost, failure)

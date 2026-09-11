@@ -1705,6 +1705,186 @@ func TestRelayStreamsSSEAndBillsUsage(t *testing.T) {
 	}
 }
 
+// A gateway under load answers 200 text/event-stream, pings a few times, then
+// ends the stream with an error event. Scored on the status line that call looks
+// perfect: no error text in the log, no failure against the channel, and the
+// breaker keeps feeding an upstream that is refusing everything.
+func TestRelayRecordsErrorsDeliveredInsideAStream(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		for range 2 {
+			fmt.Fprint(w, "data: {\"type\":\"ping\"}\n\n")
+			flusher.Flush()
+		}
+		fmt.Fprint(w, `data: {"error":{"message":"Concurrency limit exceeded for account, `+
+			`please retry later","type":"rate_limit_error"},"type":"error"}`+"\n\n")
+		flusher.Flush()
+	})
+
+	id := h.createChannel(channelInput{
+		Name: "stream-error", Type: "anthropic", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"claude-sonnet-4-5"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	resp := h.relayRequest(http.MethodPost, "/v1/messages", key,
+		`{"model":"claude-sonnet-4-5","stream":true,"max_tokens":16,`+
+			`"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	// The response still goes through untouched: the client asked for this
+	// upstream's bytes and the headers were sent long before the error arrived.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want the upstream's 200 relayed verbatim", resp.StatusCode)
+	}
+	if !strings.Contains(string(raw), "Concurrency limit exceeded") {
+		t.Fatalf("the error event was not relayed to the caller: %s", raw)
+	}
+
+	entry := h.waitForLog(t, 1)
+	if entry.StatusCode != http.StatusOK {
+		t.Fatalf("logged status = %d, want the relayed 200", entry.StatusCode)
+	}
+	if !strings.Contains(entry.Error, "Concurrency limit exceeded") ||
+		!strings.Contains(entry.Error, "rate_limit_error") {
+		t.Fatalf("the in-stream failure was not logged: %q", entry.Error)
+	}
+
+	// Recorded against the channel, so the breaker benches it and the console
+	// shows why. Without this the channel looks perfectly healthy.
+	h.waitFor(t, "the in-stream failure to be recorded against the channel", func() bool {
+		return h.channel(id).ErrorCount > 0
+	})
+	if last := h.channel(id).LastError; !strings.Contains(last, "Concurrency limit exceeded") {
+		t.Fatalf("channel last_error = %q, want the upstream reason", last)
+	}
+
+	// The error filter is how an operator finds these at all.
+	var listed struct {
+		Data []*model.RequestLog `json:"data"`
+	}
+	if r := h.do(http.MethodGet, "/api/admin/logs?only_error=true", h.admin, nil, &listed); r.StatusCode != http.StatusOK {
+		t.Fatalf("log list failed: %d", r.StatusCode)
+	}
+	if len(listed.Data) != 1 || listed.Data[0].ID != entry.ID {
+		t.Fatalf("only_error did not surface the failed stream: %+v", listed.Data)
+	}
+}
+
+// The same failure without SSE framing: a 200 whose JSON body is an error
+// object. Same blind spot, same treatment.
+func TestRelayRecordsErrorBodyBehindA200(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"error":{"code":429,"message":"Resource has been exhausted"}}`))
+	})
+	id := h.createChannel(channelInput{
+		Name: "body-error", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want the upstream's 200 relayed verbatim", resp.StatusCode)
+	}
+
+	entry := h.waitForLog(t, 1)
+	if !strings.Contains(entry.Error, "Resource has been exhausted") ||
+		!strings.Contains(entry.Error, "429") {
+		t.Fatalf("the error body behind the 200 was not logged: %q", entry.Error)
+	}
+	h.waitFor(t, "the failure to be recorded against the channel", func() bool {
+		return h.channel(id).ErrorCount > 0
+	})
+}
+
+// The counterpart guard: an ordinary stream must not be scored as a failure,
+// including when the model itself writes about errors.
+func TestRelayLeavesHealthyStreamsUnflagged(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		for _, chunk := range []string{
+			`{"choices":[{"delta":{"content":"the error was a missing semicolon"}}],"error":null}`,
+			`{"choices":[{"delta":{}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", chunk)
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	})
+	id := h.createChannel(channelInput{
+		Name: "healthy-stream", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	resp.Body.Close()
+
+	entry := h.waitForLog(t, 1)
+	if entry.Error != "" {
+		t.Fatalf("a healthy stream was logged as failed: %q", entry.Error)
+	}
+	if ch := h.channel(id); ch.ErrorCount != 0 {
+		t.Fatalf("a healthy stream counted %d channel error(s)", ch.ErrorCount)
+	}
+}
+
+// Keepalive exists to prove an idle account is still being used, and an error
+// delivered inside a 200 proves nothing. It used to count, because the counter
+// advances on every request the relay does not call a failure.
+func TestKeepaliveIgnoresErrorsInsideAStream(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`+"\n\n")
+		w.(http.Flusher).Flush()
+	})
+	id := h.createChannel(channelInput{
+		Name: "keepalive-stream-error", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+		KeepaliveEnabled: true, KeepaliveAt: "03:00", KeepaliveTarget: 1,
+	})
+	if err := h.store.OpenKeepaliveWindow(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+
+	key := h.createKey()
+	resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	resp.Body.Close()
+
+	waitFor(t, func() bool { return h.channel(id).ErrorCount > 0 },
+		waiting("the in-stream failure to be recorded"))
+
+	ch := h.channel(id)
+	if ch.KeepaliveSuccess != 0 {
+		t.Fatalf("an in-stream failure advanced the keepalive counter to %d", ch.KeepaliveSuccess)
+	}
+	if ch.Status != model.StatusEnabled || !ch.KeepaliveOpen {
+		t.Fatalf("the window closed on a failure: status %d, open %v", ch.Status, ch.KeepaliveOpen)
+	}
+}
+
 func TestModelMappingRewritesOnlyTheModelField(t *testing.T) {
 	h := newHarness(t)
 

@@ -66,6 +66,14 @@ interface Props {
 
 const statusTone = (code: number) => (code < 400 ? 'green' : code < 500 ? 'orange' : 'red')
 
+// An upstream can answer 200 and then fail inside the body — an SSE stream
+// that ends with an error event is the common case. The status code we
+// relayed is still the truth, so it is shown unchanged; only the colour
+// follows the error field, because a green 200 on a failed call is what
+// hides these rows entirely.
+const rowTone = (row: { status_code: number; error: string }) =>
+  row.error && row.status_code < 400 ? 'orange' : statusTone(row.status_code)
+
 // Only the named levels get a colour; a token budget stays neutral because
 // "16k tokens" carries no ordering against "high".
 const REASONING_TONE: Record<string, string> = {
@@ -251,7 +259,7 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
   const rateActive = Boolean(showRate && admin && page === 1 && live && !range)
   const rate = useLiveRate(rateActive)
   // Why the meter is parked, so a zero never reads as "no traffic".
-  const idleHint = !live ? '实时推送已关闭' : range ? '已选时间范围' : '非首页'
+  const idleHint = live ? range ? '已选时间范围' : '非首页' : '实时推送已关闭'
   // Seed whenever the first page finishes loading; the SSE additions pile on
   // top. Not seeded on other pages — the bar is hidden there anyway.
   useEffect(() => {
@@ -795,9 +803,9 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
                       <span className="mono text-muted cell-stack__sub cell-stack__clip">
                         → {row.upstream_model}
                       </span>
-                    ) : !admin ? (
+                    ) : admin ? null : (
                       <span className="text-muted cell-stack__sub">未映射</span>
-                    ) : null}
+                    )}
                   </div>
                 </Tooltip>
               )
@@ -842,7 +850,11 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
             width: 140,
             render: (code: number, row: RequestLog) => (
               <Space size={4}>
-                <Tag color={statusTone(code)}>{code}</Tag>
+                <Tooltip
+                  title={row.error && code < 400 ? '上游返回 200，但响应体中带有错误' : undefined}
+                >
+                  <Tag color={rowTone(row)}>{code}</Tag>
+                </Tooltip>
                 {/* Streaming used to be its own column; it is one bit, so it
                     rides along with the status it qualifies. */}
                 {row.stream && (
@@ -976,7 +988,7 @@ export default function LogTable({ admin, fetcher, extra, showRate, reloadToken 
           detail ? (
             <Space size={8}>
               <span>调用详情 #{detail.id}</span>
-              <Tag color={statusTone(detail.status_code)} style={{ marginInlineEnd: 0 }}>
+              <Tag color={rowTone(detail)} style={{ marginInlineEnd: 0 }}>
                 {detail.status_code}
               </Tag>
             </Space>
@@ -1288,7 +1300,7 @@ function LogMeta({ detail, admin }: { detail: RequestLog; admin?: boolean }) {
         )}
       </Descriptions.Item>
       <Descriptions.Item label="状态码">
-        <Tag color={statusTone(detail.status_code)}>{detail.status_code}</Tag>
+        <Tag color={rowTone(detail)}>{detail.status_code}</Tag>
         {detail.stream ? <Tag color="blue">流式</Tag> : <Tag>非流式</Tag>}
       </Descriptions.Item>
       {(!admin || detail.reasoning_effort) && (

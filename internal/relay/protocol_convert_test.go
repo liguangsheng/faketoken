@@ -190,3 +190,60 @@ func TestResponsesStream(t *testing.T) {
 		}
 	}
 }
+
+// An upstream that fails mid-stream sends an error chunk instead of a delta.
+// The converter used to drop it, handing the caller a well-formed empty message
+// and leaving the log with nothing to report.
+func TestConvertedChatStreamForwardsUpstreamError(t *testing.T) {
+	raw := strings.Join([]string{
+		`data: {"id":"chatcmpl-1","model":"gpt-4.1","choices":[{"delta":{"content":"he"}}]}`,
+		``,
+		`data: {"error":{"message":"Concurrency limit exceeded","type":"rate_limit_error"}}`,
+		``,
+	}, "\n")
+	stream := &convertedStream{
+		src: bufio.NewReader(strings.NewReader(raw)), pending: make([]byte, 0, 4096),
+		blocks: make(map[int]streamBlock),
+	}
+	out, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	text := string(out)
+	for _, want := range []string{"event: error", `"type":"rate_limit_error"`,
+		`"message":"Concurrency limit exceeded"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("converted stream lost the upstream error, missing %q:\n%s", want, text)
+		}
+	}
+	// A message_stop here would tell the client the message completed normally.
+	if strings.Contains(text, "event: message_stop") {
+		t.Fatalf("a failed stream still claimed completion:\n%s", text)
+	}
+}
+
+func TestResponsesStreamForwardsUpstreamError(t *testing.T) {
+	raw := strings.Join([]string{
+		`data: {"id":"chatcmpl-1","model":"gpt-4.1","choices":[{"delta":{"content":"he"}}]}`,
+		``,
+		`data: {"error":{"message":"Overloaded","type":"overloaded_error"}}`,
+		``,
+	}, "\n")
+	stream := &responsesStream{src: bufio.NewReader(strings.NewReader(raw))}
+	out, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	text := string(out)
+	for _, want := range []string{"event: response.failed", `"status":"failed"`,
+		`"message":"Overloaded"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("converted stream lost the upstream error, missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "event: response.completed") {
+		t.Fatalf("a failed stream still claimed completion:\n%s", text)
+	}
+}
