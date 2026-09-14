@@ -386,6 +386,7 @@ export default function Tokens() {
 
       <Table
         rowKey="id"
+        size="small"
         loading={loading}
         dataSource={rows}
         // Must cover the sum of the column widths below. If it is smaller the

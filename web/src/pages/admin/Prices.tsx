@@ -369,6 +369,7 @@ export default function Prices() {
 
       <Table
         rowKey="model"
+        size="small"
         loading={loading}
         dataSource={filtered}
         scroll={{ x: 1140 }}

@@ -232,6 +232,7 @@ export default function Redemptions() {
 
       <Table
         rowKey="id"
+        size="small"
         loading={loading}
         dataSource={rows}
         tableLayout="fixed"

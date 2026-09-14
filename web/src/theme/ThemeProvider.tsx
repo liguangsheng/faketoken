@@ -130,6 +130,9 @@ function buildTheme(resolved: ResolvedMode): ThemeConfig {
         headerBg: dark ? '#171b24' : '#fafbfc',
         headerColor: dark ? '#98a0b0' : '#6b7280',
         headerSplitColor: 'transparent',
+        // Every table in the console renders at size="small", so the SM value
+        // is the one that actually applies. The default-size padding stays as
+        // a sane fallback, but a new table should be small like the rest.
         cellPaddingBlock: 11,
         cellPaddingBlockSM: 8,
         rowHoverBg: dark ? 'rgba(255, 255, 255, 0.03)' : '#f7f8fa',

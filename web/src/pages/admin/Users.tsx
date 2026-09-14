@@ -276,6 +276,7 @@ export default function Users() {
 
       <Table
         rowKey="id"
+        size="small"
         loading={loading}
         dataSource={rows}
         scroll={{ x: 1080 }}

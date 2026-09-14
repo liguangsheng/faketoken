@@ -1154,6 +1154,7 @@ export default function Channels() {
 
       <Table
         rowKey="id"
+        size="small"
         loading={loading}
         dataSource={rows}
         tableLayout="fixed"

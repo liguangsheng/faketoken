@@ -134,6 +134,7 @@ export default function Groups() {
 
       <Table
         rowKey="name"
+        size="small"
         loading={loading}
         dataSource={rows}
         pagination={false}

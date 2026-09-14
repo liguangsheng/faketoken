@@ -244,6 +244,7 @@ export default function Invites() {
 
       <Table
         rowKey="id"
+        size="small"
         loading={loading}
         dataSource={rows}
         scroll={{ x: 1030 }}
