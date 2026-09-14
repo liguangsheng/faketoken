@@ -23,6 +23,7 @@ import { api, type Redemption } from '../../api/client'
 import EmptyState from '../../components/EmptyState'
 import PageHeader from '../../components/PageHeader'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
+import { useTableScrollX, type TableGeometry } from '../../hooks/useTableScrollX'
 import { useSettings } from '../../settings/SettingsContext'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { formatDateMinute, formatMoney, formatRelative, formatTime } from '../../utils/format'
@@ -37,8 +38,28 @@ const statusTag = (status: number, expiresAt?: string | null) => {
   return <Tag color="green">未使用</Tag>
 }
 
+/**
+ * Breakpoints here were already chosen; what was missing is a `scroll.x` that
+ * follows them, so the columns that survive a narrow window are no longer
+ * stretched across the full desktop width. `selection` is antd's own checkbox
+ * column — rendered but never declared in `columns`, so it is counted here.
+ */
+const COLUMN_GEOMETRY = {
+  selection: { width: 34 },
+  code: { width: 240 },
+  note: { width: 130, responsive: ['lg'] },
+  group: { width: 120, responsive: ['lg'] },
+  amount: { width: 100 },
+  status: { width: 90 },
+  usedBy: { width: 120, responsive: ['md'] },
+  expiresAt: { width: 150, responsive: ['xl'] },
+  createdAt: { width: 110, responsive: ['xl'] },
+  actions: { width: 120 },
+} satisfies TableGeometry
+
 export default function Redemptions() {
   const { message, modal } = App.useApp()
+  const scrollX = useTableScrollX(COLUMN_GEOMETRY)
   const { defaultPageSize } = useSettings()
   const [rows, setRows] = useState<Redemption[]>([])
   const [total, setTotal] = useState(0)
@@ -237,7 +258,7 @@ export default function Redemptions() {
         dataSource={rows}
         tableLayout="fixed"
         // 各列宽度之和（含勾选列），小于它会让 fixed 布局按比例压缩列
-        scroll={{ x: 1220 }}
+        scroll={{ x: scrollX }}
         rowSelection={{
           selectedRowKeys: selectedIds,
           onChange: (keys) => setSelectedIds(keys as number[]),
@@ -278,22 +299,21 @@ export default function Redemptions() {
         }}
         columns={[
           {
+            ...COLUMN_GEOMETRY.code,
             title: '兑换码',
             dataIndex: 'code',
-            width: 240,
             render: (code: string) => (
               <Typography.Text className="mono" copyable={{ text: code }}>
                 {code}
               </Typography.Text>
             ),
           },
-          { title: '备注', dataIndex: 'name', width: 130, ellipsis: true, responsive: ['lg'] },
+          { ...COLUMN_GEOMETRY.note, title: '备注', dataIndex: 'name', ellipsis: true },
           {
+            ...COLUMN_GEOMETRY.group,
             title: '分组',
             dataIndex: 'group',
-            width: 120,
             ellipsis: true,
-            responsive: ['lg'],
             render: (group: string) =>
               group ? (
                 <Tooltip title="同一分组每个用户只能使用一个">
@@ -304,24 +324,23 @@ export default function Redemptions() {
               ),
           },
           {
+            ...COLUMN_GEOMETRY.amount,
             title: '面额',
             dataIndex: 'quota',
-            width: 100,
             align: 'right',
             render: (quota: number) => formatMoney(quota),
           },
           {
+            ...COLUMN_GEOMETRY.status,
             title: '状态',
             dataIndex: 'status',
-            width: 90,
             render: (status: number, row) => statusTag(status, row.expires_at),
           },
           {
+            ...COLUMN_GEOMETRY.usedBy,
             title: '使用者',
             dataIndex: 'used_by_name',
-            width: 120,
             ellipsis: true,
-            responsive: ['md'],
             render: (name: string, row) =>
               name ? (
                 <Tooltip title={row.used_at ? `兑换于 ${formatTime(row.used_at)}` : undefined}>
@@ -332,10 +351,9 @@ export default function Redemptions() {
               ),
           },
           {
+            ...COLUMN_GEOMETRY.expiresAt,
             title: '有效期',
             dataIndex: 'expires_at',
-            width: 150,
-            responsive: ['xl'],
             render: (value: string | null) => {
               if (!value) return <span className="text-muted">永久</span>
               const expired = dayjs(value).isBefore(dayjs())
@@ -352,17 +370,16 @@ export default function Redemptions() {
             },
           },
           {
+            ...COLUMN_GEOMETRY.createdAt,
             title: '创建时间',
             dataIndex: 'created_at',
-            width: 110,
-            responsive: ['xl'],
             render: (value: string) => (
               <Tooltip title={formatTime(value)}>{formatRelative(value)}</Tooltip>
             ),
           },
           {
+            ...COLUMN_GEOMETRY.actions,
             title: '操作',
-            width: 120,
             render: (_, row) =>
               // A spent code is the only record of who was credited, so it
               // offers neither action; the server refuses both regardless.

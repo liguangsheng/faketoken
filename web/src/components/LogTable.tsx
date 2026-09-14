@@ -49,6 +49,10 @@ import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useLiveRate } from "../hooks/useLiveRate";
 import { useLogStream } from "../hooks/useLogStream";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import {
+  useTableScrollX,
+  type TableGeometry,
+} from "../hooks/useTableScrollX";
 import { useSettings } from "../settings/SettingsContext";
 import { copyTextToClipboard } from "../utils/clipboard";
 import EmptyState from "./EmptyState";
@@ -114,6 +118,30 @@ interface LiveRowLayout {
   tops: Map<string, number>;
 }
 
+/**
+ * A log is read to find out what happened and when, so the timestamp, the
+ * status and the error text hold their place at every width. The model and
+ * the channel answer "to whom", which is the next question, not the first.
+ *
+ * 错误 declares no width and takes whatever is left over; the floor here is
+ * what the hand-tuned scroll.x used to leave it (1670 less the 1440 of fixed
+ * columns), so a wide window looks exactly as it did before.
+ */
+const COLUMN_GEOMETRY = {
+  createdAt: { width: 150 },
+  status: { width: 140 },
+  error: { flexMin: 230 },
+  model: { width: 210, responsive: ["md"] },
+  channel: { width: 140, responsive: ["md"] },
+  duration: { width: 120, responsive: ["md"] },
+  cost: { width: 100, responsive: ["md"] },
+  token: { width: 130, responsive: ["lg"] },
+  client: { width: 110, responsive: ["lg"] },
+  tokens: { width: 100, responsive: ["lg"] },
+  reasoning: { width: 110, responsive: ["xl"] },
+  clientIP: { width: 130, responsive: ["xl"] },
+} satisfies TableGeometry;
+
 /** Share of the input that came from cache. Zero input means zero rate. */
 const cacheRate = (entry: RequestLog) =>
   entry.prompt_tokens > 0 ? entry.cached_tokens / entry.prompt_tokens : 0;
@@ -128,6 +156,7 @@ export default function LogTable({
   const { message } = App.useApp();
   // A Drawer is not clamped to the viewport the way a Modal is.
   const narrow = useMediaQuery("(max-width: 768px)");
+  const scrollX = useTableScrollX(COLUMN_GEOMETRY);
   const [rows, setRows] = useState<RequestLog[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -737,13 +766,7 @@ export default function LogTable({
           rowClassName={(row) =>
             enteringRowIDs.has(row.id) ? "log-row--enter" : ""
           }
-          // Must exceed the sum of the fixed column widths below, taking the admin
-          // view (which adds the 用户 column) as the widest case. A smaller value
-          // makes the browser shrink every column to fit, and the crushed cells
-          // collide instead of scrolling. The surplus over that sum is what the
-          // width-less 错误 column gets, so trimming a fixed column widens 错误
-          // rather than narrowing the table.
-          scroll={{ x: 1670 }}
+          scroll={{ x: scrollX }}
           onRow={(row) => ({
             onClick: (event) => {
               // A drag-select also emits a click on the row in some browsers.
@@ -814,9 +837,9 @@ export default function LogTable({
               // Absolute time, not relative: a log is read to line events up
               // against an incident, and "3 分钟前" cannot be compared with
               // anything.
+              ...COLUMN_GEOMETRY.createdAt,
               title: "时间 / ID",
               dataIndex: "created_at",
-              width: 150,
               render: (value: string, row: RequestLog) => (
                 <Tooltip title={formatTime(value)}>
                   <div className="cell-stack">
@@ -832,9 +855,9 @@ export default function LogTable({
               // Id above (stable, matches other admin surfaces), name below —
               // reading traffic distribution should not require hovering every
               // row to learn which upstream #12 is.
+              ...COLUMN_GEOMETRY.channel,
               title: "渠道",
               dataIndex: "channel_id",
-              width: 140,
               render: (id: number, row: RequestLog) =>
                 id > 0 ? (
                   <div className="cell-stack" style={{ minWidth: 0 }}>
@@ -865,9 +888,9 @@ export default function LogTable({
             {
               // Who called, and with which of their keys. On the user's own page
               // the account is implied, so only the key is worth the space.
+              ...COLUMN_GEOMETRY.token,
               title: admin ? "用户 / 密钥" : "密钥",
               dataIndex: "token_name",
-              width: 130,
               render: (tokenName: string, row: RequestLog) => (
                 <div className="cell-stack">
                   {admin && <span>{row.username || "-"}</span>}
@@ -880,10 +903,9 @@ export default function LogTable({
               ),
             },
             {
+              ...COLUMN_GEOMETRY.client,
               title: "客户端",
               dataIndex: "client_type",
-              width: 110,
-              responsive: ["lg"],
               ellipsis: true,
               render: (type: string) =>
                 type && type !== "unknown" ? (
@@ -898,9 +920,9 @@ export default function LogTable({
               // which is exactly the thing you are looking for when a model
               // behaves unlike its name; side by side on one line, the pair also
               // truncated exactly where it mattered on the busy admin table.
+              ...COLUMN_GEOMETRY.model,
               title: "模型",
               dataIndex: "model",
-              width: 210,
               render: (value: string, row: RequestLog) => {
                 const mapped =
                   row.upstream_model && row.upstream_model !== value;
@@ -931,9 +953,9 @@ export default function LogTable({
               },
             },
             {
+              ...COLUMN_GEOMETRY.reasoning,
               title: "思考强度",
               dataIndex: "reasoning_effort",
-              width: 110,
               render: (value: string) =>
                 value ? (
                   <Tag
@@ -947,10 +969,9 @@ export default function LogTable({
                 ),
             },
             {
+              ...COLUMN_GEOMETRY.clientIP,
               title: "来源 IP",
               dataIndex: "client_ip",
-              width: 130,
-              responsive: ["xl"],
               ellipsis: true,
               render: (value: string) =>
                 value ? (
@@ -962,11 +983,9 @@ export default function LogTable({
                 ),
             },
             {
+              ...COLUMN_GEOMETRY.status,
               title: "状态",
               dataIndex: "status_code",
-              // Keep room for the status, stream and retry tags without letting
-              // the last tag run into the duration column.
-              width: 140,
               render: (code: number, row: RequestLog) => (
                 <Space size={4}>
                   <Tooltip
@@ -1006,8 +1025,8 @@ export default function LogTable({
                   <span>耗时 / 首字</span>
                 </Tooltip>
               ),
+              ...COLUMN_GEOMETRY.duration,
               dataIndex: "duration_ms",
-              width: 120,
               align: "left",
               render: (value: number, row: RequestLog) => {
                 const ratio =
@@ -1056,12 +1075,12 @@ export default function LogTable({
               // compete with the error text for the table's spare width.
               // ↑ input, ↓ output; the total is their sum and lives in the cell
               // tooltip, with the cache split in the detail drawer.
+              ...COLUMN_GEOMETRY.tokens,
               title: (
                 <Tooltip title="Tokens：↑ 输入 · ↓ 输出，合计悬停单元格可见">
                   <span>Tokens</span>
                 </Tooltip>
               ),
-              width: 100,
               align: "right",
               render: (_: unknown, row: RequestLog) => (
                 <Tooltip
@@ -1082,13 +1101,14 @@ export default function LogTable({
               ),
             },
             {
+              ...COLUMN_GEOMETRY.cost,
               title: "费用",
               dataIndex: "cost",
-              width: 100,
               align: "right",
               render: (value: number) => formatUSD(value),
             },
             {
+              ...COLUMN_GEOMETRY.error,
               title: "错误",
               dataIndex: "error",
               ellipsis: true,

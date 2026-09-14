@@ -35,6 +35,7 @@ import {
 } from '../../api/client'
 import EmptyState from '../../components/EmptyState'
 import PageHeader from '../../components/PageHeader'
+import { useTableScrollX, type TableGeometry } from '../../hooks/useTableScrollX'
 import { useSettings } from '../../settings/SettingsContext'
 import { formatPrice, formatRelative, formatTime } from '../../utils/format'
 
@@ -57,8 +58,25 @@ const MAX_MISSING_TAGS = 24
 
 const money = (value: number) => (value ? formatPrice(value) : null)
 
+/**
+ * The model name and the two prices every request is billed on stay at every
+ * width — a price table that cannot show its prices has nothing left to be.
+ * Cache and per-request pricing are set on far fewer models, so they wait for
+ * the room.
+ */
+const COLUMN_GEOMETRY = {
+  model: { width: 330 },
+  input: { width: 130 },
+  output: { width: 130 },
+  cached: { width: 150, responsive: ['lg'] },
+  perRequest: { width: 120, responsive: ['xl'] },
+  updatedAt: { width: 130, responsive: ['xl'] },
+  actions: { width: 150 },
+} satisfies TableGeometry
+
 export default function Prices() {
   const { message, modal } = App.useApp()
+  const scrollX = useTableScrollX(COLUMN_GEOMETRY)
   // Named apart from the billing `settings` below, which is a different thing.
   const { defaultPageSize } = useSettings()
   const [rows, setRows] = useState<ModelPrice[]>([])
@@ -372,7 +390,7 @@ export default function Prices() {
         size="small"
         loading={loading}
         dataSource={filtered}
-        scroll={{ x: 1140 }}
+        scroll={{ x: scrollX }}
         locale={{
           emptyText: (
             <EmptyState
@@ -410,12 +428,9 @@ export default function Prices() {
         }}
         columns={[
           {
+            ...COLUMN_GEOMETRY.model,
             title: '模型',
             dataIndex: 'model',
-            // The other columns are all fixed, so this one takes what is left.
-            // scroll.x above is sized to leave it room: it is the row's
-            // identity, and a model name runs to ~190px in the mono face.
-            width: 330,
             sorter: (a, b) => a.model.localeCompare(b.model),
             render: (model: string) => (
               <Typography.Text className="mono" ellipsis={{ tooltip: model }} style={{ maxWidth: 310 }}>
@@ -424,25 +439,25 @@ export default function Prices() {
             ),
           },
           {
+            ...COLUMN_GEOMETRY.input,
             title: '输入 / 1M',
             dataIndex: 'input_price',
-            width: 130,
             align: 'right',
             sorter: (a, b) => a.input_price - b.input_price,
             render: (value: number) => money(value) ?? <span className="text-muted">免费</span>,
           },
           {
+            ...COLUMN_GEOMETRY.output,
             title: '输出 / 1M',
             dataIndex: 'output_price',
-            width: 130,
             align: 'right',
             sorter: (a, b) => a.output_price - b.output_price,
             render: (value: number) => money(value) ?? <span className="text-muted">免费</span>,
           },
           {
+            ...COLUMN_GEOMETRY.cached,
             title: '缓存输入 / 1M',
             dataIndex: 'cached_price',
-            width: 150,
             align: 'right',
             render: (value: number, row) =>
               money(value) ??
@@ -453,25 +468,25 @@ export default function Prices() {
               )),
           },
           {
+            ...COLUMN_GEOMETRY.perRequest,
             title: '每次请求',
             dataIndex: 'per_request_price',
-            width: 120,
             align: 'right',
             render: (value: number) =>
               money(value) ?? <span className="text-muted">-</span>,
           },
           {
+            ...COLUMN_GEOMETRY.updatedAt,
             title: '更新时间',
             dataIndex: 'updated_at',
-            width: 130,
             sorter: (a, b) => dayjs(a.updated_at ?? 0).valueOf() - dayjs(b.updated_at ?? 0).valueOf(),
             render: (value: string) => (
               <Tooltip title={formatTime(value)}>{formatRelative(value)}</Tooltip>
             ),
           },
           {
+            ...COLUMN_GEOMETRY.actions,
             title: '操作',
-            width: 150,
             fixed: 'right',
             render: (_, row) => (
               <Space size={2}>

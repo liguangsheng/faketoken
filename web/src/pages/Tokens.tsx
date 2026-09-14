@@ -27,6 +27,7 @@ import type { Dayjs } from 'dayjs'
 import { api, type Token, type UserGroup } from '../api/client'
 import EmptyState from '../components/EmptyState'
 import PageHeader from '../components/PageHeader'
+import { useTableScrollX, type TableGeometry } from '../hooks/useTableScrollX'
 import { useSettings } from '../settings/SettingsContext'
 import { copyTextToClipboard } from '../utils/clipboard'
 import {
@@ -39,6 +40,25 @@ import {
   STATUS,
   toUSD,
 } from '../utils/format'
+
+/**
+ * What survives at each width is what the page is opened for: the key with its
+ * copy button, the enable switch, and the row's own actions. The rest arrives
+ * as the window earns it. An expired key still reads as expired on a phone —
+ * the 状态 column carries that tag, so the exact date can wait for xl.
+ */
+const COLUMN_GEOMETRY = {
+  name: { width: 250 },
+  status: { width: 130 },
+  quota: { width: 170, responsive: ['md'] },
+  group: { width: 120, responsive: ['lg'] },
+  used: { width: 110, responsive: ['xl'] },
+  rpm: { width: 90, responsive: ['xxl'] },
+  models: { width: 160, responsive: ['xxl'] },
+  expires: { width: 170, responsive: ['xl'] },
+  lastUsed: { width: 140, responsive: ['xxl'] },
+  actions: { width: 120 },
+} satisfies TableGeometry
 
 interface FormValues {
   name: string
@@ -88,6 +108,7 @@ const ENDPOINTS = [
 
 export default function Tokens() {
   const { message, modal } = App.useApp()
+  const scrollX = useTableScrollX(COLUMN_GEOMETRY)
   const [rows, setRows] = useState<Token[]>([])
   const [total, setTotal] = useState(0)
   const { defaultPageSize } = useSettings()
@@ -389,10 +410,7 @@ export default function Tokens() {
         size="small"
         loading={loading}
         dataSource={rows}
-        // Must cover the sum of the column widths below. If it is smaller the
-        // browser shrinks every column to fit, and the crushed cells collide
-        // instead of scrolling.
-        scroll={{ x: 1580 }}
+        scroll={{ x: scrollX }}
         locale={{
           emptyText: loadError ? (
             <EmptyState
@@ -430,9 +448,9 @@ export default function Tokens() {
         }}
         columns={[
           {
+            ...COLUMN_GEOMETRY.name,
             title: '名称 / 密钥',
             dataIndex: 'name',
-            width: 250,
             render: (name: string, row) => (
               <div style={{ display: 'grid', gap: 2 }}>
                 <Typography.Text strong ellipsis={{ tooltip: name }} style={{ maxWidth: 220 }}>
@@ -455,9 +473,9 @@ export default function Tokens() {
             ),
           },
           {
+            ...COLUMN_GEOMETRY.status,
             title: '状态',
             dataIndex: 'status',
-            width: 130,
             render: (status: number, row) => {
               const expired = row.expires_at ? dayjs(row.expires_at).isBefore(dayjs()) : false
               return (
@@ -475,8 +493,8 @@ export default function Tokens() {
             },
           },
           {
+            ...COLUMN_GEOMETRY.quota,
             title: '额度',
-            width: 170,
             render: (_, row) => {
               if (row.unlimited_quota) {
                 return (
@@ -508,9 +526,9 @@ export default function Tokens() {
             },
           },
           {
+            ...COLUMN_GEOMETRY.group,
             title: '分组',
             dataIndex: 'group',
-            width: 120,
             ellipsis: true,
             render: (group: string) => {
               const effective = group || ownGroup
@@ -534,16 +552,16 @@ export default function Tokens() {
             },
           },
           {
+            ...COLUMN_GEOMETRY.used,
             title: '已用',
             dataIndex: 'used_quota',
-            width: 110,
             align: 'right',
             render: (value: number) => formatMoney(value),
           },
           {
+            ...COLUMN_GEOMETRY.rpm,
             title: 'RPM',
             dataIndex: 'rpm_limit',
-            width: 90,
             align: 'right',
             render: (value: number) =>
               value > 0 ? (
@@ -555,9 +573,9 @@ export default function Tokens() {
               ),
           },
           {
+            ...COLUMN_GEOMETRY.models,
             title: '可用模型',
             dataIndex: 'allowed_models',
-            width: 160,
             render: (list: string[]) => {
               if (!list?.length) return <Tag color="blue">全部</Tag>
               return (
@@ -577,9 +595,9 @@ export default function Tokens() {
             },
           },
           {
+            ...COLUMN_GEOMETRY.expires,
             title: '过期时间',
             dataIndex: 'expires_at',
-            width: 170,
             render: (value: string | null) => {
               if (!value) return <span className="text-muted">永不过期</span>
               const expired = dayjs(value).isBefore(dayjs())
@@ -599,9 +617,9 @@ export default function Tokens() {
             },
           },
           {
+            ...COLUMN_GEOMETRY.lastUsed,
             title: '最后使用',
             dataIndex: 'last_used_at',
-            width: 140,
             render: (value: string | null) =>
               value ? (
                 <Tooltip title={formatTime(value)}>
@@ -615,8 +633,8 @@ export default function Tokens() {
               ),
           },
           {
+            ...COLUMN_GEOMETRY.actions,
             title: '操作',
-            width: 120,
             fixed: 'right',
             render: (_, row) => (
               <Space size={4}>

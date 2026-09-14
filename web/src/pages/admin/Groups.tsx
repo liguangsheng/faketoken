@@ -20,10 +20,26 @@ import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { api, type UserGroup } from '../../api/client'
 import EmptyState from '../../components/EmptyState'
 import PageHeader from '../../components/PageHeader'
+import { useTableScrollX, type TableGeometry } from '../../hooks/useTableScrollX'
 import { formatRelative, formatTime } from '../../utils/format'
+
+/**
+ * A group is its name and its multiplier — those two answer what the row costs
+ * — plus the actions that change it. Whether it is open to ordinary users is a
+ * control rather than a readout, so it comes back as soon as there is room.
+ */
+const COLUMN_GEOMETRY = {
+  name: { width: 180 },
+  rate: { width: 140 },
+  selectable: { width: 150, responsive: ['md'] },
+  description: { flexMin: 40, responsive: ['lg'] },
+  createdAt: { width: 140, responsive: ['xl'] },
+  actions: { width: 130 },
+} satisfies TableGeometry
 
 export default function Groups() {
   const { message, modal } = App.useApp()
+  const scrollX = useTableScrollX(COLUMN_GEOMETRY)
   const [rows, setRows] = useState<UserGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
@@ -138,7 +154,7 @@ export default function Groups() {
         loading={loading}
         dataSource={rows}
         pagination={false}
-        scroll={{ x: 780 }}
+        scroll={{ x: scrollX }}
         locale={{
           emptyText: (
             <EmptyState
@@ -154,9 +170,9 @@ export default function Groups() {
         }}
         columns={[
           {
+            ...COLUMN_GEOMETRY.name,
             title: '分组名',
             dataIndex: 'name',
-            width: 180,
             render: (name: string) => (
               <Space size={6}>
                 <strong className="mono">{name}</strong>
@@ -165,9 +181,9 @@ export default function Groups() {
             ),
           },
           {
+            ...COLUMN_GEOMETRY.rate,
             title: '计费倍率',
             dataIndex: 'rate',
-            width: 140,
             sorter: (a, b) => a.rate - b.rate,
             render: (rate: number) => (
               <Tag color={rate === 0 ? 'green' : rate < 1 ? 'blue' : rate > 1 ? 'orange' : undefined}>
@@ -176,9 +192,9 @@ export default function Groups() {
             ),
           },
           {
+            ...COLUMN_GEOMETRY.selectable,
             title: '用户可选',
             dataIndex: 'user_selectable',
-            width: 150,
             render: (selectable: boolean, row) => (
               <Tooltip
                 title={
@@ -198,6 +214,7 @@ export default function Groups() {
             ),
           },
           {
+            ...COLUMN_GEOMETRY.description,
             title: '说明',
             dataIndex: 'description',
             ellipsis: { showTitle: false },
@@ -211,16 +228,16 @@ export default function Groups() {
               ),
           },
           {
+            ...COLUMN_GEOMETRY.createdAt,
             title: '创建时间',
             dataIndex: 'created_at',
-            width: 140,
             render: (value: string) => (
               <Tooltip title={formatTime(value)}>{formatRelative(value)}</Tooltip>
             ),
           },
           {
+            ...COLUMN_GEOMETRY.actions,
             title: '操作',
-            width: 130,
             render: (_, row) => (
               <Space size={2}>
                 <Button size="small" type="link" onClick={() => openModal(row)}>

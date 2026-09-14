@@ -55,6 +55,7 @@ import EmptyState from '../../components/EmptyState'
 import PageHeader from '../../components/PageHeader'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { useMediaQuery } from '../../hooks/useMediaQuery'
+import { useTableScrollX, type TableGeometry } from '../../hooks/useTableScrollX'
 import { useSettings } from '../../settings/SettingsContext'
 import {
   formatDuration,
@@ -67,6 +68,30 @@ import {
   STATUS,
   stringifyMapping,
 } from '../../utils/format'
+
+/**
+ * Breakpoints here were already chosen; what was missing is a `scroll.x` that
+ * follows them. Which channel it is and whether it is enabled stay at every
+ * width — the status switch is how a bad upstream is taken out of rotation,
+ * and that should not require widening the window first.
+ *
+ * `selection` and `expand` are antd's own columns: rendered on every row but
+ * never declared in `columns`, so they are counted here or the sum is short
+ * by their width. Both follow the theme's controlHeight of 34.
+ */
+const COLUMN_GEOMETRY = {
+  selection: { width: 34 },
+  expand: { width: 48 },
+  id: { width: 72 },
+  name: { width: 300 },
+  status: { width: 104 },
+  actions: { width: 72 },
+  models: { width: 260, responsive: ['md'] },
+  routing: { width: 80, responsive: ['md'] },
+  usedQuota: { width: 90, responsive: ['lg'] },
+  groups: { width: 100, responsive: ['xl'] },
+  health: { width: 120, responsive: ['xl'] },
+} satisfies TableGeometry
 
 const AUTH_STYLES = [
   { value: 'auto', label: '自动（按请求端点）' },
@@ -267,6 +292,7 @@ function InlineNumber({
 
 export default function Channels() {
   const { message, modal } = App.useApp()
+  const scrollX = useTableScrollX(COLUMN_GEOMETRY)
   const [rows, setRows] = useState<Channel[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -1158,9 +1184,7 @@ export default function Channels() {
         loading={loading}
         dataSource={rows}
         tableLayout="fixed"
-        // Sum of the column widths (plus selection/expand); without it a
-        // mid-width window crushes every column instead of scrolling.
-        scroll={{ x: 1280 }}
+        scroll={{ x: scrollX }}
         rowClassName={(row) => (row.status !== STATUS.ENABLED ? 'row-disabled' : '')}
         rowSelection={{
           selectedRowKeys: selectedIds,
@@ -1205,17 +1229,17 @@ export default function Channels() {
             // The id is what the logs show, so it has to be findable here too.
             // No sorter: the list is server-paginated, and reordering one page
             // silently poses as a global ranking.
+            ...COLUMN_GEOMETRY.id,
             title: 'ID',
             dataIndex: 'id',
-            width: 72,
             render: (id: number) => <Tag className="mono" style={{ marginInlineEnd: 0 }}>#{id}</Tag>,
           },
           {
              // Keep this column compact instead of letting it absorb all remaining
              // table width. Long names and addresses still use ellipsis + Tooltip.
-             title: '渠道',
-             dataIndex: 'name',
-             width: 300,
+            ...COLUMN_GEOMETRY.name,
+            title: '渠道',
+            dataIndex: 'name',
 
             render: (name: string, row) => (
               <div style={{ display: 'grid', gap: 2, minWidth: 0 }}>
@@ -1251,10 +1275,9 @@ export default function Channels() {
             // read together with which channel it is, not with the counters.
             // Bounded so the leftover width goes to the channel name — this
             // column only ever shows a count plus two sample chips.
+            ...COLUMN_GEOMETRY.models,
             title: '模型',
             dataIndex: 'models',
-            width: 260,
-            responsive: ['md'],
             render: (list: string[], row) => (
               <div className="tag-list">
                 <Tag color="geekblue">{list.length} 个</Tag>
@@ -1304,9 +1327,8 @@ export default function Channels() {
                 <span>权重</span>
               </span>
             ),
+            ...COLUMN_GEOMETRY.routing,
             dataIndex: 'priority',
-            width: 80,
-            responsive: ['md'],
             render: (priority: number, row) => (
               <div className="cell-stack">
                 <InlineNumber
@@ -1332,10 +1354,9 @@ export default function Channels() {
             ),
           },
           {
+            ...COLUMN_GEOMETRY.groups,
             title: '分组',
             dataIndex: 'groups',
-            width: 100,
-            responsive: ['xl'],
             render: (list: string[]) => (
               <div className="tag-list">
                 {list?.map((group) => (
@@ -1353,10 +1374,9 @@ export default function Channels() {
           {
             // xl, not xxl: channel health is what this table is scanned for,
             // and a 1440px laptop should not have to hide it.
+            ...COLUMN_GEOMETRY.health,
             title: '调用 / 失败',
-            width: 120,
             align: 'right',
-            responsive: ['xl'],
             render: (_, row) => {
               const rate = row.request_count ? row.error_count / row.request_count : 0
               return (
@@ -1385,11 +1405,10 @@ export default function Channels() {
             },
           },
           {
+            ...COLUMN_GEOMETRY.usedQuota,
             title: '消费',
             dataIndex: 'used_quota',
-            width: 90,
             align: 'right',
-            responsive: ['lg'],
             render: (value: number) => formatMoney(value),
           },
           {
@@ -1397,11 +1416,9 @@ export default function Channels() {
             // secondary columns it has no breakpoint: this is a control, and
             // taking a bad channel out of rotation should not require widening
             // the window first.
+            ...COLUMN_GEOMETRY.status,
             title: '状态',
             dataIndex: 'status',
-            // Wider than a switch needs: the keepalive marker sits underneath it
-            // and "保活 03:00" is the widest thing that appears there.
-            width: 104,
             render: (_: number, row) => {
               const keepalive = keepaliveTag(row)
               return (
@@ -1439,10 +1456,8 @@ export default function Channels() {
             },
           },
           {
+            ...COLUMN_GEOMETRY.actions,
             title: '操作',
-            // Just the menu trigger now, so the column no longer has to hold a
-            // text button beside it.
-            width: 72,
             render: (_, row) => (
               <Space size={0}>
                 <Dropdown

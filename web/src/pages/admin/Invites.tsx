@@ -25,6 +25,7 @@ import { api, type InviteCode } from '../../api/client'
 import EmptyState from '../../components/EmptyState'
 import PageHeader from '../../components/PageHeader'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
+import { useTableScrollX, type TableGeometry } from '../../hooks/useTableScrollX'
 import { useSettings } from '../../settings/SettingsContext'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { formatDateMinute, formatRelative, formatTime } from '../../utils/format'
@@ -39,8 +40,26 @@ const statusTag = (status: number, expiresAt?: string | null) => {
   return <Tag color="green">未使用</Tag>
 }
 
+/**
+ * The code itself, whether it is still usable, and the row's actions are what
+ * this page exists for; everything else is provenance. `selection` is antd's
+ * own checkbox column — undeclared in `columns`, but rendered, so it has to be
+ * counted here or the sum is short by its width.
+ */
+const COLUMN_GEOMETRY = {
+  selection: { width: 34 },
+  code: { width: 240 },
+  note: { flexMin: 106, responsive: ['lg'] },
+  status: { width: 100 },
+  usedBy: { width: 140, responsive: ['md'] },
+  expiresAt: { width: 150, responsive: ['xl'] },
+  createdAt: { width: 140, responsive: ['xl'] },
+  actions: { width: 120 },
+} satisfies TableGeometry
+
 export default function Invites() {
   const { message, modal } = App.useApp()
+  const scrollX = useTableScrollX(COLUMN_GEOMETRY)
   const navigate = useNavigate()
   const { defaultPageSize, settings } = useSettings()
   const [rows, setRows] = useState<InviteCode[]>([])
@@ -247,7 +266,7 @@ export default function Invites() {
         size="small"
         loading={loading}
         dataSource={rows}
-        scroll={{ x: 1030 }}
+        scroll={{ x: scrollX }}
         rowSelection={{
           selectedRowKeys: selectedIds,
           onChange: (keys) => setSelectedIds(keys as number[]),
@@ -288,9 +307,9 @@ export default function Invites() {
         }}
         columns={[
           {
+            ...COLUMN_GEOMETRY.code,
             title: '邀请码',
             dataIndex: 'code',
-            width: 240,
             render: (code: string) => (
               <Typography.Text className="mono" copyable={{ text: code }}>
                 {code}
@@ -298,21 +317,22 @@ export default function Invites() {
             ),
           },
           {
+            ...COLUMN_GEOMETRY.note,
             title: '备注',
             dataIndex: 'name',
             ellipsis: true,
             render: (name: string) => name || <span className="text-muted">-</span>,
           },
           {
+            ...COLUMN_GEOMETRY.status,
             title: '状态',
             dataIndex: 'status',
-            width: 100,
             render: (status: number, row) => statusTag(status, row.expires_at),
           },
           {
+            ...COLUMN_GEOMETRY.usedBy,
             title: '使用者',
             dataIndex: 'used_by_name',
-            width: 140,
             ellipsis: true,
             render: (name: string, row) =>
               name ? (
@@ -324,9 +344,9 @@ export default function Invites() {
               ),
           },
           {
+            ...COLUMN_GEOMETRY.expiresAt,
             title: '有效期',
             dataIndex: 'expires_at',
-            width: 150,
             render: (value: string | null) => {
               if (!value) return <span className="text-muted">永久</span>
               const expired = dayjs(value).isBefore(dayjs())
@@ -343,16 +363,16 @@ export default function Invites() {
             },
           },
           {
+            ...COLUMN_GEOMETRY.createdAt,
             title: '创建时间',
             dataIndex: 'created_at',
-            width: 140,
             render: (value: string) => (
               <Tooltip title={formatTime(value)}>{formatRelative(value)}</Tooltip>
             ),
           },
           {
+            ...COLUMN_GEOMETRY.actions,
             title: '操作',
-            width: 120,
             render: (_, row) =>
               // A used code is the record of where an account came from, so it
               // offers neither action; the server refuses both regardless.

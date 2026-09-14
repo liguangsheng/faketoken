@@ -29,13 +29,32 @@ import { useAuth } from '../../auth/AuthContext'
 import EmptyState from '../../components/EmptyState'
 import PageHeader from '../../components/PageHeader'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
+import { useTableScrollX, type TableGeometry } from '../../hooks/useTableScrollX'
 import { useSettings } from '../../settings/SettingsContext'
 import { formatMoney, formatNumber, formatRelative, formatTime, STATUS, toUSD } from '../../utils/format'
 
 const QUICK_AMOUNTS = [5, 10, 50, 100]
 
+/**
+ * Who the account is and whether it can still call sit at every width; the
+ * switch is a control, not a readout, so hiding it would take away the one
+ * thing this table is opened to do in a hurry. Money and counters follow as
+ * the window earns them.
+ */
+const COLUMN_GEOMETRY = {
+  username: { width: 220 },
+  role: { width: 100, responsive: ['md'] },
+  group: { width: 110, responsive: ['lg'] },
+  status: { width: 90 },
+  quota: { width: 160, responsive: ['md'] },
+  requests: { width: 100, responsive: ['xl'] },
+  createdAt: { width: 130, responsive: ['xl'] },
+  actions: { width: 170 },
+} satisfies TableGeometry
+
 export default function Users() {
   const { message, modal } = App.useApp()
+  const scrollX = useTableScrollX(COLUMN_GEOMETRY)
   const { user: me, refresh: refreshMe } = useAuth()
   const [rows, setRows] = useState<User[]>([])
   const [total, setTotal] = useState(0)
@@ -279,7 +298,7 @@ export default function Users() {
         size="small"
         loading={loading}
         dataSource={rows}
-        scroll={{ x: 1080 }}
+        scroll={{ x: scrollX }}
         locale={{
           emptyText: keyword ? (
             <EmptyState title="没有匹配的用户" description="换个关键词试试。" />
@@ -309,9 +328,9 @@ export default function Users() {
         }}
         columns={[
           {
+            ...COLUMN_GEOMETRY.username,
             title: '用户',
             dataIndex: 'username',
-            width: 220,
             render: (username: string, row) => (
               <div style={{ display: 'grid', gap: 2 }}>
                 <Space size={6}>
@@ -326,24 +345,24 @@ export default function Users() {
             ),
           },
           {
+            ...COLUMN_GEOMETRY.role,
             title: '角色',
             dataIndex: 'role',
-            width: 100,
             render: (role: number) =>
               role >= 100 ? <Tag color="gold">管理员</Tag> : <Tag>普通用户</Tag>,
           },
           {
+            ...COLUMN_GEOMETRY.group,
             title: '分组',
             dataIndex: 'group',
-            width: 110,
             render: (group: string) => <Tag color="blue">{group}</Tag>,
           },
           {
             // A switch, matching the token and channel lists: one control for
             // one meaning, wherever it appears.
+            ...COLUMN_GEOMETRY.status,
             title: '状态',
             dataIndex: 'status',
-            width: 90,
             render: (status: number, row) => (
               <Tooltip
                 title={
@@ -370,9 +389,9 @@ export default function Users() {
             ),
           },
           {
+            ...COLUMN_GEOMETRY.quota,
             title: '余额 / 累计消费',
             dataIndex: 'quota',
-            width: 160,
             align: 'right',
             render: (value: number, row) => (
               <div style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
@@ -386,23 +405,23 @@ export default function Users() {
             ),
           },
           {
+            ...COLUMN_GEOMETRY.requests,
             title: '调用次数',
             dataIndex: 'request_count',
-            width: 100,
             align: 'right',
             render: (value: number) => formatNumber(value),
           },
           {
+            ...COLUMN_GEOMETRY.createdAt,
             title: '注册时间',
             dataIndex: 'created_at',
-            width: 130,
             render: (value: string) => (
               <Tooltip title={formatTime(value)}>{formatRelative(value)}</Tooltip>
             ),
           },
           {
+            ...COLUMN_GEOMETRY.actions,
             title: '操作',
-            width: 170,
             fixed: 'right',
             render: (_, row) => (
               <Space size={2}>
