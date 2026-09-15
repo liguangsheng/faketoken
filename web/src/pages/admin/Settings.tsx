@@ -76,22 +76,34 @@ export default function Settings() {
   const { message, modal } = App.useApp()
   const { settings, apply, ready, loaded, refresh } = useSettings()
   const [draft, setDraft] = useState<ConsoleSettings>(settings)
+  // What the draft was seeded from, which is not always the current settings:
+  // a refresh can land while the form is being edited.
+  //
+  // Dirty is measured against this rather than against the live settings, and
+  // that is load-bearing. Measured against the live settings, the render that
+  // first sees a newly arrived value computes dirty from the stale draft, so
+  // the guard below is already true by the time the effect runs and the draft
+  // is never adopted — leaving the form on the old values while claiming
+  // unsaved changes, and saving those old values back over the new ones.
+  const [baseline, setBaseline] = useState<ConsoleSettings>(settings)
   const [tab, setTab] = useState<string>(TABS[0].key as string)
   const [saving, setSaving] = useState(false)
   // Guards the sync below: a refresh landing mid-edit must not eat the edit.
   const dirtyRef = useRef(false)
 
-  useEffect(() => {
-    if (!dirtyRef.current) setDraft(settings)
-  }, [settings])
-
   const dirtyTabs = new Set(
-    TABS.filter((entry) => entry.fields.some((field) => changed(draft, settings, field))).map(
+    TABS.filter((entry) => entry.fields.some((field) => changed(draft, baseline, field))).map(
       (entry) => entry.key,
     ),
   )
   const dirty = dirtyTabs.size > 0
   dirtyRef.current = dirty
+
+  useEffect(() => {
+    if (dirtyRef.current) return
+    setDraft(settings)
+    setBaseline(settings)
+  }, [settings])
 
   // Closing the tab with unsaved global settings deserves one browser prompt.
   useEffect(() => {
@@ -114,6 +126,7 @@ export default function Settings() {
       // normalises the rule groups, and leaving the pre-normalisation draft in
       // place would leave "unsaved changes" showing over a saved form.
       setDraft(saved)
+      setBaseline(saved)
       message.success('设置已保存')
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败')
@@ -207,7 +220,14 @@ export default function Settings() {
                 有未保存的修改
               </Typography.Text>
               <Space size={8}>
-                <Button onClick={() => setDraft(settings)}>放弃修改</Button>
+                <Button
+                  onClick={() => {
+                    setDraft(settings)
+                    setBaseline(settings)
+                  }}
+                >
+                  放弃修改
+                </Button>
                 <Button
                   type="primary"
                   icon={<SaveOutlined />}
