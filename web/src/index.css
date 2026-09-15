@@ -980,3 +980,125 @@ body {
 .chat-part--tool_result .chat-part__text {
   color: var(--app-text-muted);
 }
+
+/* ===========================================================================
+   Settings page
+   =========================================================================== */
+
+/* The content area runs to 1560px, which is right for a table and wrong for a
+   form: at that width a label and its input sit at opposite ends of the screen.
+   The card is capped narrower, and the plain fields narrower still — the rule
+   editor is the one thing here that earns the extra room. */
+.settings-page {
+  --settings-control-w: 340px;
+  max-width: 1040px;
+  width: 100%;
+}
+
+.settings-form {
+  max-width: 760px;
+}
+
+/* Marks the fields that would otherwise stretch the full row. Two jobs in one
+   rule: a Select fills its Form.Item on its own and an InputNumber sits at a
+   90px default, so both need a width told to them; and neither should run the
+   whole 760px, because a number that wide reads as a text field.
+
+   The help text is a sibling of the control, so it keeps the full row and stays
+   a sentence rather than a narrow column. A textarea, a reply list or a switch
+   row is not one of these — they carry no class and size themselves. */
+.settings-control {
+  max-width: var(--settings-control-w);
+  width: 100%;
+}
+
+.settings-form__last.ant-form-item {
+  margin-bottom: 0;
+}
+
+.settings-section + .settings-section {
+  border-block-start: 1px solid var(--app-border);
+  margin-block-start: 18px;
+  padding-block-start: 18px;
+}
+
+.settings-section__title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 14px;
+}
+
+/* An unsaved change two tabs away is invisible otherwise. */
+.settings-tab {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.settings-tab__dot {
+  background: var(--app-warning);
+  border-radius: 50%;
+  height: 6px;
+  width: 6px;
+}
+
+.settings-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-block-start: 20px;
+}
+
+.settings-rules__head {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.settings-rules__head .settings-section__title {
+  margin-bottom: 0;
+}
+
+/* Keywords and their replies are read against each other, so they sit side by
+   side wherever there is room for both to stay legible. */
+.settings-rule-form__cols {
+  display: grid;
+  gap: 0 16px;
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 991px) {
+  .settings-rule-form__cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+.settings-reply {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+}
+
+.settings-problems {
+  margin: 0;
+  padding-inline-start: 18px;
+}
+
+/* Sticks to the bottom of the viewport while the page is scrolled, so the save
+   button is reachable from the middle of a long rule list. */
+.settings-savebar {
+  align-items: center;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  bottom: 12px;
+  box-shadow: var(--app-shadow-lg);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 10px 16px;
+  position: sticky;
+  z-index: 10;
+}
