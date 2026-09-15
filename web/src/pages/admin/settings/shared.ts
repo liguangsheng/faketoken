@@ -56,6 +56,12 @@ export const nonEmpty = (lines: string[]) => lines.filter((line) => line.trim() 
  *
  * Reimplemented here rather than guessed at, so the count the operator reads
  * is the count the relay will match on.
+ *
+ * One difference, currently unreachable: the server's cap counts groups it
+ * *keeps*, having already dropped the wholly empty ones, while the slice below
+ * counts input positions. They agree only because the editor refuses to add a
+ * 21st group, so the list never exceeds the cap in the first place. Lift that
+ * limit and the budget would have to be spent the way the server spends it.
  */
 export const keptPerRule = (rules: ConsoleSettings['block_rules']) => {
   let budget = MAX_KEYWORDS
