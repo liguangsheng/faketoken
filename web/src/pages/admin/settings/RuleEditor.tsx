@@ -42,6 +42,7 @@ export default function RuleEditor({
     <Form layout="vertical">
       <Form.Item label="组名" help="只出现在管理员的日志里，不会发给调用方。">
         <Input
+          className="settings-control"
           maxLength={MAX_RULE_NAME}
           placeholder={fallbackName}
           aria-label={`${fallbackName}名称`}
