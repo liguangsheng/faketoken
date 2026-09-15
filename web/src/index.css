@@ -987,28 +987,38 @@ body {
 
 /* The content area runs to 1560px, which is right for a table and wrong for a
    form: at that width a label and its input sit at opposite ends of the screen.
-   The card is capped narrower, and the plain fields narrower still — the rule
-   editor is the one thing here that earns the extra room. */
+
+   The card is capped at what the widest tab needs. Four of the five tabs are
+   plain forms that stop at about 640px; only the rule editor, which puts
+   keywords and their replies side by side, uses the rest. */
 .settings-page {
-  --settings-control-w: 340px;
-  max-width: 1040px;
+  /* One number for the control column and for every control in it, so the whole
+     page shares a single right edge. */
+  --settings-field-w: 420px;
+  max-width: 880px;
   width: 100%;
 }
 
+/* Label column plus control column. Anything that is not a Form.Item — a
+   section heading, an alert — lines up with the same measure. */
 .settings-form {
-  max-width: 760px;
+  max-width: calc(176px + var(--settings-field-w));
 }
 
-/* Marks the fields that would otherwise stretch the full row. Two jobs in one
-   rule: a Select fills its Form.Item on its own and an InputNumber sits at a
-   90px default, so both need a width told to them; and neither should run the
-   whole 760px, because a number that wide reads as a text field.
+/* antd gives the Col min-width:auto, which resolves to its content's minimum.
+   Without this the fixed basis on the control column is only a suggestion: a
+   long help sentence can still force the row wider than the form and wrap it,
+   dropping the control below its own label. */
+.settings-form .ant-form-item-control {
+  min-width: 0;
+}
 
-   The help text is a sibling of the control, so it keeps the full row and stays
-   a sentence rather than a narrow column. A textarea, a reply list or a switch
-   row is not one of these — they carry no class and size themselves. */
+/* Marks the fields that would otherwise size themselves: a Select fills its
+   Form.Item on its own, an InputNumber sits at a 90px default, and neither
+   should end anywhere but the column's right edge. A textarea, a reply list or
+   a switch row carries no class and sizes itself. */
 .settings-control {
-  max-width: var(--settings-control-w);
+  max-width: var(--settings-field-w);
   width: 100%;
 }
 
@@ -1062,16 +1072,21 @@ body {
 }
 
 /* Keywords and their replies are read against each other, so they sit side by
-   side wherever there is room for both to stay legible. */
+   side wherever there is room for both to stay legible. The breakpoint tracks
+   the card's own cap: below this the card is the viewport, and two columns
+   would leave each textarea too narrow to read a keyword list in. */
 .settings-rule-form__cols {
   display: grid;
   gap: 0 16px;
   grid-template-columns: 1fr 1fr;
 }
 
-@media (max-width: 991px) {
+@media (max-width: 899px) {
   .settings-rule-form__cols {
     grid-template-columns: 1fr;
+    /* Stacked, the two columns become consecutive blocks, and the last field of
+       the first one has had its margin removed for the side-by-side case. */
+    row-gap: 18px;
   }
 }
 

@@ -4,13 +4,18 @@ import { Form, Typography } from 'antd'
 import { useMediaQuery } from '../../../hooks/useMediaQuery'
 
 /**
- * The one form layout every settings panel uses: label on the left at a fixed
- * width, control and its explanation on the right at a readable one.
+ * The one form layout every settings panel uses: label in a fixed column,
+ * control and its explanation in a second fixed column beside it.
  *
- * The console content area runs to 1560px. A settings field stretched that far
- * puts its label and its input at opposite ends of the screen, so the column is
- * capped here instead — and collapses to stacked labels on a phone, where a
- * 176px gutter would leave nothing for the control.
+ * Both columns are fixed rather than fluid, and that is the whole point. A
+ * fluid control column takes its width from its content, so the longest help
+ * sentence decides how wide the row wants to be — and when that exceeds the
+ * form, antd wraps the row, dropping the control below its own label. The
+ * result is a form where some fields are horizontal and some are vertical
+ * depending on how much prose each one carries.
+ *
+ * Fixing the column also lines the control up with its help text, so every
+ * field in the page shares one left edge and one right edge.
  */
 export default function SettingsForm({ children }: { children: ReactNode }) {
   const narrow = useMediaQuery('(max-width: 767px)')
@@ -23,7 +28,7 @@ export default function SettingsForm({ children }: { children: ReactNode }) {
       labelAlign="left"
       labelWrap
       labelCol={narrow ? undefined : { flex: '0 0 176px' }}
-      wrapperCol={narrow ? undefined : { flex: '1 1 auto' }}
+      wrapperCol={narrow ? undefined : { flex: '0 0 var(--settings-field-w)' }}
     >
       {children}
     </Form>
