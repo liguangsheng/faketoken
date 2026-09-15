@@ -40,15 +40,17 @@ func BenchmarkSanitizeBody(b *testing.B) {
 	}
 }
 
-// matchBlocked folds the whole body once per request when any keyword is set.
+// matchBlocked folds the whole body once per request when any group is set.
 func BenchmarkMatchBlocked(b *testing.B) {
 	body := conversationBody(100)
 	rl := &Relay{}
-	rl.SetBlockPolicy(ParseKeywords("forbidden\nanother"), DefaultBlockedStatus, "")
+	rl.SetBlockPolicy([]BlockRule{{
+		Name: "bench", Enabled: true, Keywords: []string{"forbidden", "another"},
+	}}, DefaultBlockedStatus)
 
 	b.SetBytes(int64(len(body)))
 	b.ReportAllocs()
 	for b.Loop() {
-		rl.matchBlocked(body)
+		_, _ = rl.matchBlocked(body)
 	}
 }

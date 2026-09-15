@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,13 +27,20 @@ const (
 	optionImportPriority  = "console.import_priority"
 	optionImportWeight    = "console.import_weight"
 	optionLogDetailKeep   = "console.log_detail_keep"
-	optionBlockedKeywords = "console.blocked_keywords"
 	optionRequireInvite   = "console.require_invite_code"
 	optionBlockedStatus   = "console.blocked_status"
-	optionBlockedReply    = "console.blocked_reply"
-	optionMaxRetries      = "relay.max_retries"
-	optionRetryBackoff    = "relay.retry_backoff_ms"
+	// optionBlockRules holds the whole set of block groups as JSON. One row
+	// rather than a table: it is read once at startup, written whole by the
+	// settings form, and never queried by anything but this handler.
+	optionBlockRules   = "console.block_rules"
+	optionMaxRetries   = "relay.max_retries"
+	optionRetryBackoff = "relay.retry_backoff_ms"
 )
+
+// maxBlockRulesJSON bounds the stored document. The per-group limits already
+// bound what can match, but nothing else stops a large blob from being written
+// into the options row.
+const maxBlockRulesJSON = 256 << 10
 
 const (
 	defaultPageSizeFallback = 20
@@ -101,17 +109,17 @@ type consoleSettings struct {
 	// LogDetailKeep is how many of the most recent calls keep their full
 	// request and response for inspection. 0 turns the recording off.
 	LogDetailKeep int `json:"log_detail_keep"`
-	// BlockedKeywords is one keyword per line. A request whose body contains
-	// any of them is refused before it reaches an upstream.
-	BlockedKeywords string `json:"blocked_keywords"`
 	// RequireInviteCode makes self-registration need a code an administrator
 	// generated. Only meaningful while AllowRegister is on.
 	RequireInviteCode bool `json:"require_invite_code"`
-	// BlockedStatus and BlockedReply decide what a caller sees when a keyword
-	// matches. A 2xx is delivered as an ordinary model answer carrying the
-	// text; anything else is an error carrying it as the message.
-	BlockedStatus int    `json:"blocked_status"`
-	BlockedReply  string `json:"blocked_reply"`
+	// BlockedStatus is the default a group inherits when it sets none of its
+	// own. A 2xx is delivered as an ordinary model answer carrying the group's
+	// reply; anything else is an error carrying it as the message.
+	BlockedStatus int `json:"blocked_status"`
+	// BlockRules are the keyword groups a request body is checked against,
+	// each with its own reply pool. Never nil, so the console always gets an
+	// array to render.
+	BlockRules []relay.BlockRule `json:"block_rules"`
 	// MaxRetries is the max number of upstream attempts. Each attempt targets
 	// a different channel rather than hammering the one that just failed.
 	MaxRetries int `json:"max_retries"`
@@ -131,7 +139,7 @@ func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
 		ImportWeight:    importWeightFallback,
 		LogDetailKeep:   store.DefaultLogDetailKeep,
 		BlockedStatus:   relay.DefaultBlockedStatus,
-		BlockedReply:    relay.DefaultBlockedReply,
+		BlockRules:      []relay.BlockRule{},
 		MaxRetries:      s.cfg.MaxRetries,
 		RetryBackoffMS:  int(s.cfg.RetryBackoff / time.Millisecond),
 	}
@@ -164,18 +172,22 @@ func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
 	if value, err := strconv.Atoi(options[optionLogDetailKeep]); err == nil && validLogDetailKeep(value) {
 		settings.LogDetailKeep = value
 	}
-	// Stored as typed, so the console shows the operator their own text rather
-	// than a normalised version of it.
-	settings.BlockedKeywords = options[optionBlockedKeywords]
+	if raw := options[optionBlockRules]; strings.TrimSpace(raw) != "" {
+		var rules []relay.BlockRule
+		if err := json.Unmarshal([]byte(raw), &rules); err != nil {
+			// A corrupt row must not take the whole settings page down with it;
+			// the operator sees an empty list and can save a new one over it.
+			slog.Error("read block rules", "error", err)
+		} else {
+			settings.BlockRules = relay.NormalizeBlockRules(rules)
+		}
+	}
 	if value, err := strconv.ParseBool(options[optionRequireInvite]); err == nil {
 		settings.RequireInviteCode = value
 	}
 	if value, err := strconv.Atoi(options[optionBlockedStatus]); err == nil &&
 		relay.ValidBlockedStatus(value) {
 		settings.BlockedStatus = value
-	}
-	if value := options[optionBlockedReply]; strings.TrimSpace(value) != "" {
-		settings.BlockedReply = value
 	}
 	if value, err := strconv.Atoi(options[optionMaxRetries]); err == nil && validMaxRetries(value) {
 		settings.MaxRetries = value
@@ -217,6 +229,16 @@ func (s *Server) requireInviteCode(ctx context.Context) bool {
 	}
 	value, err := strconv.ParseBool(raw)
 	return err == nil && value
+}
+
+// countKeywords totals the keywords across groups, for the startup and save
+// log lines.
+func countKeywords(rules []relay.BlockRule) int {
+	total := 0
+	for _, rule := range rules {
+		total += len(rule.Keywords)
+	}
+	return total
 }
 
 func validPageSize(value int) bool {
@@ -269,21 +291,30 @@ func (s *Server) LoadRuntimeOptions(ctx context.Context) {
 	settings := s.consoleSettings(ctx)
 	s.relay.SetCaptureLimit(settings.LogBodyLimit)
 	s.store.SetLogDetailKeep(settings.LogDetailKeep)
-	keywords := relay.ParseKeywords(settings.BlockedKeywords)
-	s.relay.SetBlockPolicy(keywords, settings.BlockedStatus, settings.BlockedReply)
+	s.relay.SetBlockPolicy(settings.BlockRules, settings.BlockedStatus)
 	s.relay.SetRetryConfig(settings.MaxRetries, time.Duration(settings.RetryBackoffMS)*time.Millisecond)
 	slog.Info("runtime options loaded",
 		"log_body_limit", settings.LogBodyLimit,
 		"log_detail_keep", settings.LogDetailKeep,
-		"blocked_keywords", len(keywords),
+		"block_rules", len(settings.BlockRules),
+		"blocked_keywords", countKeywords(settings.BlockRules),
 		"max_retries", settings.MaxRetries,
 		"retry_backoff_ms", settings.RetryBackoffMS)
 }
 
 // handleGetSettings is readable by any signed-in user: a regular account still
 // renders paginated tables and needs the same default.
+//
+// The block groups are the exception. They are the operator's policy, and a
+// caller holding the keyword list would not need to probe for it at all — the
+// same reason a blocked request is answered rather than refused. They travel
+// only to an administrator, who is the only one who can edit them anyway.
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	ok(w, s.consoleSettings(r.Context()))
+	settings := s.consoleSettings(r.Context())
+	if u := userFrom(r.Context()); u == nil || !u.IsAdmin() {
+		settings.BlockRules = []relay.BlockRule{}
+	}
+	ok(w, settings)
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -313,20 +344,41 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			"导入默认权重需在 %d 和 %d 之间", minImportWeight, maxImportWeight))
 		return
 	}
-	// The raw text is stored as typed, so it needs a bound of its own: the
-	// parsed list is capped, but nothing else stops a large blob from being
-	// written into the options row.
-	if len(in.BlockedKeywords) > 64<<10 {
-		fail(w, http.StatusBadRequest, "屏蔽关键词列表过长")
-		return
-	}
 	if !relay.ValidBlockedStatus(in.BlockedStatus) {
 		fail(w, http.StatusBadRequest, "命中后的状态码需在 200 和 599 之间")
 		return
 	}
-	if len(in.BlockedReply) > relay.MaxBlockedReplyLength {
+	if len(in.BlockRules) > relay.MaxBlockRules {
 		fail(w, http.StatusBadRequest, fmt.Sprintf(
-			"命中后的回复内容不能超过 %d 字节", relay.MaxBlockedReplyLength))
+			"屏蔽规则组最多 %d 个", relay.MaxBlockRules))
+		return
+	}
+	// Refused rather than truncated: an operator who pastes an oversized reply
+	// should be told, not have it silently shortened or dropped at save time.
+	for _, rule := range in.BlockRules {
+		for _, reply := range rule.Replies {
+			if len(reply) > relay.MaxBlockedReplyLength {
+				fail(w, http.StatusBadRequest, fmt.Sprintf(
+					"单条回复内容不能超过 %d 字节", relay.MaxBlockedReplyLength))
+				return
+			}
+		}
+		if rule.Status != 0 && !relay.ValidBlockedStatus(rule.Status) {
+			fail(w, http.StatusBadRequest, "规则组的状态码需为 0（继承全局）或 200 到 599 之间")
+			return
+		}
+	}
+
+	// Normalised before it is stored, so what the console reads back is what
+	// the relay is actually matching on.
+	rules := relay.NormalizeBlockRules(in.BlockRules)
+	encodedRules, err := json.Marshal(rules)
+	if err != nil {
+		failErr(w, err)
+		return
+	}
+	if len(encodedRules) > maxBlockRulesJSON {
+		fail(w, http.StatusBadRequest, "屏蔽规则配置过大")
 		return
 	}
 	if !validLogDetailKeep(in.LogDetailKeep) {
@@ -353,10 +405,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		optionImportPriority:  strconv.Itoa(in.ImportPriority),
 		optionImportWeight:    strconv.Itoa(in.ImportWeight),
 		optionLogDetailKeep:   strconv.Itoa(in.LogDetailKeep),
-		optionBlockedKeywords: in.BlockedKeywords,
 		optionRequireInvite:   strconv.FormatBool(in.RequireInviteCode),
 		optionBlockedStatus:   strconv.Itoa(in.BlockedStatus),
-		optionBlockedReply:    in.BlockedReply,
+		optionBlockRules:      string(encodedRules),
 		optionMaxRetries:      strconv.Itoa(in.MaxRetries),
 		optionRetryBackoff:    strconv.Itoa(in.RetryBackoffMS),
 	} {
@@ -370,8 +421,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// memory rather than read back from the options table every time.
 	s.relay.SetCaptureLimit(in.LogBodyLimit)
 	s.store.SetLogDetailKeep(in.LogDetailKeep)
-	s.relay.SetBlockPolicy(relay.ParseKeywords(in.BlockedKeywords),
-		in.BlockedStatus, in.BlockedReply)
+	s.relay.SetBlockPolicy(rules, in.BlockedStatus)
 	s.relay.SetRetryConfig(in.MaxRetries, time.Duration(in.RetryBackoffMS)*time.Millisecond)
 
 	slog.Info("console settings updated",
@@ -382,7 +432,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		"import_priority", in.ImportPriority,
 		"import_weight", in.ImportWeight,
 		"log_detail_keep", in.LogDetailKeep,
-		"blocked_keywords", len(relay.ParseKeywords(in.BlockedKeywords)),
+		"block_rules", len(rules),
+		"blocked_keywords", countKeywords(rules),
 		"require_invite_code", in.RequireInviteCode,
 		"blocked_status", in.BlockedStatus,
 		"max_retries", in.MaxRetries,

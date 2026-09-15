@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/faketoken/faketoken/internal/model"
+	"github.com/faketoken/faketoken/internal/relay"
 )
 
 // heartbeatInterval keeps idle connections alive. Reverse proxies commonly
@@ -27,9 +28,12 @@ type streamFilter struct {
 	username  string
 	keyword   string
 	onlyError bool
+	// redact strips the block policy's note, exactly as the list endpoint
+	// does. Set for a caller's own feed, clear for an administrator's.
+	redact bool
 }
 
-func (f streamFilter) matches(entry *model.RequestLog) bool {
+func (f streamFilter) matches(entry *model.RequestLog, blocked bool) bool {
 	switch {
 	case f.userID > 0 && entry.UserID != f.userID:
 		return false
@@ -43,23 +47,29 @@ func (f streamFilter) matches(entry *model.RequestLog) bool {
 		return false
 	case f.onlyError && entry.StatusCode < 400 && entry.Error == "":
 		return false
-	case f.keyword != "" && !matchesKeyword(entry, f.keyword):
+	case f.keyword != "" && !matchesKeyword(entry, f.keyword, blocked):
 		return false
 	}
 	return true
 }
 
 // matchesKeyword mirrors the SQL in store.LogFilter over the same columns, so
-// a live entry is appended exactly when a reload would have listed it.
-func matchesKeyword(entry *model.RequestLog, keyword string) bool {
+// a live entry is appended exactly when a reload would have listed it —
+// including the withheld error text, which store.LogFilter.HideErrorPrefix
+// excludes from the same search.
+func matchesKeyword(entry *model.RequestLog, keyword string, blockedFromCaller bool) bool {
 	if strconv.FormatInt(entry.ID, 10) == keyword {
 		return true
 	}
 	needle := strings.ToLower(keyword)
-	for _, field := range []string{
+	fields := []string{
 		entry.Username, entry.TokenName, entry.Model, entry.UpstreamModel,
-		entry.ChannelName, entry.Endpoint, entry.ClientIP, entry.Error,
-	} {
+		entry.ChannelName, entry.Endpoint, entry.ClientIP,
+	}
+	if !blockedFromCaller {
+		fields = append(fields, entry.Error)
+	}
+	for _, field := range fields {
 		if strings.Contains(strings.ToLower(field), needle) {
 			return true
 		}
@@ -85,6 +95,7 @@ func (s *Server) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
 	// must not be able to widen the feed by passing someone else's username.
 	filter.userID = userFrom(r.Context()).ID
 	filter.username = ""
+	filter.redact = true
 	s.streamLogs(w, r, filter)
 }
 
@@ -133,8 +144,17 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, filter strea
 			if !open {
 				return
 			}
-			if !filter.matches(entry) {
+			// The broker hands every subscriber the same pointer, so the copy
+			// has to happen before anything is rewritten on it: redacting in
+			// place would blank the text in an administrator's feed too.
+			blocked := filter.redact && strings.HasPrefix(entry.Error, relay.BlockedLogPrefix)
+			if !filter.matches(entry, blocked) {
 				continue
+			}
+			if blocked {
+				visible := *entry
+				visible.Error = relay.BlockedLogRedacted
+				entry = &visible
 			}
 			payload, err := json.Marshal(entry)
 			if err != nil {

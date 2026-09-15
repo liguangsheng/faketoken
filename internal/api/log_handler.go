@@ -9,8 +9,22 @@ import (
 
 	"github.com/faketoken/faketoken/internal/billing"
 	"github.com/faketoken/faketoken/internal/model"
+	"github.com/faketoken/faketoken/internal/relay"
 	"github.com/faketoken/faketoken/internal/store"
 )
+
+// redactBlocked replaces the block policy's own note with a generic one.
+//
+// The stored text names the group that matched and the keyword it matched on,
+// which is for the operator. Showing it to the caller would turn their own log
+// page into a probe: send a guess, read back which word tripped, repeat.
+func redactBlocked(logs []*model.RequestLog) {
+	for _, entry := range logs {
+		if strings.HasPrefix(entry.Error, relay.BlockedLogPrefix) {
+			entry.Error = relay.BlockedLogRedacted
+		}
+	}
+}
 
 func logFilter(r *http.Request) store.LogFilter {
 	offset, limit := pagination(r)
@@ -34,12 +48,16 @@ func (s *Server) handleListLogs(w http.ResponseWriter, r *http.Request) {
 	// A regular user only ever sees their own traffic.
 	f.UserID = userFrom(r.Context()).ID
 	f.Username = ""
+	// Withheld from the search as well as from the response: matching on the
+	// text would confirm it just as well as reading it.
+	f.HideErrorPrefix = relay.BlockedLogPrefix
 
 	logs, total, err := s.store.ListLogs(r.Context(), f)
 	if err != nil {
 		failErr(w, err)
 		return
 	}
+	redactBlocked(logs)
 	ok(w, page[*model.RequestLog]{Data: logs, Total: total})
 }
 

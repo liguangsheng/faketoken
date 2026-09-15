@@ -311,15 +311,18 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Checked before routing, pricing or quota: a blocked body should cost
 	// nothing beyond reading it, and must never reach an upstream.
-	if word := rl.matchBlocked(body); word != "" {
-		// The keyword goes to the operator's log, never to the caller. Telling
-		// the sender which word tripped would turn every rejection into a probe
-		// that maps out the list.
+	if hit, blocked := rl.matchBlocked(body); blocked {
+		// The group and the keyword go to the operator's log, never to the
+		// caller. Telling the sender which word tripped would turn every
+		// rejection into a probe that maps out the list.
 		slog.Warn("blocked a request by keyword",
-			"keyword", word, "user", p.user.Username, "token", p.token.Name,
+			"rule", hit.rule, "keyword", hit.keyword,
+			"user", p.user.Username, "token", p.token.Name,
 			"model", info.Model, "ip", entry.ClientIP)
 
-		status, reply := rl.blockedResponse()
+		// Both come from the group that matched: its own status if it set one,
+		// and one reply drawn from its pool.
+		status, reply := hit.status, hit.reply
 
 		// A success is answered like a model would answer, in whichever
 		// dialect the caller used. Endpoints that expect something other than
@@ -340,10 +343,10 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			captured.responseHeaders = map[string][]string{
 				"Content-Type": {w.Header().Get("Content-Type")},
 			}
-			// Logged with the status the caller saw, and the keyword in the
-			// error field so these stay findable under the "only errors"
+			// Logged with the status the caller saw, and the group and keyword
+			// in the error field so these stay findable under the "only errors"
 			// filter even when that status is a 200.
-			rl.finish(entry, captured, started, status, "blocked by keyword: "+word)
+			rl.finish(entry, captured, started, status, hit.logMessage())
 			return
 		}
 
@@ -361,7 +364,7 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusUnauthorized
 			message = "the request was rejected by this gateway's content policy"
 		}
-		rl.finish(entry, captured, started, status, "blocked by keyword: "+word)
+		rl.finish(entry, captured, started, status, hit.logMessage())
 		writeError(w, status, "invalid_request_error", "content_blocked", message)
 		return
 	}

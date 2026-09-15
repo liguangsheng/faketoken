@@ -46,10 +46,19 @@ type LogFilter struct {
 	// knows something about a call but not which field it was.
 	Keyword   string
 	OnlyError bool
-	Start     *time.Time
-	End       *time.Time
-	Offset    int
-	Limit     int
+	// HideErrorPrefix withholds one class of error text from a keyword search:
+	// a row whose error starts with it still matches on every other column, but
+	// not on that one.
+	//
+	// The block policy records which group matched and on which keyword. A
+	// caller able to search that text would not need to see it — a query that
+	// returns their own blocked call confirms the word, one guess at a time.
+	// Empty searches everything, which is what an administrator gets.
+	HideErrorPrefix string
+	Start           *time.Time
+	End             *time.Time
+	Offset          int
+	Limit           int
 }
 
 // LogKeywordColumns are the columns a keyword search covers. Named once
@@ -87,18 +96,30 @@ func (f LogFilter) build() (string, []any) {
 		add("lower(username) = lower($%d)", f.Username)
 	}
 	if kw := strings.TrimSpace(f.Keyword); kw != "" {
+		// Placed by hand rather than through add(): the needle is referenced by
+		// every column, and the withheld prefix needs a placeholder of its own.
+		args = append(args, kw)
+		needle := len(args)
+
 		// strpos rather than LIKE: the box takes literal text, and a value
 		// containing % or _ would otherwise turn into a wildcard pattern.
 		matches := make([]string, 0, len(LogKeywordColumns)+1)
 		for _, column := range LogKeywordColumns {
-			matches = append(matches, fmt.Sprintf("strpos(lower(%s), lower($%%[1]d)) > 0", column))
+			hit := fmt.Sprintf("strpos(lower(%s), lower($%d)) > 0", column, needle)
+			if column == "error" && f.HideErrorPrefix != "" {
+				// strpos is 1-based, so "not at position 1" is "does not start
+				// with". Compared as stored, against text we wrote ourselves.
+				args = append(args, f.HideErrorPrefix)
+				hit = fmt.Sprintf("(%s AND strpos(error, $%d) <> 1)", hit, len(args))
+			}
+			matches = append(matches, hit)
 		}
 		// An id is what someone pastes in after reading it off a row, so the
 		// search has to accept one. Compared as text: a number too large for
 		// bigint would otherwise fail the whole query rather than match
 		// nothing.
-		matches = append(matches, "id::text = $%[1]d")
-		add("("+strings.Join(matches, " OR ")+")", kw)
+		matches = append(matches, fmt.Sprintf("id::text = $%d", needle))
+		conds = append(conds, "("+strings.Join(matches, " OR ")+")")
 	}
 	if f.OnlyError {
 		conds = append(conds, "(status_code >= 400 OR error <> '')")
@@ -122,9 +143,12 @@ func (s *Store) ListLogs(ctx context.Context, f LogFilter) ([]*model.RequestLog,
 	}
 
 	args = append(args, f.Limit, f.Offset)
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(
+	// Assembled from the logColumns constant, the clause built above and two
+	// placeholder indices. Every caller-supplied value travels in args.
+	query := fmt.Sprintf(
 		`SELECT %s FROM request_logs WHERE %s ORDER BY id DESC LIMIT $%d OFFSET $%d`,
-		logColumns, where, len(args)-1, len(args)), args...)
+		logColumns, where, len(args)-1, len(args))
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -273,13 +297,16 @@ func (s *Store) TimeSeries(ctx context.Context, f LogFilter, interval string) ([
 		interval = "day"
 	}
 	where, args := f.build()
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(`SELECT
+	// interval is one of the two literals forced above; the rest is the clause
+	// built by f.build(). Every caller-supplied value travels in args.
+	query := fmt.Sprintf(`SELECT
 		date_trunc('%s', created_at) AS bucket,
 		count(*),
 		count(*) FILTER (WHERE status_code >= 400 OR error <> ''),
 		coalesce(sum(cost), 0),
 		coalesce(sum(total_tokens), 0)
-		FROM request_logs WHERE %s GROUP BY bucket ORDER BY bucket`, interval, where), args...)
+		FROM request_logs WHERE %s GROUP BY bucket ORDER BY bucket`, interval, where)
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -305,11 +332,14 @@ func (s *Store) TopBy(ctx context.Context, f LogFilter, column string, limit int
 	}
 	where, args := f.build()
 	args = append(args, limit)
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(`SELECT %s, count(*),
+	// column is one of the three names the switch above accepts; the rest is
+	// the clause built by f.build() and a placeholder index.
+	query := fmt.Sprintf(`SELECT %s, count(*),
 		coalesce(sum(cost),0), coalesce(sum(total_tokens),0)
 		FROM request_logs WHERE %s AND %s <> ''
 		GROUP BY %s ORDER BY count(*) DESC LIMIT $%d`,
-		column, where, column, column, len(args)), args...)
+		column, where, column, column, len(args))
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

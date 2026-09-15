@@ -264,6 +264,19 @@ export interface Page<T> {
   total: number
 }
 
+/** One category of prompts to intercept, with the replies it is answered from. */
+export interface BlockRule {
+  /** Labels the group in the operator's log; never sent to a caller. */
+  name: string
+  enabled: boolean
+  /** Case-insensitive substrings of the request body. */
+  keywords: string[]
+  /** The pool a match is answered from, one drawn at random per request. */
+  replies: string[]
+  /** Overrides the global status for this group; 0 inherits it. */
+  status: number
+}
+
 /** Console-wide preferences, stored server-side and shared by every browser. */
 export interface ConsoleSettings {
   default_page_size: number
@@ -278,14 +291,13 @@ export interface ConsoleSettings {
   import_weight: number
   /** How many recent calls keep their full request and reply. 0 records none. */
   log_detail_keep: number
-  /** One keyword per line; a request body containing any of them is refused. */
-  blocked_keywords: string
   /** Whether self-registration needs a code an administrator generated. */
   require_invite_code: boolean
-  /** What a caller sees when a keyword matches: 2xx delivers the text as a
-   *  model answer, anything else as an error message. */
+  /** The default a group inherits when it sets no status of its own: 2xx
+   *  delivers its reply as a model answer, anything else as an error. */
   blocked_status: number
-  blocked_reply: string
+  /** The keyword groups a request body is checked against. */
+  block_rules: BlockRule[]
   /** Max upstream attempts per request. Each retry picks a different channel. */
   max_retries: number
   /** Base delay between retries, in milliseconds. */
