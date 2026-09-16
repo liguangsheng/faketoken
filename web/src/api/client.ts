@@ -70,6 +70,12 @@ export interface Channel {
   allow_attachments: boolean
   lock_user_agent: boolean
   locked_user_agents: Record<string, string>
+  /**
+   * Retired without being deleted: folded into the console's collapsed section
+   * instead of the main listing. Archiving always disables, so an archived
+   * channel never serves traffic from behind the fold.
+   */
+  archived: boolean
   used_quota: number
   request_count: number
   error_count: number
@@ -522,6 +528,13 @@ export const api = {
     deleteChannel: (id: number) => request<unknown>('DELETE', `/api/admin/channels/${id}`),
     setChannelStatus: (id: number, status: number) =>
       request<Channel>('PUT', `/api/admin/channels/${id}/status`, { status }),
+    /**
+     * Retires a channel or brings it back. Archiving disables it server-side in
+     * the same transaction; unarchiving only clears the flag, so the channel
+     * returns to the listing still disabled.
+     */
+    setChannelArchived: (id: number, archived: boolean) =>
+      request<Channel>('PUT', `/api/admin/channels/${id}/archive`, { archived }),
     /**
      * Priority and weight only, so the table can edit them in place. The full
      * update is not usable from a listing: it replaces every field, and the

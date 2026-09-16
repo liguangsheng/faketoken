@@ -65,7 +65,7 @@ const channelColumns = `id, name, base_url, auth_style, api_key_enc, status, pri
 	convert_messages_to_chat, convert_responses_to_chat, reasoning_effort_mapping,
 	allow_attachments, lock_user_agent, locked_user_agents,
 	keepalive_enabled, keepalive_at, keepalive_target, keepalive_open, keepalive_success,
-	keepalive_opened_at`
+	keepalive_opened_at, archived`
 
 func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 	var c model.Channel
@@ -78,7 +78,7 @@ func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 		&c.ConvertMessagesToChat, &c.ConvertResponsesToChat, &c.ReasoningEffortMapping,
 		&c.AllowAttachments, &c.LockUserAgent, &c.LockedUserAgents,
 		&c.KeepaliveEnabled, &c.KeepaliveAt, &c.KeepaliveTarget, &c.KeepaliveOpen,
-		&c.KeepaliveSuccess, &c.KeepaliveOpenedAt)
+		&c.KeepaliveSuccess, &c.KeepaliveOpenedAt, &c.Archived)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -183,8 +183,15 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		keyClause = fmt.Sprintf("$%d", len(args))
 	}
 
+	// archived in the SET clause reads the row as it was before this statement,
+	// which is what lets an archived channel keep its status pinned: the form
+	// carries a status field, and the listing hides archived rows, so honouring
+	// it here would let an edit send traffic to a channel nobody can see.
+	// Unarchiving is the way to make a channel eligible again.
 	row := tx.QueryRow(ctx, fmt.Sprintf(`UPDATE channels SET
-		name = $2, base_url = $3, auth_style = $4, status = $5, priority = $6, weight = $7,
+		name = $2, base_url = $3, auth_style = $4,
+		status = CASE WHEN archived THEN %[1]d::smallint ELSE $5::smallint END,
+		priority = $6, weight = $7,
 		channel_groups = $8, models = $9, model_mapping = $10, headers = $11,
 		timeout_secs = $12, proxy_url = $13, price_ratio = $14, rpm_limit = $15, note = $16,
 		model_prefixes = $17, test_model = $18, supported_protocols = $19,
@@ -195,10 +202,11 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		-- The form carries status, so saving a channel as disabled abandons its
 		-- keepalive window here just as the listing toggle does. Progress is
 		-- otherwise left alone: saving the form must not reset the counter.
-		keepalive_open = CASE WHEN $5::smallint <> %d::smallint
+		keepalive_open = CASE WHEN archived OR $5::smallint <> %[2]d::smallint
 		                     THEN FALSE ELSE keepalive_open END,
-		api_key_enc = %s, updated_at = now()
-		WHERE id = $1 RETURNING %s`, model.StatusEnabled, keyClause, channelColumns), args...)
+		api_key_enc = %[3]s, updated_at = now()
+		WHERE id = $1 RETURNING %[4]s`,
+		model.StatusDisabled, model.StatusEnabled, keyClause, channelColumns), args...)
 
 	updated, err := s.scanChannel(row)
 	if err != nil {
@@ -313,8 +321,12 @@ type ChannelFilter struct {
 	Status  int
 	Group   string
 	Model   string
-	Offset  int
-	Limit   int
+	// Archived selects on the archive flag: false lists the live channels, true
+	// the archived ones, nil every channel. The console asks for one side at a
+	// time, so the total it reports matches the rows it shows.
+	Archived *bool
+	Offset   int
+	Limit    int
 }
 
 func (s *Store) ListChannels(ctx context.Context, f ChannelFilter) ([]*model.Channel, int64, error) {
@@ -349,6 +361,9 @@ func (s *Store) ListChannels(ctx context.Context, f ChannelFilter) ([]*model.Cha
 	}
 	if f.Status > 0 {
 		add("status = $%d", f.Status)
+	}
+	if f.Archived != nil {
+		add("archived = $%d", *f.Archived)
 	}
 	if f.Group != "" {
 		add("$%d = ANY(channel_groups)", f.Group)
@@ -409,12 +424,100 @@ func (s *Store) DeleteChannel(ctx context.Context, id int64) error {
 	return nil
 }
 
+// SetChannelArchived retires a channel or brings it back.
+//
+// Archiving disables in the same transaction. The console folds archived rows
+// into a collapsed section, and a channel that kept serving traffic from behind
+// that fold is the kind of surprise that costs an afternoon to track down.
+//
+// Unarchiving only clears the flag. The channel returns to the listing still
+// disabled, so putting it back into rotation stays a deliberate second step.
+func (s *Store) SetChannelArchived(ctx context.Context, id int64, archived bool) (*model.Channel, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Archiving abandons any keepalive window, for the same reason disabling by
+	// hand does: the channel serves nothing, so a counter left standing would
+	// misreport what the window achieved. keepalive_opened_at is kept, which is
+	// what stops the scheduler reopening the channel for the same day.
+	var row pgx.Row
+	if archived {
+		row = tx.QueryRow(ctx, `UPDATE channels
+			SET archived = TRUE, status = $2, keepalive_open = FALSE, updated_at = now()
+			WHERE id = $1 RETURNING `+channelColumns, id, int16(model.StatusDisabled))
+	} else {
+		row = tx.QueryRow(ctx, `UPDATE channels
+			SET archived = FALSE, updated_at = now()
+			WHERE id = $1 RETURNING `+channelColumns, id)
+	}
+	updated, err := s.scanChannel(row)
+	if err != nil {
+		return nil, err
+	}
+
+	// Derived from the row that was actually written rather than assumed from
+	// the direction: the routing tables carry their own copy of enabled, and
+	// this is the only place that knows what the channel now reads as.
+	enabled := updated.Routable()
+	if _, err := tx.Exec(ctx, `UPDATE abilities SET enabled = $2 WHERE channel_id = $1`,
+		id, enabled); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE ability_prefixes SET enabled = $2 WHERE channel_id = $1`,
+		id, enabled); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+// liveChannelIDs narrows a selection to the channels that are not archived, and
+// locks them for the rest of the transaction so a concurrent archive cannot
+// land between the check and the write that follows.
+func liveChannelIDs(ctx context.Context, tx pgx.Tx, ids []int64) ([]int64, error) {
+	rows, err := tx.Query(ctx, `SELECT id FROM channels
+		WHERE id = ANY($1) AND NOT archived ORDER BY id FOR UPDATE`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]int64, 0, len(ids))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) SetChannelStatus(ctx context.Context, id int64, status int16, reason string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// An archived channel is not in the listing this toggle lives in, so a
+	// status change aimed at one is a stale request — refused rather than
+	// applied, so nothing gets enabled from behind the fold. Locked for the
+	// rest of the transaction so a concurrent archive cannot slip in after.
+	var archived bool
+	if err := tx.QueryRow(ctx,
+		`SELECT archived FROM channels WHERE id = $1 FOR UPDATE`, id).Scan(&archived); err != nil {
+		return mapErr(err)
+	}
+	if archived {
+		return fmt.Errorf("%w: channel %d is archived; unarchive it before changing its status",
+			ErrInvalidInput, id)
+	}
 
 	// Taking a channel out of rotation abandons any keepalive window it was
 	// running: a disabled channel serves nothing, so the counter must not keep
@@ -453,20 +556,31 @@ func (s *Store) SetChannelsStatus(ctx context.Context, ids []int64, status int16
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	// Archived channels drop out of the selection instead of failing it: they
+	// are not in the listing the selection was made from, and one stale id must
+	// not cost the operator the other 199 rows they meant to flip.
+	eligible, err := liveChannelIDs(ctx, tx, ids)
+	if err != nil {
+		return 0, err
+	}
+	if len(eligible) == 0 {
+		return 0, nil
+	}
+
 	tag, err := tx.Exec(ctx, `UPDATE channels SET status = $2, updated_at = now(),
 		keepalive_open = CASE WHEN $2::smallint <> $3::smallint
 		                     THEN FALSE ELSE keepalive_open END
-		WHERE id = ANY($1)`, ids, status, int16(model.StatusEnabled))
+		WHERE id = ANY($1)`, eligible, status, int16(model.StatusEnabled))
 	if err != nil {
 		return 0, err
 	}
 	enabled := status == model.StatusEnabled
 	if _, err := tx.Exec(ctx, `UPDATE abilities SET enabled = $2 WHERE channel_id = ANY($1)`,
-		ids, enabled); err != nil {
+		eligible, enabled); err != nil {
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE ability_prefixes SET enabled = $2 WHERE channel_id = ANY($1)`,
-		ids, enabled); err != nil {
+		eligible, enabled); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -508,6 +622,9 @@ func (s *Store) CloneChannel(ctx context.Context, id int64, name string) (*model
 	// A clone starts disabled: it still points at the source's credential and
 	// would otherwise silently double the traffic share of that upstream.
 	clone.Status = model.StatusDisabled
+	// Cloning an archived channel is how a retired configuration gets reused, so
+	// the copy belongs in the main listing where it can be edited and enabled.
+	clone.Archived = false
 
 	clone.Name, err = s.freeChannelName(ctx, strings.TrimSpace(name), source.Name)
 	if err != nil {
@@ -679,7 +796,7 @@ func rebuildAbilities(ctx context.Context, tx pgx.Tx, c *model.Channel) error {
 		return nil
 	}
 
-	enabled := c.Status == model.StatusEnabled
+	enabled := c.Routable()
 	seen := make(map[string]struct{}, len(c.Groups)*len(models))
 	rows := make([][]any, 0, len(c.Groups)*len(models))
 	protocols := normaliseProtocols(c.SupportedProtocols)
@@ -720,7 +837,7 @@ func rebuildAbilityPrefixes(ctx context.Context, tx pgx.Tx, c *model.Channel) er
 		return nil
 	}
 
-	enabled := c.Status == model.StatusEnabled
+	enabled := c.Routable()
 	seen := make(map[string]struct{}, len(c.Groups)*len(c.ModelPrefixes))
 	rows := make([][]any, 0, len(c.Groups)*len(c.ModelPrefixes))
 	protocols := normaliseProtocols(c.SupportedProtocols)
@@ -806,7 +923,8 @@ func (s *Store) RebuildAllAbilities(ctx context.Context) error {
 func routingSources(ctx context.Context, tx pgx.Tx) ([]*model.Channel, error) {
 	rows, err := tx.Query(ctx, `SELECT id, status, priority, weight,
 		channel_groups, models, model_prefixes, model_mapping, rpm_limit,
-		supported_protocols, convert_messages_to_chat, convert_responses_to_chat FROM channels ORDER BY id`)
+		supported_protocols, convert_messages_to_chat, convert_responses_to_chat, archived
+		FROM channels ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -817,7 +935,8 @@ func routingSources(ctx context.Context, tx pgx.Tx) ([]*model.Channel, error) {
 		var c model.Channel
 		if err := rows.Scan(&c.ID, &c.Status, &c.Priority, &c.Weight,
 			&c.Groups, &c.Models, &c.ModelPrefixes, &c.ModelMapping, &c.RPMLimit,
-			&c.SupportedProtocols, &c.ConvertMessagesToChat, &c.ConvertResponsesToChat); err != nil {
+			&c.SupportedProtocols, &c.ConvertMessagesToChat, &c.ConvertResponsesToChat,
+			&c.Archived); err != nil {
 			return nil, err
 		}
 		channels = append(channels, &c)
@@ -868,8 +987,11 @@ func (s *Store) RecordChannelResult(ctx context.Context, id int64, cost int64, f
 // of whether a window is due is made in Go so it can be tested without a
 // database.
 func (s *Store) ListKeepaliveChannels(ctx context.Context) ([]*model.Channel, error) {
+	// Archived channels are excluded: the whole point of the schedule is to
+	// enable a channel on its own, which is exactly what archiving forbids.
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+channelColumns+` FROM channels WHERE keepalive_enabled ORDER BY id`)
+		`SELECT `+channelColumns+` FROM channels
+		WHERE keepalive_enabled AND NOT archived ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}

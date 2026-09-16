@@ -88,6 +88,24 @@ func queryBool(r *http.Request, key string) bool {
 	return v == "1" || v == "true" || v == "yes"
 }
 
+// queryBoolPtr is the three-state form: nil when the parameter is absent, so a
+// filter can tell "false" apart from "not asked for". Anything unparseable is
+// treated as absent rather than as false — a typo must not silently narrow a
+// listing to one side of the flag.
+func queryBoolPtr(r *http.Request, key string) *bool {
+	v := strings.ToLower(r.URL.Query().Get(key))
+	switch v {
+	case "1", "true", "yes":
+		t := true
+		return &t
+	case "0", "false", "no":
+		f := false
+		return &f
+	default:
+		return nil
+	}
+}
+
 func queryTime(r *http.Request, key string) *time.Time {
 	v := r.URL.Query().Get(key)
 	if v == "" {

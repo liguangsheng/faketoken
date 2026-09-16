@@ -36,6 +36,13 @@ const (
 // AllProtocols lists every known upstream dialect.
 var AllProtocols = []string{ProtocolChatCompletions, ProtocolResponses, ProtocolMessages}
 
+// Routable reports whether the channel may serve traffic at all. It is what the
+// routing tables' enabled flag is derived from, so an archived channel cannot
+// be reached however its status column reads.
+func (c *Channel) Routable() bool {
+	return c.Status == StatusEnabled && !c.Archived
+}
+
 // SupportsProtocol reports whether the channel advertises the protocol. An
 // empty slice is treated as "every protocol" so a channel created before the
 // column existed keeps routing as it did before.
@@ -158,9 +165,18 @@ type Channel struct {
 	// values may be entered manually or learned after a successful request.
 	LockUserAgent    bool              `json:"lock_user_agent"`
 	LockedUserAgents map[string]string `json:"locked_user_agents"`
-	Note             string            `json:"note"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
+	// Archived retires the channel without deleting it: it leaves the main
+	// listing for a collapsed section and keeps its configuration and history.
+	//
+	// Archiving always disables, so an archived channel can never keep serving
+	// traffic while hidden from view. Separate from Status because "retired"
+	// and "temporarily off" are different states — unarchiving brings the row
+	// back to the listing but leaves it disabled, so returning a channel to
+	// rotation stays a deliberate second step.
+	Archived  bool      `json:"archived"`
+	Note      string    `json:"note"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 
 	// Keepalive opens the channel on a daily schedule and closes it again once
 	// it has served KeepaliveTarget successful requests, for upstreams that

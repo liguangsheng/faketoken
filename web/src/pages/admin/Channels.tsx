@@ -34,8 +34,10 @@ import {
   EditOutlined,
   EllipsisOutlined,
   ImportOutlined,
+  InboxOutlined,
   PlusOutlined,
   ReloadOutlined,
+  RollbackOutlined,
   SearchOutlined,
   ThunderboltOutlined,
   WarningOutlined,
@@ -116,6 +118,10 @@ const MIN_PRIORITY = -1_000_000
 const MAX_PRIORITY = 1_000_000
 const MIN_WEIGHT = 1
 const MAX_WEIGHT = 1_000_000
+
+// The archive is a shelf, not a working list: ten rows at a time is enough to
+// find something in it without the panel taking over the page once expanded.
+const ARCHIVED_PAGE_SIZE = 10
 
 /**
  * The picker's row list: what upstream just returned, plus anything the channel
@@ -312,6 +318,16 @@ export default function Channels() {
   const [togglingId, setTogglingId] = useState<number | null>(null)
   const [rebuilding, setRebuilding] = useState(false)
 
+  // The archive has its own rows, count and paging. It is fetched separately
+  // rather than sliced out of the listing because the count sits in a collapsed
+  // header, which has to be right before anyone expands it.
+  const [archivedRows, setArchivedRows] = useState<Channel[]>([])
+  const [archivedTotal, setArchivedTotal] = useState(0)
+  const [archivedPage, setArchivedPage] = useState(1)
+  const [archivedLoading, setArchivedLoading] = useState(false)
+  const [archivedOpen, setArchivedOpen] = useState(false)
+  const [archivingId, setArchivingId] = useState<number | null>(null)
+
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<Channel | null>(null)
   // The advanced fields fold away: a new channel needs three fields, not
@@ -373,6 +389,10 @@ export default function Channels() {
         status: statusFilter,
         group: groupFilter,
         model: modelFilter || undefined,
+        // The listing is what serves traffic; the archive is folded away below
+        // it. Asking for one side explicitly is also what makes the reported
+        // total match the rows actually shown.
+        archived: false,
       })
       setRows(result.data ?? [])
       setTotal(result.total)
@@ -390,6 +410,46 @@ export default function Channels() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // Deliberately unfiltered: the boxes above narrow what currently serves
+  // traffic, and an archived channel is by definition not that. Keeping the
+  // archive out of them is what lets the collapsed header's count mean one
+  // thing always. The listing's empty state points down here whenever the
+  // archive is non-empty, so a keyword search that misses cannot read as
+  // "somebody deleted it".
+  const loadArchived = useCallback(async () => {
+    setArchivedLoading(true)
+    try {
+      const result = await api.admin.listChannels({
+        page: archivedPage,
+        page_size: ARCHIVED_PAGE_SIZE,
+        archived: true,
+      })
+      setArchivedRows(result.data ?? [])
+      setArchivedTotal(result.total)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '加载已归档渠道失败')
+    } finally {
+      setArchivedLoading(false)
+    }
+  }, [archivedPage, message])
+
+  useEffect(() => {
+    void loadArchived()
+  }, [loadArchived])
+
+  // Taking the last row off a page would otherwise strand the panel on an empty
+  // one, with no control visible to get back.
+  useEffect(() => {
+    const pages = Math.max(1, Math.ceil(archivedTotal / ARCHIVED_PAGE_SIZE))
+    if (archivedPage > pages) setArchivedPage(pages)
+  }, [archivedPage, archivedTotal])
+
+  // Anything that can move a channel across the fold has to refresh both sides,
+  // or one of the two lists keeps showing a row that is no longer its own.
+  const reloadAll = useCallback(async () => {
+    await Promise.all([load(), loadArchived()])
+  }, [load, loadArchived])
 
   useEffect(() => {
     api.admin
@@ -561,7 +621,8 @@ export default function Channels() {
         message.success('渠道已创建')
       }
       setDrawerOpen(false)
-      await load()
+      // Both sides: this form is also reachable from the archived panel.
+      await reloadAll()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败')
     } finally {
@@ -798,6 +859,50 @@ export default function Channels() {
     }
   }
 
+  // archiveChannel retires a channel into the collapsed section below. The
+  // server disables it in the same transaction, so the confirmation says so
+  // outright: archiving a channel that is currently carrying traffic takes it
+  // out of rotation, and that must not arrive as a surprise afterwards.
+  const archiveChannel = (channel: Channel) => {
+    const live = channel.status === STATUS.ENABLED
+    modal.confirm({
+      title: `归档渠道「${channel.name}」？`,
+      content: live
+        ? '该渠道当前已启用，归档会同时停用它，指向它的路由立即失效。配置与历史保留，可随时取消归档。'
+        : '归档后从上方列表收起到「已归档」，配置与历史保留，可随时取消归档。',
+      okText: '归档',
+      cancelText: '取消',
+      onOk: async () => {
+        setArchivingId(channel.id)
+        try {
+          await api.admin.setChannelArchived(channel.id, true)
+          message.success(`「${channel.name}」已归档`)
+          await reloadAll()
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : '归档失败')
+        } finally {
+          setArchivingId(null)
+        }
+      },
+    })
+  }
+
+  // No confirmation: unarchiving restores a row to the listing and nothing
+  // else. The channel comes back disabled, which the message states — otherwise
+  // the next thing to happen is someone wondering why traffic never moved.
+  const unarchiveChannel = async (channel: Channel) => {
+    setArchivingId(channel.id)
+    try {
+      await api.admin.setChannelArchived(channel.id, false)
+      message.success(`「${channel.name}」已取消归档，状态仍为禁用`)
+      await reloadAll()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '取消归档失败')
+    } finally {
+      setArchivingId(null)
+    }
+  }
+
   const removeChannel = (channel: Channel) => {
     modal.confirm({
       title: `删除渠道「${channel.name}」？`,
@@ -807,7 +912,8 @@ export default function Channels() {
       onOk: async () => {
         await api.admin.deleteChannel(channel.id)
         message.success('已删除')
-        await load()
+        // Reachable from either table, so refresh both.
+        await reloadAll()
       },
     })
   }
@@ -1066,6 +1172,27 @@ export default function Channels() {
 
   const filtered = Boolean(keywordInput || statusFilter || groupFilter || modelFilterInput)
 
+  // The listing no longer holds every channel, so an empty table has to say
+  // which kind of empty it is. Without the archive pointer, a search that
+  // misses an archived channel reads as the channel having been deleted.
+  const emptyState = filtered
+    ? {
+        title: '没有匹配的渠道',
+        description:
+          archivedTotal > 0
+            ? `换个筛选条件试试。另有 ${archivedTotal} 个已归档渠道不参与筛选，展开下方「已归档」查看。`
+            : '换个筛选条件试试。',
+      }
+    : archivedTotal > 0
+      ? {
+          title: '没有在用的渠道',
+          description: `${archivedTotal} 个渠道都已归档，展开下方「已归档」可恢复。`,
+        }
+      : {
+          title: '还没有配置渠道',
+          description: '至少需要一个启用的渠道，请求才能被转发出去。',
+        }
+
   const visiblePickerModels = (picker?.models ?? []).filter((item) =>
     item.toLowerCase().includes(pickerFilter.toLowerCase()),
   )
@@ -1195,10 +1322,8 @@ export default function Channels() {
             <EmptyState
               // Any active filter counts — a status/group filter with zero hits
               // must not claim there are no channels at all.
-              title={filtered ? '没有匹配的渠道' : '还没有配置渠道'}
-              description={
-                filtered ? '换个筛选条件试试。' : '至少需要一个启用的渠道，请求才能被转发出去。'
-              }
+              title={emptyState.title}
+              description={emptyState.description}
               action={
                 filtered ? undefined : (
                   <Button type="primary" icon={<PlusOutlined />} onClick={() => openDrawer()}>
@@ -1476,6 +1601,10 @@ export default function Channels() {
                       { key: 'balance-new-api', icon: <WalletOutlined />, label: 'new-api 余额' },
                       { key: 'balance-sub2api', icon: <WalletOutlined />, label: 'sub2api 余额' },
                       { type: 'divider' as const },
+                      // Its own group next to deletion: both retire a channel,
+                      // but only one of them is irreversible.
+                      { key: 'archive', icon: <InboxOutlined />, label: '归档渠道' },
+                      { type: 'divider' as const },
                       { key: 'delete', icon: <DeleteOutlined />, label: '删除渠道', danger: true },
                     ],
                     onClick: ({ key }) => {
@@ -1486,6 +1615,7 @@ export default function Channels() {
                       else if (key === 'balance-sub2api') void showBalance(row, 'sub2api')
                       else if (key === 'credential') void copyCredential(row)
                       else if (key === 'clone') void cloneChannel(row)
+                      else if (key === 'archive') archiveChannel(row)
                       else if (key === 'delete') removeChannel(row)
                     },
                   }}
@@ -1636,6 +1766,150 @@ export default function Channels() {
           ),
         }}
       />
+
+      {/* Archived channels are configuration worth keeping, not part of what
+          serves traffic, so they should not cost listing space. The panel is
+          absent entirely until something is in it — an empty "已归档（0）" is
+          noise for anyone who has never archived a channel. */}
+      {archivedTotal > 0 && (
+        <Collapse
+          ghost
+          style={{ marginTop: 8 }}
+          activeKey={archivedOpen ? ['archived'] : []}
+          onChange={(keys) => setArchivedOpen(keys.length > 0)}
+          items={[
+            {
+              key: 'archived',
+              label: (
+                <Space size={8} wrap>
+                  <Typography.Text strong>已归档</Typography.Text>
+                  <Tag style={{ marginInlineEnd: 0 }}>{archivedTotal}</Tag>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    均已停用、不参与路由；配置与历史保留
+                  </Typography.Text>
+                </Space>
+              ),
+              children: (
+                <Table
+                  rowKey="id"
+                  size="small"
+                  loading={archivedLoading}
+                  dataSource={archivedRows}
+                  scroll={{ x: 620 }}
+                  pagination={{
+                    current: archivedPage,
+                    pageSize: ARCHIVED_PAGE_SIZE,
+                    total: archivedTotal,
+                    hideOnSinglePage: true,
+                    showSizeChanger: false,
+                    showTotal: (count) => `共 ${count} 个已归档渠道`,
+                    onChange: (next) => setArchivedPage(next),
+                  }}
+                  columns={[
+                    {
+                      title: 'ID',
+                      dataIndex: 'id',
+                      width: 72,
+                      render: (id: number) => (
+                        <Tag className="mono" style={{ marginInlineEnd: 0 }}>
+                          #{id}
+                        </Tag>
+                      ),
+                    },
+                    {
+                      title: '渠道',
+                      dataIndex: 'name',
+                      render: (name: string, row) => (
+                        <div style={{ display: 'grid', gap: 2, minWidth: 0 }}>
+                          <Tooltip title={name}>
+                            <strong
+                              style={{
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {name}
+                            </strong>
+                          </Tooltip>
+                          <Tooltip title={row.base_url}>
+                            <span
+                              className="mono text-muted"
+                              style={{
+                                minWidth: 0,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {row.base_url}
+                            </span>
+                          </Tooltip>
+                        </div>
+                      ),
+                    },
+                    {
+                      title: '模型',
+                      dataIndex: 'models',
+                      width: 84,
+                      responsive: ['md'],
+                      render: (list: string[]) => <Tag color="geekblue">{list.length} 个</Tag>,
+                    },
+                    {
+                      title: '消费',
+                      dataIndex: 'used_quota',
+                      width: 90,
+                      align: 'right',
+                      responsive: ['lg'],
+                      render: (value: number) => formatMoney(value),
+                    },
+                    {
+                      // Plain buttons rather than the listing's ⋯ menu: three
+                      // actions on a short list are better shown than hidden.
+                      title: '操作',
+                      width: 168,
+                      render: (_, row) => (
+                        <Space size={0}>
+                          <Tooltip title="恢复到上方列表，状态仍为禁用">
+                            <Button
+                              size="small"
+                              type="text"
+                              icon={<RollbackOutlined />}
+                              loading={archivingId === row.id}
+                              onClick={() => void unarchiveChannel(row)}
+                            >
+                              取消归档
+                            </Button>
+                          </Tooltip>
+                          <Tooltip title="编辑渠道">
+                            <Button
+                              size="small"
+                              type="text"
+                              icon={<EditOutlined />}
+                              aria-label={`编辑渠道 ${row.name}`}
+                              onClick={() => openDrawer(row)}
+                            />
+                          </Tooltip>
+                          <Tooltip title="删除渠道">
+                            <Button
+                              size="small"
+                              type="text"
+                              danger
+                              icon={<DeleteOutlined />}
+                              aria-label={`删除渠道 ${row.name}`}
+                              onClick={() => removeChannel(row)}
+                            />
+                          </Tooltip>
+                        </Space>
+                      ),
+                    },
+                  ]}
+                />
+              ),
+            },
+          ]}
+        />
+      )}
 
       <Drawer
         open={drawerOpen}

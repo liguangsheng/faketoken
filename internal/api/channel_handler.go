@@ -191,8 +191,12 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 		Status:  queryInt(r, "status", 0),
 		Group:   r.URL.Query().Get("group"),
 		Model:   r.URL.Query().Get("model"),
-		Offset:  offset,
-		Limit:   limit,
+		// Absent means every channel, so an existing API caller keeps seeing
+		// what it did before the archive existed. The console asks for one
+		// side explicitly.
+		Archived: queryBoolPtr(r, "archived"),
+		Offset:   offset,
+		Limit:    limit,
 	})
 	if err != nil {
 		failErr(w, err)
@@ -383,6 +387,33 @@ func (s *Server) handleChannelStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w, mask(ch))
+}
+
+// handleChannelArchive retires a channel or brings it back. Archiving disables
+// it in the same transaction, which the store owns: a channel that kept serving
+// traffic from behind the console's collapsed section would be invisible
+// exactly while it mattered.
+func (s *Server) handleChannelArchive(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		fail(w, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	var in struct {
+		Archived bool `json:"archived"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+
+	updated, err := s.store.SetChannelArchived(r.Context(), id, in.Archived)
+	if err != nil {
+		failErr(w, err)
+		return
+	}
+	slog.Info("channel archive changed", "channel", updated.ID, "name", updated.Name,
+		"archived", updated.Archived, "by", userFrom(r.Context()).Username)
+	ok(w, mask(updated))
 }
 
 // handleChannelRouting updates only priority and weight, which the console

@@ -87,6 +87,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/admin/channels/{id}", s.requireAdmin(s.handleUpdateChannel))
 	mux.HandleFunc("DELETE /api/admin/channels/{id}", s.requireAdmin(s.handleDeleteChannel))
 	mux.HandleFunc("PUT /api/admin/channels/{id}/status", s.requireAdmin(s.handleChannelStatus))
+	// Its own endpoint rather than a field on the update, for the same reason
+	// status has one: archiving also disables, and the listing it is invoked
+	// from holds only a masked credential.
+	mux.HandleFunc("PUT /api/admin/channels/{id}/archive", s.requireAdmin(s.handleChannelArchive))
 	mux.HandleFunc("PUT /api/admin/channels/{id}/routing", s.requireAdmin(s.handleChannelRouting))
 	mux.HandleFunc("POST /api/admin/channels/{id}/user-agent/clear", s.requireAdmin(s.handleClearChannelUserAgent))
 	mux.HandleFunc("POST /api/admin/channels/{id}/test", s.requireAdmin(s.handleTestChannel))
