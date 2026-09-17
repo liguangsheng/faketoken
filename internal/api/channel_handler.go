@@ -41,14 +41,14 @@ type channelInput struct {
 	// SupportedProtocols narrows routing to the dialects the upstream answers.
 	// Empty means every dialect, so channels created before the field existed
 	// keep routing as they did before.
-	SupportedProtocols     []string          `json:"supported_protocols"`
-	ConvertMessagesToChat  bool              `json:"convert_messages_to_chat"`
-	ConvertResponsesToChat bool              `json:"convert_responses_to_chat"`
-	ReasoningEffortMapping map[string]string `json:"reasoning_effort_mapping"`
-	AllowAttachments       *bool             `json:"allow_attachments"`
-	LockUserAgent          bool              `json:"lock_user_agent"`
-	LockedUserAgents       map[string]string `json:"locked_user_agents"`
-	Note                   string            `json:"note"`
+	SupportedProtocols     []string            `json:"supported_protocols"`
+	ConvertMessagesToChat  bool                `json:"convert_messages_to_chat"`
+	ConvertResponsesToChat bool                `json:"convert_responses_to_chat"`
+	ReasoningEffortMapping model.EffortMapping `json:"reasoning_effort_mapping"`
+	AllowAttachments       *bool               `json:"allow_attachments"`
+	LockUserAgent          bool                `json:"lock_user_agent"`
+	LockedUserAgents       map[string]string   `json:"locked_user_agents"`
+	Note                   string              `json:"note"`
 	// Keepalive configuration. The window's own state (open, progress, when it
 	// last opened) is owned by the scheduler and the relay bookkeeping, and is
 	// never accepted from a request: saving the form must not reset a counter.
@@ -80,7 +80,7 @@ func (in channelInput) toModel(id int64) *model.Channel {
 		SupportedProtocols:     in.SupportedProtocols,
 		ConvertMessagesToChat:  in.ConvertMessagesToChat,
 		ConvertResponsesToChat: in.ConvertResponsesToChat,
-		ReasoningEffortMapping: cleanEffortMapping(in.ReasoningEffortMapping),
+		ReasoningEffortMapping: model.NormaliseEffortMapping(in.ReasoningEffortMapping),
 		AllowAttachments:       in.AllowAttachments == nil || *in.AllowAttachments,
 		LockUserAgent:          in.LockUserAgent,
 		LockedUserAgents:       cleanUserAgentLocks(in.LockedUserAgents),
@@ -115,36 +115,39 @@ func cleanUserAgentLocks(in map[string]string) map[string]string {
 // the half-filled rows the console's key/value editor leaves behind. The store
 // normalises again on write; doing it here as well is what makes the channel
 // returned by a create or update already show what was actually stored.
-func cleanEffortMapping(in map[string]string) map[string]string {
-	out := make(map[string]string, len(in))
-	for from, to := range in {
-		from = strings.ToLower(strings.TrimSpace(from))
-		to = strings.TrimSpace(to)
-		if from == "" || to == "" {
-			continue
-		}
-		out[from] = to
-	}
-	return out
-}
-
 // validEffortMapping refuses a rule that maps a level onto whitespace or onto a
 // value carrying JSON punctuation. The rename is spliced into the request body
 // as a JSON string, so a stray quote or brace is either meaningless to the
 // upstream or a rejected request, and either way the operator meant something
 // else.
 func validEffortMapping(in channelInput) (string, bool) {
-	for from, to := range in.ReasoningEffortMapping {
-		from = strings.TrimSpace(from)
-		to = strings.TrimSpace(to)
-		// One side filled and the other empty is a row still being typed; it is
-		// dropped rather than refused, so saving the form is never blocked by a
-		// leftover blank line.
-		if from == "" || to == "" {
+	for selector, rules := range in.ReasoningEffortMapping {
+		selector = strings.TrimSpace(selector)
+		if selector == "" {
 			continue
 		}
-		if strings.ContainsAny(to, "\"'{}[]\\\n\r\t") || strings.ContainsAny(from, "\"'{}[]\\\n\r\t") {
-			return "思考强度映射只能填写等级名称，不能包含引号、括号或换行", false
+		// The selector lands in the same JSON document, and a model name is not
+		// a place for quotes or braces either.
+		if strings.ContainsAny(selector, "\"'{}[]\\\n\r\t") {
+			return "模型名不能包含引号、括号或换行", false
+		}
+		// A "*" anywhere but the end matches nothing and would fail silently,
+		// which is worse than being told now.
+		if star := strings.Index(selector, "*"); star >= 0 && star != len(selector)-1 {
+			return "模型名里的 * 只能放在最后，表示前缀匹配，例如 gpt-5*", false
+		}
+		for from, to := range rules {
+			from = strings.TrimSpace(from)
+			to = strings.TrimSpace(to)
+			// One side filled and the other empty is a row still being typed; it
+			// is dropped rather than refused, so saving the form is never blocked
+			// by a leftover blank line.
+			if from == "" || to == "" {
+				continue
+			}
+			if strings.ContainsAny(to, "\"'{}[]\\\n\r\t") || strings.ContainsAny(from, "\"'{}[]\\\n\r\t") {
+				return "思考强度映射只能填写等级名称，不能包含引号、括号或换行", false
+			}
 		}
 	}
 	return "", true

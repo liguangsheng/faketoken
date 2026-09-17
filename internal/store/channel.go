@@ -42,22 +42,6 @@ func normaliseProtocols(in []string) []string {
 	return out
 }
 
-// normaliseEffortMapping lowercases both halves of every thinking-level rule
-// and drops the incomplete ones. Levels are matched case-insensitively, so
-// storing them folded is what lets a lookup be a plain map read on the hot path.
-func normaliseEffortMapping(in map[string]string) map[string]string {
-	out := make(map[string]string, len(in))
-	for from, to := range in {
-		from = strings.ToLower(strings.TrimSpace(from))
-		to = strings.TrimSpace(to)
-		if from == "" || to == "" {
-			continue
-		}
-		out[from] = to
-	}
-	return out
-}
-
 const channelColumns = `id, name, base_url, auth_style, api_key_enc, status, priority, weight,
 	channel_groups, models, model_mapping, headers, timeout_secs, proxy_url, price_ratio,
 	rpm_limit, used_quota, request_count, error_count, last_error, last_error_at, tested_at,
@@ -109,7 +93,7 @@ func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 		c.LockedUserAgents = map[string]string{}
 	}
 	if c.ReasoningEffortMapping == nil {
-		c.ReasoningEffortMapping = map[string]string{}
+		c.ReasoningEffortMapping = model.EffortMapping{}
 	}
 	return &c, nil
 }
@@ -140,7 +124,7 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, enc, c.Status, c.Priority, c.Weight,
 		c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL, c.PriceRatio,
 		c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel, normaliseProtocols(c.SupportedProtocols),
-		c.ConvertMessagesToChat, c.ConvertResponsesToChat, normaliseEffortMapping(c.ReasoningEffortMapping),
+		c.ConvertMessagesToChat, c.ConvertResponsesToChat, model.NormaliseEffortMapping(c.ReasoningEffortMapping),
 		c.AllowAttachments,
 		c.LockUserAgent, c.LockedUserAgents,
 		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget)
@@ -171,7 +155,7 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		c.Weight, c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL,
 		c.PriceRatio, c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel,
 		normaliseProtocols(c.SupportedProtocols), c.ConvertMessagesToChat, c.ConvertResponsesToChat,
-		normaliseEffortMapping(c.ReasoningEffortMapping),
+		model.NormaliseEffortMapping(c.ReasoningEffortMapping),
 		c.AllowAttachments, c.LockUserAgent, c.LockedUserAgents,
 		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget}
 	if c.APIKey != "" {

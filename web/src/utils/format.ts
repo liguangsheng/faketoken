@@ -144,6 +144,68 @@ export const stringifyHeaders = (headers: Record<string, string> | null | undefi
     .join('\n')
 
 /**
+ * Parses thinking-level rules, one per line:
+ *
+ *   *:max=xhigh
+ *   gpt-5.1:max=high
+ *   gpt-oss:120b:max=high
+ *
+ * Every line carries its own selector, so a line means the same thing wherever
+ * it sits. Grouping the rules under a heading instead would make each line
+ * depend on the one above it, and reordering or deleting a heading would
+ * silently reassign the rules under it.
+ *
+ * The selector ends at the last colon *before* the "=", not the first one:
+ * model names carry colons themselves (gpt-oss:120b), and splitting on the
+ * first would cut such a name in half. Level names never contain a colon, so
+ * everything after that point belongs to the rename.
+ *
+ * A line with no selector is read as "*", which is what the field meant before
+ * it had selectors — so an old configuration pasted straight back in works.
+ */
+export const parseEffortRules = (text: string): Record<string, Record<string, string>> => {
+  const rules: Record<string, Record<string, string>> = {}
+
+  text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line) => {
+      const equals = line.indexOf('=')
+      if (equals <= 0) return
+
+      const split = line.lastIndexOf(':', equals)
+      const selector = split >= 0 ? line.slice(0, split).trim() || '*' : '*'
+      const rest = split >= 0 ? line.slice(split + 1) : line
+
+      const index = rest.indexOf('=')
+      if (index <= 0) return
+      const from = rest.slice(0, index).trim()
+      const to = rest.slice(index + 1).trim()
+      if (!from || !to) return
+      rules[selector] = { ...(rules[selector] ?? {}), [from]: to }
+    })
+
+  return rules
+}
+
+/** Renders the rules back out, wildcard first so the general case reads first. */
+export const stringifyEffortRules = (
+  rules: Record<string, Record<string, string>> | null | undefined,
+) =>
+  Object.entries(rules ?? {})
+    .filter(([, levels]) => levels && Object.keys(levels).length > 0)
+    .sort(([a], [b]) => {
+      if (a === '*') return -1
+      if (b === '*') return 1
+      return a.localeCompare(b)
+    })
+    .flatMap(([selector, levels]) =>
+      Object.entries(levels).map(([from, to]) => `${selector}:${from}=${to}`),
+    )
+    .join('\n')
+
+/**
  * Parses "from=to" lines into the model mapping object.
  *
  * "=" wins over ":" here, the opposite of parseHeaders: a model name may itself

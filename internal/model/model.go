@@ -1,7 +1,12 @@
 // Package model holds the domain types shared by the store, API and relay layers.
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"sort"
+	"strings"
+	"time"
+)
 
 // Roles.
 const (
@@ -154,9 +159,14 @@ type Channel struct {
 	ConvertMessagesToChat  bool     `json:"convert_messages_to_chat"`
 	ConvertResponsesToChat bool     `json:"convert_responses_to_chat"`
 	// ReasoningEffortMapping renames the thinking level a caller asked for into
-	// the one this upstream accepts ("max" -> "xhigh"). Keys are lowercase; an
-	// empty map forwards whatever the client sent.
-	ReasoningEffortMapping map[string]string `json:"reasoning_effort_mapping"`
+	// the one this upstream accepts ("max" -> "xhigh"), per model.
+	//
+	// The outer key selects which models a table of renames applies to: "*" is
+	// every model the channel serves, "gpt-5*" every model whose name starts
+	// that way, and a bare name only itself. Inner keys are lowercase levels; an
+	// empty map forwards whatever the client sent. Use EffortMappingFor to
+	// resolve it for one model rather than reading it directly.
+	ReasoningEffortMapping EffortMapping `json:"reasoning_effort_mapping"`
 	// AllowAttachments controls whether multimodal conversation content such
 	// as images, documents, files and audio may be sent through this channel.
 	AllowAttachments bool `json:"allow_attachments"`
@@ -206,6 +216,131 @@ func (c *Channel) UpstreamModel(requested string) string {
 	}
 	return requested
 }
+
+// EffortMapping is a channel's thinking-level vocabulary, keyed by which models
+// each table of renames applies to.
+type EffortMapping map[string]map[string]string
+
+// UnmarshalJSON accepts both shapes: the per-model tables written now, and the
+// single flat table of renames written before there was a selector, which is
+// read as "*" — the same thing it meant when it was the only option.
+//
+// This is what lets a stored row that predates the migration, or a script still
+// posting the old shape, keep working instead of failing to decode.
+func (m *EffortMapping) UnmarshalJSON(data []byte) error {
+	var nested map[string]map[string]string
+	if err := json.Unmarshal(data, &nested); err == nil {
+		*m = nested
+		return nil
+	}
+
+	var flat map[string]string
+	if err := json.Unmarshal(data, &flat); err != nil {
+		// Report the nested shape's failure: that is the one being written now,
+		// so it is the error worth reading.
+		return json.Unmarshal(data, &nested)
+	}
+	if len(flat) == 0 {
+		*m = EffortMapping{}
+		return nil
+	}
+	*m = EffortMapping{"*": flat}
+	return nil
+}
+
+// NormaliseEffortMapping folds every rule into the form the lookup expects and
+// drops the incomplete ones.
+//
+// Levels are matched case-insensitively, so storing them lowercased is what
+// lets the lookup be a plain map read on the hot path. Selectors keep their
+// case: they are model names, and those are not case-insensitive.
+func NormaliseEffortMapping(in EffortMapping) EffortMapping {
+	out := make(EffortMapping, len(in))
+	for selector, rules := range in {
+		selector = strings.TrimSpace(selector)
+		if selector == "" {
+			continue
+		}
+		clean := make(map[string]string, len(rules))
+		for from, to := range rules {
+			from = strings.ToLower(strings.TrimSpace(from))
+			to = strings.TrimSpace(to)
+			if from == "" || to == "" {
+				continue
+			}
+			clean[from] = to
+		}
+		// A selector left with no rules is a group the operator emptied out;
+		// keeping it would park an invisible heading in the form forever.
+		if len(clean) == 0 {
+			continue
+		}
+		out[selector] = clean
+	}
+	return out
+}
+
+// EffortMappingFor resolves the thinking-level rules that apply to one model.
+//
+// Selectors are merged rather than replaced: a model's own table overrides the
+// same level coming from a wider selector, and levels it says nothing about
+// still come from there. That is what lets "*" carry the channel's usual
+// vocabulary while a single model spells one level differently, without having
+// to restate the rest.
+//
+// Specificity decides who wins: the exact name first, then the longest matching
+// prefix, then "*" (which is simply the empty prefix).
+//
+// The model name is the one the caller asked for, not the one a model mapping
+// rewrites it to — that is the name the operator sees everywhere else.
+func (c *Channel) EffortMappingFor(requested string) map[string]string {
+	if len(c.ReasoningEffortMapping) == 0 {
+		return nil
+	}
+
+	type match struct {
+		// rank is the prefix length, so a longer prefix wins; an exact name is
+		// ranked above every prefix.
+		rank  int
+		rules map[string]string
+	}
+	var matches []match
+	for selector, rules := range c.ReasoningEffortMapping {
+		if len(rules) == 0 {
+			continue
+		}
+		switch {
+		case selector == requested:
+			matches = append(matches, match{rank: exactEffortRank, rules: rules})
+		case strings.HasSuffix(selector, "*"):
+			prefix := strings.TrimSuffix(selector, "*")
+			if strings.HasPrefix(requested, prefix) {
+				matches = append(matches, match{rank: len(prefix), rules: rules})
+			}
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil
+	case 1:
+		// The ordinary case — one "*" table, or one model's own — and the relay
+		// consults this per request, so it must not copy a map to answer it.
+		return matches[0].rules
+	}
+
+	sort.SliceStable(matches, func(i, j int) bool { return matches[i].rank < matches[j].rank })
+	merged := make(map[string]string, len(matches[0].rules))
+	for _, m := range matches {
+		for from, to := range m.rules {
+			merged[from] = to
+		}
+	}
+	return merged
+}
+
+// exactEffortRank outranks every prefix; a model name is never this long.
+const exactEffortRank = 1 << 30
 
 // Candidate is the slim projection used by the routing hot path.
 type Candidate struct {

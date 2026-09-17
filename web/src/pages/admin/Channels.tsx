@@ -66,9 +66,11 @@ import {
   formatRelative,
   formatTime,
   parseList,
+  parseEffortRules,
   parseHeaders,
   parseMapping,
   STATUS,
+  stringifyEffortRules,
   stringifyHeaders,
   stringifyMapping,
 } from '../../utils/format'
@@ -492,7 +494,7 @@ export default function Channels() {
             models: channel.models,
             model_prefixes: (channel.model_prefixes ?? []).join('\n'),
             model_mapping: stringifyMapping(channel.model_mapping),
-            reasoning_effort_mapping: stringifyMapping(channel.reasoning_effort_mapping),
+            reasoning_effort_mapping: stringifyEffortRules(channel.reasoning_effort_mapping),
             headers: stringifyHeaders(channel.headers),
             keepalive_at: parseClock(channel.keepalive_at),
           }
@@ -588,7 +590,7 @@ export default function Channels() {
       models: values.models ?? [],
       model_prefixes: parseList(values.model_prefixes ?? ''),
       model_mapping: parseMapping(values.model_mapping ?? ''),
-      reasoning_effort_mapping: parseMapping(values.reasoning_effort_mapping ?? ''),
+      reasoning_effort_mapping: parseEffortRules(values.reasoning_effort_mapping ?? ''),
       headers: parseHeaders(values.headers ?? ''),
       timeout_secs: Number(values.timeout_secs ?? 0),
       proxy_url: values.proxy_url ?? '',
@@ -1698,7 +1700,7 @@ export default function Channels() {
                 </Card>
                 <Card size="small" title="思考强度映射" style={{ marginTop: 12 }}>
                   <pre className="code-block" style={{ maxHeight: 120 }}>
-                    {stringifyMapping(row.reasoning_effort_mapping) || '未配置'}
+                    {stringifyEffortRules(row.reasoning_effort_mapping) || '未配置'}
                   </pre>
                 </Card>
               </Col>
@@ -2210,9 +2212,13 @@ export default function Channels() {
                     <Form.Item
                       name="reasoning_effort_mapping"
                       label="思考强度映射"
-                      tooltip="每行 客户端强度=上游强度，例如 max=xhigh。转发时只改写请求里的思考强度字段（reasoning_effort / reasoning.effort / output_config.effort），没有对应规则的强度原样透传"
+                      tooltip="每行 模型:客户端强度=上游强度。* 对该渠道所有模型生效，gpt-5* 匹配前缀；越具体的越优先，它没写的强度仍然沉降到 *。只写 max=xhigh 而不写模型时等同 *。模型名自带冒号（如 gpt-oss:120b）不影响解析。按客户端请求的模型名匹配；只改写 reasoning_effort / reasoning.effort / output_config.effort，没有规则的强度原样透传"
                     >
-                      <Input.TextArea rows={2} placeholder={'max=xhigh\nminimal=low'} />
+                      <Input.TextArea
+                        className="mono"
+                        autoSize={{ minRows: 3, maxRows: 12 }}
+                        placeholder={'*:max=xhigh\ngpt-5.1:max=high'}
+                      />
                     </Form.Item>
 
                     <Card size="small" title="User-Agent 锁定配置" style={{ marginBottom: 12 }}>

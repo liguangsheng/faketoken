@@ -667,7 +667,10 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 	// the one that actually answered.
 	entry.ReasoningEffort = info.Effort
 	if info.IsJSON && len(outBody) > 0 {
-		rewritten, from, to := rewriteReasoningEffort(outBody, ch.ReasoningEffortMapping)
+		// Resolved against the model the caller asked for, not the one a model
+		// mapping rewrites it to: that is the name the operator configures
+		// against and sees in the channel's model list and in the log.
+		rewritten, from, to := rewriteReasoningEffort(outBody, ch.EffortMappingFor(info.Model))
 		if from != "" {
 			outBody = rewritten
 			// Keeps what the caller asked for and says what was sent instead: a
