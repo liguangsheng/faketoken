@@ -60,9 +60,6 @@ func run() error {
 	}
 	st := store.New(pool, cipher)
 
-	if err := billing.SeedDefaults(ctx, st); err != nil {
-		return err
-	}
 	if err := bootstrapAdmin(ctx, st, cfg); err != nil {
 		return err
 	}
@@ -88,6 +85,13 @@ func run() error {
 	pricer.StartRefresh(ctx, time.Minute)
 	slog.Info("billing ready", "unpriced_policy", pricer.Settings().UnpricedPolicy)
 
+	// An empty price table on a fresh install rejects every request until
+	// somebody fills it. The catalogue is fetched in the background rather
+	// than before Listen: a host without egress must still start, and the
+	// console can always import on demand.
+	importer := billing.NewImporter(st, cfg.ModelsDevURL)
+	go seedPrices(ctx, importer, pricer)
+
 	// Once a minute is enough for a schedule configured to the minute. The
 	// zone is logged because it is the one thing that can quietly make every
 	// keepalive window fire at the wrong hour: the container runs in UTC unless
@@ -97,7 +101,7 @@ func run() error {
 
 	jwt := auth.NewJWTManager(cfg.JWTSecret, cfg.SessionTTL)
 	rl := relay.New(st, pricer, cfg)
-	server := api.NewServer(cfg, st, jwt, pricer, rl)
+	server := api.NewServer(cfg, st, jwt, pricer, rl, importer)
 	// The relay caches the session-log body cap in memory, so a restart has to
 	// pick the stored value back up or it would silently revert to the default.
 	server.LoadRuntimeOptions(ctx)
@@ -126,6 +130,30 @@ func run() error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		return httpServer.Shutdown(shutdownCtx)
+	}
+}
+
+// seedPrices fills an empty price table from the catalogue. It runs in the
+// background and never fails the boot: a host without egress still serves,
+// and the console can run the same import by hand.
+func seedPrices(ctx context.Context, im *billing.Importer, pricer *billing.Pricer) {
+	if !im.Enabled() {
+		slog.Info("price catalogue import is disabled", "env", "MODELS_DEV_URL")
+		return
+	}
+
+	seeded, err := im.SeedIfEmpty(ctx)
+	if err != nil {
+		slog.Warn("could not seed the price table from the catalogue; "+
+			"import it from the console once the host has egress",
+			"url", im.URL(), "error", err)
+		return
+	}
+	if !seeded {
+		return
+	}
+	if err := pricer.Reload(ctx); err != nil {
+		slog.Warn("price reload after seeding failed", "error", err)
 	}
 }
 

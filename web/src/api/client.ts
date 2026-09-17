@@ -234,11 +234,34 @@ export interface UnpricedReport {
   policy: UnpricedPolicy
 }
 
-/** Metadata about the price table compiled into the server. */
+/** Where the price catalogue comes from, and when it was last imported. */
 export interface PriceCatalog {
-  total: number
   source: string
-  generated_at: string
+  /** Empty when MODELS_DEV_URL is unset: the deployment has no egress. */
+  url: string
+  synced_at: string | null
+}
+
+/** One existing price an import would rewrite. */
+export interface PriceChange {
+  model: string
+  old: ModelPrice
+  new: ModelPrice
+}
+
+/** What pulling the catalogue would do to the price table. */
+export interface PriceImportPlan {
+  /** True when nothing was written — the preview the console asks for first. */
+  dry_run: boolean
+  overwrite: boolean
+  /** How many models the catalogue offered. */
+  total: number
+  added: ModelPrice[]
+  changed: PriceChange[]
+  /** Existing rows left alone because the import was additive. */
+  kept: number
+  /** Existing rows already at the catalogue's rate. */
+  unchanged: number
 }
 
 /** One model in the plaza: reachable by the caller's group, with base prices. */
@@ -618,11 +641,15 @@ export const api = {
     upsertPrice: (body: ModelPrice) => request<ModelPrice>('POST', '/api/admin/prices', body),
     deletePrice: (model: string) =>
       request<unknown>('DELETE', `/api/admin/prices/${encodeURIComponent(model)}`),
-    /** Writes the built-in models.dev snapshot into the price table. */
-    importPrices: (overwrite: boolean) =>
-      request<{ imported: number; skipped: number } & PriceCatalog>(
+    /**
+     * Pulls the models.dev catalogue. With `dryRun` it only reports what the
+     * write would change, which is what the console previews before letting a
+     * price that bills real money move.
+     */
+    importPrices: (overwrite: boolean, dryRun = false) =>
+      request<PriceImportPlan>(
         'POST',
-        `/api/admin/prices/import${qs({ overwrite })}`,
+        `/api/admin/prices/import${qs({ overwrite, dry_run: dryRun })}`,
       ),
     /** Models a channel serves that nothing prices yet. */
     unpricedModels: () => request<UnpricedReport>('GET', '/api/admin/prices/unpriced'),

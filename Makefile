@@ -1,4 +1,4 @@
-.PHONY: help dev build web run test test-db test-db-down test-integration lint fmt prices db-up db-down up down logs backup backups search clean
+.PHONY: help dev build web run test test-db test-db-down test-integration lint fmt db-up db-down up down logs backup backups search clean
 
 BIN := bin/server
 
@@ -27,10 +27,6 @@ lint: ## Vet and format-check
 
 fmt: ## Format Go sources
 	gofmt -w ./cmd ./internal
-
-prices: ## Refresh the built-in price table from models.dev
-	go run ./cmd/genprices
-	go test ./internal/billing -count=1
 
 test-db: ## Start the throwaway Postgres instance and leave it up (for a tight test loop)
 	docker compose --profile test up -d --wait postgres-test

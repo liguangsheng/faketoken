@@ -1,0 +1,65 @@
+{
+  "openai": {
+    "id": "openai",
+    "name": "OpenAI",
+    "models": {
+      "gpt-4o": {
+        "id": "gpt-4o",
+        "name": "GPT-4o",
+        "cost": {"input": 2.5, "output": 10, "cache_read": 1.25}
+      },
+      "text-embedding-3-small": {
+        "id": "text-embedding-3-small",
+        "name": "text-embedding-3-small",
+        "cost": {"input": 0.02}
+      },
+      "gpt-image-1": {
+        "id": "gpt-image-1",
+        "name": "GPT Image 1"
+      },
+      "tts-1": {
+        "id": "tts-1",
+        "name": "TTS 1",
+        "cost": {"cache_read": 0}
+      },
+      "broken": {
+        "id": "broken",
+        "name": "Negative rate",
+        "cost": {"input": -1, "output": 2}
+      }
+    }
+  },
+  "zai": {
+    "id": "zai",
+    "name": "Z.AI",
+    "models": {
+      "glm-4.7": {
+        "id": "glm-4.7",
+        "name": "GLM-4.7",
+        "cost": {"input": 0.6, "output": 2.2, "cache_read": 0.11}
+      }
+    }
+  },
+  "zhipuai": {
+    "id": "zhipuai",
+    "name": "Zhipu AI",
+    "models": {
+      "glm-4.7": {
+        "id": "glm-4.7",
+        "name": "GLM-4.7",
+        "cost": {"input": 99, "output": 99}
+      }
+    }
+  },
+  "openrouter": {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "models": {
+      "openai/gpt-4o": {
+        "id": "openai/gpt-4o",
+        "name": "GPT-4o",
+        "cost": {"input": 2.5, "output": 10}
+      }
+    }
+  }
+}

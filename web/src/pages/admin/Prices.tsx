@@ -30,6 +30,8 @@ import {
   type BillingSettings,
   type ModelPrice,
   type PriceCatalog,
+  type PriceChange,
+  type PriceImportPlan,
   type UnpricedPolicy,
   type UnpricedReport,
 } from '../../api/client'
@@ -73,6 +75,91 @@ const COLUMN_GEOMETRY = {
   updatedAt: { width: 130, responsive: ['xl'] },
   actions: { width: 150 },
 } satisfies TableGeometry
+
+/**
+ * The dry-run diff: exactly the rows a write would add or rewrite. Prices bill
+ * every request, so the operator sees the movement before it is applied.
+ */
+function PricePlanPreview({ plan }: { plan: PriceImportPlan }) {
+  const delta = (before: number, after: number) => {
+    if (before === after) return <span className="text-muted">{money(before) ?? '免费'}</span>
+    return (
+      <Space size={4}>
+        <span className="text-muted" style={{ textDecoration: 'line-through' }}>
+          {money(before) ?? '免费'}
+        </span>
+        <span>{money(after) ?? '免费'}</span>
+      </Space>
+    )
+  }
+
+  return (
+    <div style={{ fontSize: 13 }}>
+      <p style={{ marginTop: 8 }}>
+        models.dev 共 {plan.total} 个模型：新增 {plan.added.length} 个
+        {plan.changed.length ? `，覆盖 ${plan.changed.length} 个改价` : ''}
+        {plan.kept ? `，保留 ${plan.kept} 个已有价格` : ''}。
+      </p>
+
+      {plan.changed.length > 0 && (
+        <Table
+          rowKey="model"
+          size="small"
+          pagination={false}
+          scroll={{ y: 240 }}
+          dataSource={plan.changed}
+          columns={[
+            {
+              title: '模型',
+              dataIndex: 'model',
+              width: 220,
+              render: (model: string) => (
+                <Typography.Text
+                  className="mono"
+                  ellipsis={{ tooltip: model }}
+                  style={{ maxWidth: 200 }}
+                >
+                  {model}
+                </Typography.Text>
+              ),
+            },
+            {
+              title: '输入 / 1M',
+              align: 'right',
+              render: (_: unknown, row: PriceChange) =>
+                delta(row.old.input_price, row.new.input_price),
+            },
+            {
+              title: '输出 / 1M',
+              align: 'right',
+              render: (_: unknown, row: PriceChange) =>
+                delta(row.old.output_price, row.new.output_price),
+            },
+            {
+              title: '缓存 / 1M',
+              align: 'right',
+              render: (_: unknown, row: PriceChange) =>
+                delta(row.old.cached_price, row.new.cached_price),
+            },
+          ]}
+        />
+      )}
+
+      {plan.added.length > 0 && (
+        <div className="tag-list" style={{ marginTop: 10 }}>
+          {plan.added.slice(0, MAX_MISSING_TAGS).map((row) => (
+            <Tag key={row.model} className="mono">
+              {row.model}
+            </Tag>
+          ))}
+          {plan.added.length > MAX_MISSING_TAGS && (
+            <Tag>…还有 {plan.added.length - MAX_MISSING_TAGS} 个</Tag>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function Prices() {
   const { message, modal } = App.useApp()
@@ -182,52 +269,57 @@ export default function Prices() {
     }
   }
 
-  // The built-in table is a models.dev snapshot compiled into the binary, so
-  // importing needs no network access and is safe to repeat.
-  const importCatalog = (overwrite: boolean) => {
-    modal.confirm({
-      title: overwrite ? '用内置价格表覆盖同名模型？' : '导入内置价格表？',
-      width: 480,
-      content: (
-        <div style={{ fontSize: 13 }}>
-          <p style={{ marginTop: 8 }}>
-            内置价格表来自 <strong>{catalog?.source ?? 'models.dev'}</strong>
-            {catalog ? `（${catalog.generated_at} 快照，${catalog.total} 个模型）` : ''}。
-          </p>
-          <p style={{ marginBottom: 0 }}>
-            {overwrite
-              ? '同名模型的价格会被快照覆盖，你手工调整过的单价将丢失；表里已有但快照没有的模型不受影响。'
-              : '只会写入当前价格表里没有的模型，已有的价格一律保留。'}
-          </p>
-        </div>
-      ),
-      okText: '开始导入',
-      okButtonProps: { danger: overwrite },
-      onOk: async () => {
-        setImporting(true)
-        try {
-          const result = await api.admin.importPrices(overwrite)
-          message.success(
-            overwrite
-              ? `导入完成：写入 / 覆盖 ${result.imported} 个模型`
-              : `导入完成：写入 ${result.imported} 个模型${
-                  result.skipped ? `，跳过 ${result.skipped} 个已有条目` : ''
-                }`,
-          )
-          await load()
-        } catch (error) {
-          message.error(error instanceof Error ? error.message : '导入失败')
-        } finally {
-          setImporting(false)
-        }
-      },
-    })
+  const applyImport = async (overwrite: boolean) => {
+    try {
+      const written = await api.admin.importPrices(overwrite)
+      message.success(
+        `已写入 ${written.added.length} 个模型` +
+          (written.changed.length ? `，覆盖 ${written.changed.length} 个` : ''),
+      )
+      await load()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '写入失败')
+    }
+  }
+
+  // The pull happens on the server, so this is only the confirmation step. It
+  // asks for a dry run first: a price is what every request is billed on, and
+  // the diff is what makes the write reviewable.
+  const importCatalog = async (overwrite: boolean) => {
+    setImporting(true)
+    try {
+      const plan = await api.admin.importPrices(overwrite, true)
+      if (!plan.added.length && !plan.changed.length) {
+        message.info(
+          plan.kept > 0
+            ? `没有新增模型，${plan.kept} 个已有价格保留`
+            : '价格表已和 models.dev 一致',
+        )
+        return
+      }
+      modal.confirm({
+        title: overwrite ? '用 models.dev 覆盖同名模型的价格？' : '从 models.dev 补充价格表？',
+        width: 720,
+        content: <PricePlanPreview plan={plan} />,
+        okText: overwrite ? '确认覆盖' : '确认写入',
+        okButtonProps: { danger: overwrite },
+        onOk: () => applyImport(overwrite),
+      })
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '拉取 models.dev 失败')
+    } finally {
+      setImporting(false)
+    }
   }
 
   const filtered = useMemo(
     () => rows.filter((row) => row.model.toLowerCase().includes(keyword.trim().toLowerCase())),
     [rows, keyword],
   )
+
+  // An empty URL means MODELS_DEV_URL is unset and the server refuses the
+  // import; disabling the button beats a 503 the operator cannot explain.
+  const catalogDisabled = !catalog?.url
 
   const current = settings?.unpriced_policy ?? 'reject'
   const missing = unpriced?.data ?? []
@@ -244,7 +336,12 @@ export default function Prices() {
             {catalog && (
               <>
                 {' '}
-                内置价格表来自 {catalog.source}（{catalog.generated_at} 快照 · {catalog.total} 个模型）。
+                价格表来自 {catalog.source}
+                {catalog.synced_at
+                  ? `（最近同步 ${formatTime(catalog.synced_at)}）`
+                  : '（尚未同步过）'}
+                。
+                {!catalog.url && '未配置 MODELS_DEV_URL，拉取功能已禁用。'}
               </>
             )}
           </>
@@ -273,13 +370,14 @@ export default function Prices() {
             <Dropdown.Button
               icon={undefined}
               loading={importing}
-              onClick={() => importCatalog(false)}
+              disabled={catalogDisabled}
+              onClick={() => void importCatalog(false)}
               menu={{
                 items: [{ key: 'overwrite', label: '覆盖同名模型的价格', danger: true }],
-                onClick: ({ key }) => importCatalog(key === 'overwrite'),
+                onClick: ({ key }) => void importCatalog(key === 'overwrite'),
               }}
             >
-              <CloudDownloadOutlined /> 导入内置价格
+              <CloudDownloadOutlined /> 拉取最新价格
             </Dropdown.Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
               新增价格
@@ -328,7 +426,7 @@ export default function Prices() {
             <>
               <div style={{ marginBottom: 8 }}>
                 {current === 'reject'
-                  ? '这些模型当前会被拒绝，用户无法调用。点标签可以直接补价格，或者一键导入内置价格表。'
+                  ? '这些模型当前会被拒绝，用户无法调用。点标签可以直接补价格，或者一键从 models.dev 拉取价格。'
                   : current === 'free'
                     ? '这些模型正在被免费调用，成本由你承担。请立即补齐价格。'
                     : '这些模型正在按兜底价计费，价格可能与真实成本有偏差。'}
@@ -376,9 +474,10 @@ export default function Prices() {
                 type="primary"
                 icon={<CloudDownloadOutlined />}
                 loading={importing}
-                onClick={() => importCatalog(false)}
+                disabled={catalogDisabled}
+                onClick={() => void importCatalog(false)}
               >
-                导入内置价格表补齐
+                拉取价格表补齐
               </Button>
             </>
           }
@@ -398,7 +497,7 @@ export default function Prices() {
               description={
                 keyword
                   ? '换个关键词试试。'
-                  : '可以直接导入内置价格表，再按自己的成本微调。'
+                  : '可以从 models.dev 拉取价格表，再按自己的成本微调。'
               }
               action={
                 keyword ? (
@@ -407,9 +506,10 @@ export default function Prices() {
                   <Button
                     type="primary"
                     icon={<CloudDownloadOutlined />}
-                    onClick={() => importCatalog(false)}
+                    disabled={catalogDisabled}
+                    onClick={() => void importCatalog(false)}
                   >
-                    导入内置价格表
+                    拉取价格表
                   </Button>
                 )
               }

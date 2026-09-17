@@ -87,6 +87,7 @@ services:
       BILLING_FALLBACK_OUTPUT_PRICE: ${BILLING_FALLBACK_OUTPUT_PRICE:-0}
       BILLING_FALLBACK_CACHED_PRICE: ${BILLING_FALLBACK_CACHED_PRICE:-0}
       BILLING_FALLBACK_PER_REQUEST_PRICE: ${BILLING_FALLBACK_PER_REQUEST_PRICE:-0}
+      MODELS_DEV_URL: ${MODELS_DEV_URL:-https://models.dev/api.json}
       WEB_DIR: /app/web
       # The daily keepalive windows are read in this zone, not UTC. Without it
       # the process runs in UTC and a channel set to 03:00 opens at 11:00 for an

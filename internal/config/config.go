@@ -45,6 +45,10 @@ type Config struct {
 	FallbackCached     float64 // USD per 1M cached input tokens
 	FallbackPerRequest float64 // USD per request, flat
 
+	// ModelsDevURL is the price catalogue the console pulls from. Empty
+	// disables the import, which is what a deployment with no egress wants.
+	ModelsDevURL string
+
 	// Frontend
 	WebDir string
 
@@ -59,6 +63,11 @@ type Config struct {
 // the binary so a deployment that never sets ARA_CLAIM keeps verifying, and
 // config_test.go pins the value so it cannot drift unnoticed.
 const defaultARAClaim = "ara-site-verification=khmVMA2Dg0VlH-w9x5cgltAJFkkZpGkQ"
+
+// defaultModelsDevURL is the public price catalogue. The endpoint belongs to
+// the application layer, not to the driver that reads it, so a mirror is a
+// matter of pointing this variable elsewhere.
+const defaultModelsDevURL = "https://models.dev/api.json"
 
 func Load() (*Config, error) {
 	c := &Config{
@@ -84,6 +93,7 @@ func Load() (*Config, error) {
 		FallbackOutput:     envFloat("BILLING_FALLBACK_OUTPUT_PRICE", 0),
 		FallbackCached:     envFloat("BILLING_FALLBACK_CACHED_PRICE", 0),
 		FallbackPerRequest: envFloat("BILLING_FALLBACK_PER_REQUEST_PRICE", 0),
+		ModelsDevURL:       env("MODELS_DEV_URL", defaultModelsDevURL),
 	}
 
 	secret := env("JWT_SECRET", "")

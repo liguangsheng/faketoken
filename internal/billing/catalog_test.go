@@ -1,86 +1,115 @@
 package billing
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/faketoken/faketoken/internal/model"
 )
 
-// The catalogue is generated, so these tests guard the generator's output
-// rather than hand-written data: a bad regeneration should fail the build, not
-// quietly ship a table that bills nothing.
+func existingPrices(prices ...model.ModelPrice) []*model.ModelPrice {
+	out := make([]*model.ModelPrice, len(prices))
+	for i := range prices {
+		out[i] = &prices[i]
+	}
+	return out
+}
 
-func TestCatalogIsWellFormed(t *testing.T) {
-	entries := Catalog()
-	if len(entries) < 100 {
-		t.Fatalf("catalogue holds %d models, expected a substantial table; "+
-			"regenerate with `make prices`", len(entries))
+func TestPlanImportAddsOnlyMissingModels(t *testing.T) {
+	existing := existingPrices(
+		model.ModelPrice{Model: "gpt-4o", InputPrice: 2.5, OutputPrice: 10, CachedPrice: 1.25},
+		model.ModelPrice{Model: "hand-rolled", InputPrice: 7, OutputPrice: 7},
+	)
+	incoming := []model.ModelPrice{
+		{Model: "gpt-4o", InputPrice: 99, OutputPrice: 99}, // re-priced by the feed
+		{Model: "gpt-5", InputPrice: 1.25, OutputPrice: 10},
 	}
 
-	seen := make(map[string]bool, len(entries))
-	for _, price := range entries {
-		name := strings.TrimSpace(price.Model)
-		if name == "" {
-			t.Error("catalogue contains an entry with no model name")
-			continue
-		}
-		// Lookup lower-cases its key, so two entries differing only in case
-		// would shadow each other at runtime.
-		key := strings.ToLower(name)
-		if seen[key] {
-			t.Errorf("duplicate catalogue entry for %q", name)
-		}
-		seen[key] = true
+	plan := planImport(existing, incoming, false)
 
-		if price.InputPrice < 0 || price.OutputPrice < 0 || price.CachedPrice < 0 {
-			t.Errorf("%s has a negative price: %+v", name, price)
-		}
-		if price.InputPrice > 1000 || price.OutputPrice > 1000 {
-			t.Errorf("%s looks mis-scaled (prices are USD per 1M tokens): %+v", name, price)
-		}
+	if len(plan.Added) != 1 || plan.Added[0].Model != "gpt-5" {
+		t.Fatalf("added = %+v, want just gpt-5", plan.Added)
+	}
+	if len(plan.Changed) != 0 {
+		t.Errorf("changed = %+v, want none without overwrite", plan.Changed)
+	}
+	if plan.Kept != 1 {
+		t.Errorf("kept = %d, want 1", plan.Kept)
+	}
+	if plan.Total != 2 {
+		t.Errorf("total = %d, want 2", plan.Total)
 	}
 }
 
-func TestCatalogCoversTheMajorFamilies(t *testing.T) {
-	prices := Catalog()
-	pricer := testPricer(DefaultSettings(), prices...)
+func TestPlanImportOverwriteReportsChanges(t *testing.T) {
+	existing := existingPrices(model.ModelPrice{
+		Model: "deepseek-v4-flash", InputPrice: 0.14, OutputPrice: 0.28,
+		CachedPrice: 0.0028, PerRequestPrice: 0.05,
+	})
+	incoming := []model.ModelPrice{
+		{Model: "deepseek-v4-flash", InputPrice: 0.15, OutputPrice: 0.6, CachedPrice: 0.003},
+	}
 
-	// Names a client would realistically send, including unlisted dated
-	// snapshots that have to fall back to their family prefix.
-	for _, name := range []string{
-		"gpt-4o",
-		"gpt-4o-mini",
-		"gpt-5",
-		"claude-sonnet-4-5",
-		"claude-sonnet-4-5-20991231",
-		"claude-opus-4-5",
-		"gemini-2.5-pro",
-		"gemini-2.5-pro-preview-99-99",
-		"gemini-2.5-flash",
-		"deepseek-chat",
-		"grok-4.6",
-		"qwen-plus",
-		"kimi-k2.5",
-		"glm-4.6",
-	} {
-		price, status := pricer.Resolve(name)
-		if status != PriceExact {
-			t.Errorf("%s is unpriced by the built-in catalogue (status %s)", name, status)
-			continue
-		}
-		if price.InputPrice == 0 && price.OutputPrice == 0 {
-			t.Errorf("%s resolved to a free price: %+v", name, price)
-		}
+	plan := planImport(existing, incoming, true)
+
+	if len(plan.Changed) != 1 {
+		t.Fatalf("changed = %+v, want one row", plan.Changed)
+	}
+	change := plan.Changed[0]
+	if change.Old.InputPrice != 0.14 || change.New.InputPrice != 0.15 {
+		t.Errorf("change = %+v, want the old and new rates side by side", change)
+	}
+	// The catalogue has no notion of per-request pricing, so overwriting must
+	// not wipe a rate the operator set by hand.
+	if change.New.PerRequestPrice != 0.05 {
+		t.Errorf("per-request price = %v, want the operator's 0.05 kept",
+			change.New.PerRequestPrice)
 	}
 }
 
-func TestCatalogMetadataIsStamped(t *testing.T) {
-	if CatalogSource == "" {
-		t.Error("CatalogSource is empty")
+func TestPlanImportOverwriteSkipsIdenticalRates(t *testing.T) {
+	existing := existingPrices(model.ModelPrice{
+		Model: "gpt-4o", InputPrice: 2.5, OutputPrice: 10, CachedPrice: 1.25,
+	})
+	incoming := []model.ModelPrice{
+		{Model: "gpt-4o", InputPrice: 2.5, OutputPrice: 10, CachedPrice: 1.25},
 	}
-	if len(CatalogGeneratedAt) != len("2006-01-02") {
-		t.Errorf("CatalogGeneratedAt = %q, want a YYYY-MM-DD stamp", CatalogGeneratedAt)
+
+	plan := planImport(existing, incoming, true)
+
+	if plan.Unchanged != 1 || len(plan.Changed) != 0 || len(plan.Added) != 0 {
+		t.Fatalf("plan = %+v, want one unchanged row and no writes", plan)
 	}
-	if CatalogSize() != len(Catalog()) {
-		t.Errorf("CatalogSize() = %d, len(Catalog()) = %d", CatalogSize(), len(Catalog()))
+}
+
+func TestPlanImportMatchesRowsCaseInsensitively(t *testing.T) {
+	// Billing lower-cases the model name, so GPT-4o and gpt-4o are one model;
+	// importing must update the row rather than add a twin.
+	existing := existingPrices(model.ModelPrice{Model: "GPT-4o", InputPrice: 1, OutputPrice: 1})
+	incoming := []model.ModelPrice{{Model: "gpt-4o", InputPrice: 2.5, OutputPrice: 10}}
+
+	plan := planImport(existing, incoming, true)
+
+	if len(plan.Added) != 0 {
+		t.Fatalf("added = %+v, want the case-variant treated as existing", plan.Added)
+	}
+	if len(plan.Changed) != 1 || plan.Changed[0].New.Model != "GPT-4o" {
+		t.Fatalf("changed = %+v, want the stored spelling preserved", plan.Changed)
+	}
+}
+
+func TestPlanImportLeavesUnknownExistingModelsAlone(t *testing.T) {
+	// models.dev drops model ids that clients still send, and an existing
+	// price is the only thing keeping such a request billable. Nothing in an
+	// import may remove it.
+	existing := existingPrices(
+		model.ModelPrice{Model: "deepseek-chat", InputPrice: 0.14, OutputPrice: 0.28},
+		model.ModelPrice{Model: "kimi-k2.5", InputPrice: 0.6, OutputPrice: 2.5},
+	)
+	incoming := []model.ModelPrice{{Model: "gpt-5", InputPrice: 1.25, OutputPrice: 10}}
+
+	plan := planImport(existing, incoming, true)
+
+	if len(plan.Added) != 1 || len(plan.Changed) != 0 {
+		t.Fatalf("plan = %+v, want a single addition", plan)
 	}
 }

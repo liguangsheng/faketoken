@@ -16,18 +16,19 @@ import (
 )
 
 type Server struct {
-	cfg    *config.Config
-	store  *store.Store
-	jwt    *auth.JWTManager
-	pricer *billing.Pricer
-	relay  *relay.Relay
-	stream *logstream.Broker
+	cfg      *config.Config
+	store    *store.Store
+	jwt      *auth.JWTManager
+	pricer   *billing.Pricer
+	relay    *relay.Relay
+	stream   *logstream.Broker
+	importer *billing.Importer
 }
 
 func NewServer(cfg *config.Config, st *store.Store, jwt *auth.JWTManager,
-	pricer *billing.Pricer, rl *relay.Relay) *Server {
+	pricer *billing.Pricer, rl *relay.Relay, importer *billing.Importer) *Server {
 	s := &Server{cfg: cfg, store: st, jwt: jwt, pricer: pricer, relay: rl,
-		stream: logstream.New()}
+		stream: logstream.New(), importer: importer}
 	// The relay produces the events this server hands out.
 	rl.SetLogStream(s.stream)
 	return s

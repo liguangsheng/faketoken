@@ -49,6 +49,111 @@ type harness struct {
 	store  *store.Store
 	pool   *pgxpool.Pool
 	admin  string // session token
+	// feed serves the catalogue the importer pulls. Nil means MODELS_DEV_URL
+	// is unset, which is how a deployment with no egress runs.
+	feed *fakeFeed
+}
+
+// feedModel is one catalogue entry, in USD per 1M tokens.
+type feedModel struct {
+	input  float64
+	output float64
+	cached float64
+}
+
+// testCatalogue is the price table every harness starts from. The rates are
+// fixed rather than pulled, so an assertion like "7500 micro-USD" cannot move
+// when models.dev re-prices a model. deepseek-v3 is deliberately absent: the
+// unpriced-model tests need a model nobody has priced.
+func testCatalogue() map[string]feedModel {
+	return map[string]feedModel{
+		"gpt-4o":       {input: 2.5, output: 10, cached: 1.25},
+		"gpt-4o-mini":  {input: 0.15, output: 0.6, cached: 0.075},
+		"gpt-4.1":      {input: 2, output: 8, cached: 0.5},
+		"gpt-4.1-mini": {input: 0.4, output: 1.6, cached: 0.1},
+		"gpt-5":        {input: 1.25, output: 10, cached: 0.125},
+		// Gemini names its model in the URL path rather than the body, so these
+		// are easy to miss when grepping the suite for relayed model names.
+		"gemini-2.5-flash":       {input: 0.3, output: 2.5, cached: 0.03},
+		"gemini-2.5-pro":         {input: 1.25, output: 10, cached: 0.125},
+		"claude-sonnet-4-5":      {input: 3, output: 15, cached: 0.3},
+		"text-embedding-3-small": {input: 0.02},
+	}
+}
+
+// repriced copies the catalogue with one input rate moved, which is how a
+// models.dev price change reaches the importer.
+func repriced(name string, input float64) map[string]feedModel {
+	out := testCatalogue()
+	entry := out[name]
+	entry.input = input
+	out[name] = entry
+	return out
+}
+
+// fakeFeed serves a models.dev-shaped payload. The payload is swappable
+// because the importer fetches on every call, so rewriting it is how a test
+// moves a price mid-run.
+type fakeFeed struct {
+	server *httptest.Server
+	mu     sync.Mutex
+	body   string
+}
+
+func newFakeFeed(t *testing.T, body string) *fakeFeed {
+	t.Helper()
+	f := &fakeFeed{body: body}
+	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, f.body)
+	}))
+	t.Cleanup(f.server.Close)
+	return f
+}
+
+func (f *fakeFeed) set(body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.body = body
+}
+
+// url is the feed's address, or "" when there is no feed.
+func (f *fakeFeed) url() string {
+	if f == nil {
+		return ""
+	}
+	return f.server.URL
+}
+
+// feedBody renders a catalogue payload holding every model under one provider.
+func feedBody(t *testing.T, models map[string]feedModel) string {
+	t.Helper()
+	type cost struct {
+		Input     float64 `json:"input"`
+		Output    float64 `json:"output"`
+		CacheRead float64 `json:"cache_read"`
+	}
+	type entry struct {
+		ID   string `json:"id"`
+		Cost cost   `json:"cost"`
+	}
+	type provider struct {
+		Models map[string]entry `json:"models"`
+	}
+
+	entries := make(map[string]entry, len(models))
+	for id, rates := range models {
+		entries[id] = entry{ID: id, Cost: cost{
+			Input: rates.input, Output: rates.output, CacheRead: rates.cached,
+		}}
+	}
+	raw, err := json.Marshal(map[string]provider{"openai": {Models: entries}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 // testClusterName is set by the postgres-test service in docker-compose.yml.
@@ -88,6 +193,18 @@ func requireTestInstance(ctx context.Context, pool *pgxpool.Pool) error {
 }
 
 func newHarness(t *testing.T) *harness {
+	t.Helper()
+	return newHarnessWithCatalogue(t, newFakeFeed(t, feedBody(t, testCatalogue())))
+}
+
+// newHarnessWithoutCatalogue leaves MODELS_DEV_URL unset, which is how a
+// deployment with no egress runs.
+func newHarnessWithoutCatalogue(t *testing.T) *harness {
+	t.Helper()
+	return newHarnessWithCatalogue(t, nil)
+}
+
+func newHarnessWithCatalogue(t *testing.T, feed *fakeFeed) *harness {
 	t.Helper()
 
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -134,6 +251,7 @@ func newHarness(t *testing.T) *harness {
 		// behave in an actual deployment.
 		WebDir:         webDirForTest(t),
 		UnpricedPolicy: string(billing.PolicyReject),
+		ModelsDevURL:   feed.url(),
 		// Deliberately not the production claim: serving that here would pass
 		// even if the handler ignored configuration and echoed a constant.
 		ARAClaim: testARAClaim,
@@ -145,9 +263,20 @@ func newHarness(t *testing.T) *harness {
 	}
 	st := store.New(pool, cipher)
 
-	if err := billing.SeedDefaults(ctx, st); err != nil {
-		t.Fatal(err)
+	// Seeded directly rather than through the importer: these rates are a
+	// fixture, and the import path has its own tests below.
+	for name, rates := range testCatalogue() {
+		price := model.ModelPrice{
+			Model:       name,
+			InputPrice:  rates.input,
+			OutputPrice: rates.output,
+			CachedPrice: rates.cached,
+		}
+		if err := st.UpsertPrice(ctx, &price); err != nil {
+			t.Fatal(err)
+		}
 	}
+
 	pricer := billing.NewPricer(st, billing.Settings{
 		UnpricedPolicy: billing.UnpricedPolicy(cfg.UnpricedPolicy),
 	})
@@ -164,10 +293,12 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	jwt := auth.NewJWTManager(cfg.JWTSecret, cfg.SessionTTL)
-	srv := httptest.NewServer(NewServer(cfg, st, jwt, pricer, relay.New(st, pricer, cfg)).Handler())
+	importer := billing.NewImporter(st, cfg.ModelsDevURL)
+	srv := httptest.NewServer(NewServer(cfg, st, jwt, pricer,
+		relay.New(st, pricer, cfg), importer).Handler())
 	t.Cleanup(srv.Close)
 
-	h := &harness{t: t, server: srv, store: st, pool: pool}
+	h := &harness{t: t, server: srv, store: st, pool: pool, feed: feed}
 	h.admin = h.login("admin", "admin-password")
 	return h
 }
@@ -2676,6 +2807,204 @@ func TestUnpricedModelsAudit(t *testing.T) {
 	h.do(http.MethodGet, "/api/admin/prices/unpriced", h.admin, nil, &report)
 	if report.Total != 0 {
 		t.Fatalf("audit still reports %v after pricing the model", report.Data)
+	}
+}
+
+// ------------------------------------------------------- price catalogue
+
+// priceImportPlan mirrors the console's dry-run payload.
+type priceImportPlan struct {
+	DryRun    bool               `json:"dry_run"`
+	Overwrite bool               `json:"overwrite"`
+	Total     int                `json:"total"`
+	Added     []model.ModelPrice `json:"added"`
+	Changed   []struct {
+		Model string           `json:"model"`
+		Old   model.ModelPrice `json:"old"`
+		New   model.ModelPrice `json:"new"`
+	} `json:"changed"`
+	Kept      int `json:"kept"`
+	Unchanged int `json:"unchanged"`
+}
+
+type priceListing struct {
+	Data    []model.ModelPrice `json:"data"`
+	Catalog struct {
+		Source   string  `json:"source"`
+		URL      string  `json:"url"`
+		SyncedAt *string `json:"synced_at"`
+	} `json:"catalog"`
+}
+
+// price reads one row back out of the table, through the console's own API.
+func (h *harness) price(t *testing.T, name string) model.ModelPrice {
+	t.Helper()
+	var listing priceListing
+	resp := h.do(http.MethodGet, "/api/admin/prices", h.admin, nil, &listing)
+	resp.Body.Close()
+	for _, price := range listing.Data {
+		if price.Model == name {
+			return price
+		}
+	}
+	t.Fatalf("no price configured for %s", name)
+	return model.ModelPrice{}
+}
+
+func TestPriceListReportsWhereTheCatalogueComesFrom(t *testing.T) {
+	h := newHarness(t)
+
+	var before priceListing
+	h.do(http.MethodGet, "/api/admin/prices", h.admin, nil, &before).Body.Close()
+	if before.Catalog.URL != h.feed.url() {
+		t.Errorf("catalog url = %q, want the configured endpoint", before.Catalog.URL)
+	}
+	if before.Catalog.Source != billing.CatalogSource {
+		t.Errorf("catalog source = %q, want %q", before.Catalog.Source, billing.CatalogSource)
+	}
+	// Null, not a zero timestamp: the console has to tell "never imported"
+	// from "imported at the epoch".
+	if before.Catalog.SyncedAt != nil {
+		t.Errorf("synced_at = %q before any import, want null", *before.Catalog.SyncedAt)
+	}
+
+	h.do(http.MethodPost, "/api/admin/prices/import", h.admin, nil, nil).Body.Close()
+
+	var after priceListing
+	h.do(http.MethodGet, "/api/admin/prices", h.admin, nil, &after).Body.Close()
+	if after.Catalog.SyncedAt == nil {
+		t.Fatal("synced_at is still null after a successful import")
+	}
+}
+
+func TestPriceImportPreviewWritesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.feed.set(feedBody(t, repriced("gpt-4o", 9)))
+
+	var preview priceImportPlan
+	resp := h.do(http.MethodPost, "/api/admin/prices/import?overwrite=true&dry_run=true",
+		h.admin, nil, &preview)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("preview: HTTP %d", resp.StatusCode)
+	}
+	if !preview.DryRun {
+		t.Error("the response did not mark itself as a dry run")
+	}
+	if len(preview.Changed) != 1 || preview.Changed[0].Model != "gpt-4o" {
+		t.Fatalf("changed = %+v, want the one re-priced model", preview.Changed)
+	}
+	if got := preview.Changed[0].New.InputPrice; got != 9 {
+		t.Errorf("previewed rate = %v, want 9", got)
+	}
+	// The point of a dry run: the table still bills what it billed before.
+	if got := h.price(t, "gpt-4o").InputPrice; got != 2.5 {
+		t.Fatalf("gpt-4o input = %v after a dry run, want the 2.5 left untouched", got)
+	}
+}
+
+func TestPriceImportIsAdditiveByDefault(t *testing.T) {
+	h := newHarness(t)
+	grown := repriced("gpt-4o", 9)
+	grown["gpt-5.2"] = feedModel{input: 1.75, output: 14, cached: 0.175}
+	h.feed.set(feedBody(t, grown))
+
+	var plan priceImportPlan
+	resp := h.do(http.MethodPost, "/api/admin/prices/import", h.admin, nil, &plan)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("import: HTTP %d", resp.StatusCode)
+	}
+
+	if len(plan.Added) != 1 || plan.Added[0].Model != "gpt-5.2" {
+		t.Fatalf("added = %+v, want just gpt-5.2", plan.Added)
+	}
+	if len(plan.Changed) != 0 {
+		t.Errorf("changed = %+v, want none: the operator's own rate outranks the catalogue",
+			plan.Changed)
+	}
+	if want := len(testCatalogue()); plan.Kept != want {
+		t.Errorf("kept = %d, want %d", plan.Kept, want)
+	}
+
+	// The re-priced model keeps the operator's rate; only the new one lands.
+	if got := h.price(t, "gpt-4o").InputPrice; got != 2.5 {
+		t.Errorf("gpt-4o input = %v, want the operator's 2.5 kept", got)
+	}
+	if got := h.price(t, "gpt-5.2").InputPrice; got != 1.75 {
+		t.Errorf("gpt-5.2 input = %v, want the imported 1.75", got)
+	}
+}
+
+func TestPriceImportOverwriteRewritesRates(t *testing.T) {
+	h := newHarness(t)
+	h.feed.set(feedBody(t, repriced("gpt-4o", 9)))
+
+	// A flat fee the catalogue knows nothing about: overwriting the token
+	// rates must not quietly drop it.
+	if err := h.store.UpsertPrice(context.Background(), &model.ModelPrice{
+		Model: "gpt-4o", InputPrice: 2.5, OutputPrice: 10, CachedPrice: 1.25,
+		PerRequestPrice: 0.05,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var plan priceImportPlan
+	resp := h.do(http.MethodPost, "/api/admin/prices/import?overwrite=true", h.admin, nil, &plan)
+	resp.Body.Close()
+	if len(plan.Changed) != 1 {
+		t.Fatalf("changed = %+v, want the one re-priced model", plan.Changed)
+	}
+	// The other six rows already match the catalogue, so they are not rewritten.
+	if plan.Unchanged != len(testCatalogue())-1 {
+		t.Errorf("unchanged = %d, want %d", plan.Unchanged, len(testCatalogue())-1)
+	}
+
+	price := h.price(t, "gpt-4o")
+	if price.InputPrice != 9 {
+		t.Errorf("input = %v, want the catalogue's 9", price.InputPrice)
+	}
+	if price.PerRequestPrice != 0.05 {
+		t.Errorf("per-request = %v, want the operator's 0.05 kept", price.PerRequestPrice)
+	}
+}
+
+// A price that lands in Postgres but not in memory would keep billing the old
+// rate until the next refresh, so the import has to reach the pricer too.
+func TestImportedPricesReachBilling(t *testing.T) {
+	h := newHarness(t)
+	h.feed.set(feedBody(t, repriced("gpt-4o", 1)))
+
+	resp := h.do(http.MethodPost, "/api/admin/prices/import?overwrite=true", h.admin, nil, nil)
+	resp.Body.Close()
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1000, 1000)
+	})
+	h.createChannel(channelInput{
+		Name: "c", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	relayed := h.relayRequest(http.MethodPost, "/v1/chat/completions", key, `{"model":"gpt-4o"}`)
+	_, _ = io.Copy(io.Discard, relayed.Body)
+	relayed.Body.Close()
+
+	entry := h.waitForLog(t, 1)
+	// 1000 * 1 (the imported input rate) + 1000 * 10 (output, untouched) = 11000.
+	if entry.Cost != 11000 {
+		t.Fatalf("cost = %d micro-USD, want the imported input rate billed", entry.Cost)
+	}
+}
+
+func TestPriceImportIsRefusedWithoutAnEndpoint(t *testing.T) {
+	h := newHarnessWithoutCatalogue(t)
+
+	resp := h.do(http.MethodPost, "/api/admin/prices/import", h.admin, nil, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 when MODELS_DEV_URL is unset", resp.StatusCode)
 	}
 }
 

@@ -23,7 +23,7 @@ Go + React + Postgres 实现的多用户 LLM API 网关。核心目标是**尽�
 | 兑换码 | 管理员批量生成、用户自助兑换充值；单个兑换码只能使用一次 |
 | 全局设置 | 开放注册、注册赠送额度、默认每页条数、完整日志保留条数与正文上限、渠道导入默认值，改完即时生效 |
 | 计费 | 按 token 用量计费（输入/输出/缓存分别定价），分组倍率 × 渠道倍率，余额与密钥限额双重管控 |
-| 价格表 | 内置 models.dev 快照（18 家厂商 260 个模型），支持一键导入与最长前缀匹配 |
+| 价格表 | 从 [models.dev](https://models.dev) 在线拉取，支持覆盖前预览差异、增量导入与最长前缀匹配 |
 | 可观测 | 每次调用记录渠道、重试次数、token 数、费用、耗时、首字节延迟；调用日志由服务端 SSE 实时推送，全局日志页还会列出正在进行、尚未结束的调用 |
 
 ## 快速开始
@@ -225,20 +225,22 @@ claude-*:max=high
 
 模型价格支持最长前缀匹配：配了 `gpt-4o` 之后，`gpt-4o-2024-11-20` 自动沿用，不必逐个快照维护。
 
-**内置价格表**：编译进二进制的一份 [models.dev](https://models.dev) 快照，覆盖 OpenAI / Anthropic / Google / xAI / DeepSeek / Moonshot / Z.AI / 通义 / MiniMax / Mistral 等 18 家一方厂商共 260 个模型（单位同样是「美元 / 100 万 token」）。空库首次启动会自动灌入；已有数据的实例可在控制台「模型价格 → 导入内置价格」手动导入，分两种模式：
+**价格表**：价格不存在二进制里，而是从 [models.dev](https://models.dev) 在线拉取，覆盖 OpenAI / Anthropic / Google / xAI / DeepSeek / Moonshot / Z.AI / 通义 / MiniMax / Mistral 等 18 家一方厂商（单位是「美元 / 100 万 token」）。入口在控制台「模型价格 → 拉取最新价格」，分两种模式：
 
 | 模式 | 行为 |
 | --- | --- |
 | 只补充缺失 | 只写入价格表里没有的模型，你手工调过的单价一律保留 |
-| 覆盖同名 | 用快照覆盖同名模型，快照里没有的条目不动 |
+| 覆盖同名 | 用线上价格改写同名模型，线上没有的条目不动 |
 
-快照过期后重新拉取：
+两种模式都先做一次 dry run：服务端返回「将要新增 / 将要改写」的清单，控制台把改价前后的单价并排显示，确认后才落库。
 
-```bash
-make prices        # go run ./cmd/genprices && go test ./internal/billing
-```
+空库首次启动会在后台拉一次（`SeedIfEmpty`）；拉不到只记一条 warning，不阻塞启动，因为容器不一定有外网。表里已经有数据，或你同步过之后又清空过，则不会被重新灌满。
 
-聚合平台（OpenRouter 等）用 `openai/gpt-4o` 这类带命名空间的模型名转发同一批模型，会让表膨胀数倍，因此不收进内置快照，需要的话在控制台自行添加。
+导入**永不删行**。models.dev 会下架模型名，而客户端仍在发这些名字，删掉一条价格在 `reject` 策略下就等于开始拒请求。
+
+拉取地址用 `MODELS_DEV_URL` 覆盖（默认 `https://models.dev/api.json`，可指向镜像）；留空即关闭拉取功能。
+
+聚合平台（OpenRouter 等）用 `openai/gpt-4o` 这类带命名空间的模型名转发同一批模型，会让表膨胀数倍，因此不收进内建目录，需要的话在控制台自行添加。
 
 **未配价的模型**：用量只有在上游应答之后才知道，因此放行一个没有价格的模型，等同于白送上游额度——它不扣费，用户余额、请求计数、密钥用量都不会变化。默认策略是**拒绝**（`BILLING_UNPRICED_POLICY=reject`）：请求在转发前就被挡下，返回 `403 model_not_priced`，不消耗上游额度。另外两种策略：
 
@@ -280,6 +282,7 @@ GROUP BY model ORDER BY 3 DESC;
 | `BILLING_FALLBACK_OUTPUT_PRICE` | `0` | 兜底输出价（美元 / 1M token） |
 | `BILLING_FALLBACK_CACHED_PRICE` | `0` | 兜底缓存输入价，留 0 表示与输入同价 |
 | `BILLING_FALLBACK_PER_REQUEST_PRICE` | `0` | 兜底按次计费（美元 / 次） |
+| `MODELS_DEV_URL` | `https://models.dev/api.json` | 价格目录地址，留空则关闭「拉取最新价格」 |
 | `WEB_DIR` | `web/dist` | 前端静态文件目录 |
 | `TZ` | `Asia/Singapore` | 渠道保活的「每天 X 点」和备份的 `BACKUP_AT` 按该时区解释 |
 
@@ -295,7 +298,6 @@ GROUP BY model ORDER BY 3 DESC;
 
 ```
 cmd/server            入口与启动引导
-cmd/genprices         从 models.dev 生成内置价格表（make prices）
 internal/config       环境变量配置
 internal/db           连接池与内嵌 SQL 迁移
 internal/model        领域模型
@@ -304,6 +306,7 @@ internal/auth         密码、JWT、API Key、AES 加密
 internal/provider     上游方言适配（鉴权位置、模型清单、用量解析）
 internal/relay        转发核心：选路、重试、熔断、流式、用量嗅探
 internal/billing      价格表与费用计算
+internal/modelsdev    models.dev 目录的拉取与解析
 internal/api          HTTP 路由与管理接口
 web/                  React + TypeScript + antd 控制台
 internal/keepalive    渠道保活的每日开窗调度

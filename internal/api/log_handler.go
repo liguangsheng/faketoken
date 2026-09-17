@@ -194,39 +194,55 @@ func (s *Server) handleListPrices(w http.ResponseWriter, r *http.Request) {
 		"data": prices,
 		// Advertised alongside the table so the console can offer the import
 		// without a second round trip.
-		"catalog": map[string]any{
-			"total":        billing.CatalogSize(),
-			"source":       billing.CatalogSource,
-			"generated_at": billing.CatalogGeneratedAt,
-		},
+		"catalog": s.importer.Status(r.Context()),
 	})
 }
 
-// handleImportPrices copies the built-in models.dev snapshot into the price
-// table. It is deliberately additive by default: an operator's own rates
-// outrank a third-party catalogue unless they ask for the overwrite.
+// handleImportPrices refreshes the price table from the models.dev catalogue.
+// It is deliberately additive by default: an operator's own rates outrank a
+// third-party catalogue unless they ask for the overwrite. With ?dry_run=true
+// it reports what the import would change and writes nothing, so the console
+// can show the difference before a price that bills real money moves.
 func (s *Server) handleImportPrices(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	overwrite := queryBool(r, "overwrite")
+	dryRun := queryBool(r, "dry_run")
 
-	imported, skipped, err := billing.ImportCatalog(r.Context(), s.store, overwrite)
+	if !s.importer.Enabled() {
+		fail(w, http.StatusServiceUnavailable,
+			"price catalogue import is disabled; set MODELS_DEV_URL to enable it")
+		return
+	}
+
+	var (
+		plan *billing.ImportPlan
+		err  error
+	)
+	if dryRun {
+		plan, err = s.importer.Plan(ctx, overwrite)
+	} else {
+		plan, err = s.importer.Import(ctx, overwrite)
+	}
 	if err != nil {
 		failErr(w, err)
 		return
 	}
-	if err := s.pricer.Reload(r.Context()); err != nil {
-		failErr(w, err)
-		return
+	// A dry run changes nothing, so the in-memory table is still correct.
+	if !dryRun {
+		if err := s.pricer.Reload(ctx); err != nil {
+			failErr(w, err)
+			return
+		}
 	}
 
-	slog.Info("imported built-in price catalogue",
-		"source", billing.CatalogSource, "snapshot", billing.CatalogGeneratedAt,
-		"overwrite", overwrite, "imported", imported, "skipped", skipped)
 	ok(w, map[string]any{
-		"imported":     imported,
-		"skipped":      skipped,
-		"total":        billing.CatalogSize(),
-		"source":       billing.CatalogSource,
-		"generated_at": billing.CatalogGeneratedAt,
+		"dry_run":   dryRun,
+		"overwrite": plan.Overwrite,
+		"total":     plan.Total,
+		"added":     plan.Added,
+		"changed":   plan.Changed,
+		"kept":      plan.Kept,
+		"unchanged": plan.Unchanged,
 	})
 }
 
