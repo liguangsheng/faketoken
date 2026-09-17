@@ -66,8 +66,10 @@ import {
   formatRelative,
   formatTime,
   parseList,
+  parseHeaders,
   parseMapping,
   STATUS,
+  stringifyHeaders,
   stringifyMapping,
 } from '../../utils/format'
 
@@ -491,7 +493,7 @@ export default function Channels() {
             model_prefixes: (channel.model_prefixes ?? []).join('\n'),
             model_mapping: stringifyMapping(channel.model_mapping),
             reasoning_effort_mapping: stringifyMapping(channel.reasoning_effort_mapping),
-            headers: stringifyMapping(channel.headers),
+            headers: stringifyHeaders(channel.headers),
             keepalive_at: parseClock(channel.keepalive_at),
           }
         : {
@@ -587,7 +589,7 @@ export default function Channels() {
       model_prefixes: parseList(values.model_prefixes ?? ''),
       model_mapping: parseMapping(values.model_mapping ?? ''),
       reasoning_effort_mapping: parseMapping(values.reasoning_effort_mapping ?? ''),
-      headers: parseMapping(values.headers ?? ''),
+      headers: parseHeaders(values.headers ?? ''),
       timeout_secs: Number(values.timeout_secs ?? 0),
       proxy_url: values.proxy_url ?? '',
       price_ratio: Number(values.price_ratio ?? 1),
@@ -2214,13 +2216,6 @@ export default function Channels() {
                     </Form.Item>
 
                     <Card size="small" title="User-Agent 锁定配置" style={{ marginBottom: 12 }}>
-                      <Alert
-                        type="info"
-                        showIcon
-                        style={{ marginBottom: 12 }}
-                        message="按上游协议分别配置"
-                        description="填写后始终作为发往上游的 User-Agent，并覆盖附加请求头中的 User-Agent。留空时，开启自动锁定后会在请求成功时记录本次请求的 UA。"
-                      />
                       <Form.Item
                         name="lock_user_agent"
                         label="自动锁定 User-Agent"
@@ -2276,8 +2271,19 @@ export default function Channels() {
                       </Space>
                     </Card>
 
-                    <Form.Item name="headers" label="附加请求头" tooltip="每行 Header-Name=value">
-                      <Input.TextArea rows={2} placeholder={'X-Custom=value'} />
+                    {/* The UA note lives here rather than above the fields it
+                        describes: this is the one place an operator can write a
+                        User-Agent that silently loses to the locked one. */}
+                    <Form.Item
+                      name="headers"
+                      label="附加请求头"
+                      tooltip="每行一个头，写成 Header-Name: value，可从 curl 或浏览器直接粘贴。其中的 User-Agent 会被上方锁定的 UA 覆盖"
+                    >
+                      <Input.TextArea
+                        className="mono"
+                        autoSize={{ minRows: 2, maxRows: 6 }}
+                        placeholder={'X-Custom: value\nAuthorization: Bearer abc123=='}
+                      />
                     </Form.Item>
 
                     <Form.Item name="proxy_url" label="HTTP 代理" tooltip="例如 http://127.0.0.1:7890">

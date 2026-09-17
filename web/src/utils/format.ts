@@ -101,7 +101,55 @@ export const parseList = (text: string) =>
     ),
   )
 
-/** Parses "from=to" lines into the model mapping object. */
+/**
+ * Parses pasted HTTP headers into a name/value object.
+ *
+ * A header name cannot contain a colon, so the first one is the separator and
+ * everything after it belongs to the value — verbatim. That is the whole point:
+ * bearer tokens, base64 padding and cookies are full of "=" and ":", and the
+ * generic "from=to" parser splits those in the wrong place.
+ *
+ * Falls back to "=" on a line that has no colon, so pairs saved before this
+ * field spoke HTTP still load and still save.
+ */
+export const parseHeaders = (text: string): Record<string, string> => {
+  const headers: Record<string, string> = {}
+  text
+    .split('\n')
+    // Lets a line lifted straight out of a curl command work as-is. The quotes
+    // are only stripped when they wrap the whole line, so a quoted value like
+    // X-Foo: "bar" keeps its own.
+    .map((line) => line.trim().replace(/^-H\s+/i, '').trim())
+    .map((line) =>
+      (line.startsWith('"') && line.endsWith('"')) ||
+      (line.startsWith("'") && line.endsWith("'"))
+        ? line.slice(1, -1).trim()
+        : line,
+    )
+    .filter(Boolean)
+    .forEach((line) => {
+      const index = line.includes(':') ? line.indexOf(':') : line.indexOf('=')
+      if (index <= 0) return
+      const name = line.slice(0, index).trim()
+      const value = line.slice(index + 1).trim()
+      if (name && value) headers[name] = value
+    })
+  return headers
+}
+
+/** Renders headers the way they travel, so they can be copied back out. */
+export const stringifyHeaders = (headers: Record<string, string> | null | undefined) =>
+  Object.entries(headers ?? {})
+    .map(([name, value]) => `${name}: ${value}`)
+    .join('\n')
+
+/**
+ * Parses "from=to" lines into the model mapping object.
+ *
+ * "=" wins over ":" here, the opposite of parseHeaders: a model name may itself
+ * contain a colon (qwen:7b=qwen2:7b), and splitting on that would cut the name
+ * in half.
+ */
 export const parseMapping = (text: string): Record<string, string> => {
   const mapping: Record<string, string> = {}
   text
