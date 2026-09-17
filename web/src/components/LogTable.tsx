@@ -509,6 +509,11 @@ export default function LogTable({
   // connected, so stepping to page four and back shows what is running now
   // rather than an empty block waiting on the next announcement.
   const showLive = Boolean(admin) && canStream;
+  // The concurrency meter reads the tracked set rather than the drawn rows, so
+  // it survives paging away: only a disconnected feed can park it. Declared
+  // after streamEnabled because it is derived from it.
+  const concurrencyActive = Boolean(admin) && streamEnabled;
+  const concurrencyIdleHint = live ? "已选时间范围" : "实时推送已关闭";
   const [pending, setPending] = useState(0);
 
   // Live rows are held in a ref and published to state only when the pointer is
@@ -782,6 +787,17 @@ export default function LogTable({
             active={rateActive}
             idleHint={idleHint}
           />
+          {/* Not a sample of the page like the two beside it: the feed states
+              the whole running set, so this stays right on page four, where a
+              meter drawn from the visible rows cannot. Hence its own active
+              condition — the feed being connected, not the first page. */}
+          <RateCard
+            label="并发"
+            value={liveCalls.size}
+            active={concurrencyActive}
+            idleHint={concurrencyIdleHint}
+            activeHint="此刻已转发给上游、尚未结束的调用数 · 跟随筛选条件"
+          />
           {liveToggle}
         </Space>
       )}
@@ -892,15 +908,6 @@ export default function LogTable({
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {hoverPending} 条新记录待插入（悬停时暂停）
           </Typography.Text>
-        )}
-        {/* Worth stating even though the rows are visible: a busy moment can
-            push some of them past the end of the page. */}
-        {hasLive && (
-          <Tooltip title="已转发给上游、尚未结束的调用，结束后会就地换成正式记录">
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {liveRows.length} 条进行中
-            </Typography.Text>
-          </Tooltip>
         )}
         {extra}
       </Space>

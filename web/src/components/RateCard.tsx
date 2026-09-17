@@ -13,7 +13,12 @@ interface Props {
   active: boolean
   /** Why the meter is parked, surfaced on hover instead of on the page. */
   idleHint?: string
+  /** What the number means while it is live. Defaults to the rolling window the
+   *  rate meters sample; a chip reading something else has to say so. */
+  activeHint?: string
 }
+
+const WINDOW_HINT = '滚动 60 秒窗口 · 仅统计当前首页可见记录'
 
 /** How long the bump lasts; must stay in step with the CSS keyframes. */
 const BUMP_MS = 460
@@ -24,7 +29,14 @@ const BUMP_MS = 460
  * chip breathes — enough to read as alive at a glance without taking space
  * from the table it describes.
  */
-export default function RateCard({ label, value, format = formatNumber, active, idleHint }: Props) {
+export default function RateCard({
+  label,
+  value,
+  format = formatNumber,
+  active,
+  idleHint,
+  activeHint,
+}: Props) {
   const target = active ? value : 0
   const shown = useCountUp(target)
 
@@ -43,7 +55,7 @@ export default function RateCard({ label, value, format = formatNumber, active, 
   }, [target, active])
 
   return (
-    <Tooltip title={active ? '滚动 60 秒窗口 · 仅统计当前首页可见记录' : idleHint}>
+    <Tooltip title={active ? (activeHint ?? WINDOW_HINT) : idleHint}>
       <div className={`rate-chip${active ? ' rate-chip--live' : ''}`}>
         <span className="rate-chip__dot" />
         <span className="rate-chip__label">{label}</span>
