@@ -3512,6 +3512,9 @@ func TestConcurrentRedemptionCreditsExactlyOnce(t *testing.T) {
 			resp := h.do(http.MethodPost, "/api/redeem", session.Token,
 				map[string]any{"code": code}, nil)
 			resp.Body.Close()
+			// A slice, not a map, and each goroutine owns one index; the read
+			// below happens after wg.Wait(). Verified under -race.
+			// pi-lens-ignore: go-shared-map-write-goroutine
 			statuses[i] = resp.StatusCode
 		}(i)
 	}
@@ -3577,6 +3580,9 @@ func TestGroupedRedemptionsAreOnePerUser(t *testing.T) {
 			resp := h.do(http.MethodPost, "/api/redeem", session.Token,
 				map[string]any{"code": code}, nil)
 			resp.Body.Close()
+			// A slice, not a map, and each goroutine owns one index; the read
+			// below happens after wg.Wait(). Verified under -race.
+			// pi-lens-ignore: go-shared-map-write-goroutine
 			statuses[i] = resp.StatusCode
 		}(i, entry.Code)
 	}

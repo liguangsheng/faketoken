@@ -764,6 +764,9 @@ func (s *Server) handleBatchTestChannels(w http.ResponseWriter, r *http.Request)
 			result := s.relay.TestChannel(ctx, ch, "")
 			s.store.MarkChannelTested(ctx, ch.ID, time.Now(), result.Message)
 			s.logChannelTest(ctx, admin, ch, result)
+			// A slice, not a map, and each goroutine owns one index; the reads
+			// below happen after wg.Wait(). Verified under -race.
+			// pi-lens-ignore: go-shared-map-write-goroutine
 			results[i] = batchTestResult{ChannelID: id, Name: ch.Name, TestResult: result}
 		}(i, id)
 	}
