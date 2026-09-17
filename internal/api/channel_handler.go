@@ -627,7 +627,9 @@ func (s *Server) logChannelTest(ctx context.Context, admin *model.User,
 		slog.Error("channel test log insert failed", "channel", ch.ID, "error", err)
 		return
 	}
-	s.stream.Publish(entry)
+	// No key: a probe is issued and logged in one place, so no console ever
+	// drew a placeholder for it.
+	s.stream.Publish("", entry)
 
 	// The exchange itself is the most useful part of a probe: it shows what
 	// was asked and exactly how the upstream answered.

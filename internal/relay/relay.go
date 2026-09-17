@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -58,6 +59,11 @@ type Relay struct {
 	// retryBackoff is the base delay between retries (as nanoseconds), same
 	// treatment as retryBudget.
 	retryBackoff atomic.Int64
+	// liveSeq mints the key that ties a call's in-flight announcements to the
+	// row that finally settles it. Process-local and restart-cheap: a console
+	// drops whatever it was holding when the stream reconnects, so a key reused
+	// after a restart can never land on a stale placeholder.
+	liveSeq atomic.Uint64
 }
 
 func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config) *Relay {
@@ -80,10 +86,58 @@ func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config) *Relay {
 func (rl *Relay) SetLogStream(broker *logstream.Broker) { rl.stream = broker }
 
 // publishLog notifies live consoles. Called only after the row is committed,
-// so what a console shows always matches what a reload would return.
-func (rl *Relay) publishLog(entry *model.RequestLog) {
+// so what a console shows always matches what a reload would return. The key
+// names the placeholder this row replaces, and is empty for a call that was
+// answered before it ever reached an upstream.
+func (rl *Relay) publishLog(key string, entry *model.RequestLog) {
 	if rl.stream != nil {
-		rl.stream.Publish(entry)
+		rl.stream.Publish(key, entry)
+	}
+}
+
+// beginLive mints a correlation key and announces the call as running.
+//
+// Only calls that are about to reach an upstream are announced. Everything a
+// request can be rejected for before that — an unknown model, a closed group,
+// a missing price — is decided in microseconds, and a row that appears and
+// vanishes inside one frame is noise rather than news.
+func (rl *Relay) beginLive(entry *model.RequestLog) string {
+	if rl.stream == nil {
+		return ""
+	}
+	key := strconv.FormatUint(rl.liveSeq.Add(1), 36)
+	rl.stream.Announce(key, entry)
+	return key
+}
+
+// routeLive re-announces a running call now that a channel has been picked for
+// this attempt.
+//
+// The entry itself is deliberately not touched: attempt() is what settles which
+// upstream model and thinking level really go out, and writing a channel onto
+// the row before the attempt happens would leave that channel standing on the
+// log line even if this attempt fails and another channel answers. So the
+// channel is applied to the copy the broker keeps.
+func (rl *Relay) routeLive(key string, entry *model.RequestLog, ch *model.Channel) {
+	if rl.stream == nil || key == "" {
+		return
+	}
+	routed := *entry
+	routed.ChannelID = ch.ID
+	routed.ChannelName = ch.Name
+	routed.UpstreamModel = ch.UpstreamModel(entry.Model)
+	rl.stream.Announce(key, &routed)
+}
+
+// endLive drops the call from the in-flight set.
+//
+// Deferred around the dispatch, so no exit path can leave a row running
+// forever — including the one that writes no log at all, when the caller hangs
+// up while the relay is backing off between retries. Publishing the settled row
+// retires the same key, so the ordinary path simply finds nothing left to drop.
+func (rl *Relay) endLive(key string) {
+	if rl.stream != nil {
+		rl.stream.Forget(key)
 	}
 }
 
@@ -290,6 +344,11 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	info := inspect(r.URL.Path, r.Header.Get("Content-Type"), body)
 	entry := &model.RequestLog{
+		// A placeholder, replaced by the database on insert. It exists so the
+		// in-flight view can show when a call started; the stored row is
+		// timestamped when it settles, which for a long stream is a very
+		// different moment.
+		CreatedAt: started,
 		UserID:    p.user.ID,
 		Username:  p.user.Username,
 		TokenID:   p.token.ID,
@@ -411,6 +470,11 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Past this point the call belongs to an upstream and may take minutes, so
+	// the consoles hear about it now instead of only when it settles.
+	captured.liveKey = rl.beginLive(entry)
+	defer rl.endLive(captured.liveKey)
+
 	rl.dispatch(w, r, p, entry, captured, info, body, order(candidates), started)
 }
 
@@ -475,6 +539,9 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 		}
 		attempts++
 		entry.Retries = int32(attempts - 1)
+		// Re-announced per attempt: a console watching this call should name the
+		// upstream it is actually waiting on, and a retry moves it elsewhere.
+		rl.routeLive(captured.liveKey, entry, ch)
 
 		outcome := rl.attempt(w, r, ch, entry, info, protocolFromPath(r.URL.Path), body)
 		switch outcome.kind {
@@ -950,7 +1017,7 @@ func (rl *Relay) settle(p *principal, entry *model.RequestLog, captured *capture
 			// enough for a large request that the reverse order would show
 			// "no longer retained" for a detail that was still being written.
 			rl.recordDetail(ctx, entry.ID, captured)
-			rl.publishLog(entry)
+			rl.publishLog(captured.liveKey, entry)
 		}
 	}()
 }
@@ -982,7 +1049,7 @@ func (rl *Relay) finish(entry *model.RequestLog, captured *capturedRequest,
 			// enough for a large request that the reverse order would show
 			// "no longer retained" for a detail that was still being written.
 			rl.recordDetail(ctx, entry.ID, captured)
-			rl.publishLog(entry)
+			rl.publishLog(captured.liveKey, entry)
 		}
 	}()
 }

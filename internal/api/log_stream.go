@@ -3,11 +3,13 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/faketoken/faketoken/internal/logstream"
 	"github.com/faketoken/faketoken/internal/model"
 	"github.com/faketoken/faketoken/internal/relay"
 )
@@ -31,6 +33,12 @@ type streamFilter struct {
 	// redact strips the block policy's note, exactly as the list endpoint
 	// does. Set for a caller's own feed, clear for an administrator's.
 	redact bool
+	// live carries calls that have not finished yet. Only the administrator's
+	// global view draws them: on a single account's page the placeholder would
+	// flicker past on nearly every row without telling anyone anything, while
+	// on the global board "what is running right now" is the question being
+	// asked.
+	live bool
 }
 
 func (f streamFilter) matches(entry *model.RequestLog, blocked bool) bool {
@@ -99,11 +107,59 @@ func (s *Server) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
 	s.streamLogs(w, r, filter)
 }
 
-// handleAdminStreamLogs pushes every user's new entries.
+// handleAdminStreamLogs pushes every user's new entries, running ones included.
 func (s *Server) handleAdminStreamLogs(w http.ResponseWriter, r *http.Request) {
 	filter := streamFilterFrom(r)
 	filter.userID = queryInt64(r, "user_id")
+	filter.live = true
 	s.streamLogs(w, r, filter)
+}
+
+// feedEvent is the wire form of one event.
+//
+// The key is what lets a console replace the placeholder it drew when the call
+// started with the row that actually settled, instead of listing the same
+// request twice.
+type feedEvent struct {
+	Key   string            `json:"key,omitempty"`
+	Entry *model.RequestLog `json:"entry"`
+}
+
+// writeEvent frames one SSE event. An unserialisable payload is skipped rather
+// than reported: the feed is a convenience, and killing it over one bad row
+// would cost the console every row after it.
+func writeEvent(w io.Writer, name string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, data)
+	return err
+}
+
+// liveSnapshot renders every running call this feed should be showing.
+//
+// It is sent whole rather than as a set of keys, which makes it authoritative
+// in both directions: a console adopts it as its complete live set, so a start
+// that never arrived is recovered just as an end that never arrived is. That
+// covers the two ways a placeholder can go wrong — a feed too slow to keep up
+// dropped one of its events, or the console stopped drawing them for a while
+// (reading page four) and came back.
+//
+// Filtering it is safe, and it has to be filtered or an unrelated call would
+// appear every heartbeat: a running call's fields only ever gain values, so one
+// that matched when it was announced still matches now. Nothing a console holds
+// can be withheld by this filter.
+func (s *Server) liveSnapshot(filter streamFilter) map[string]any {
+	events := s.stream.Snapshot()
+	calls := make([]feedEvent, 0, len(events))
+	for _, event := range events {
+		if !filter.matches(event.Entry, false) {
+			continue
+		}
+		calls = append(calls, feedEvent{Key: event.Key, Entry: event.Entry})
+	}
+	return map[string]any{"calls": calls}
 }
 
 func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, filter streamFilter) {
@@ -129,6 +185,19 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, filter strea
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, ": connected\n\n")
+
+	// Sent before the feed is read, and only after Subscribe: a call that starts
+	// in between is queued on the subscription and simply arrives twice, which an
+	// upsert on the key absorbs. Taking the snapshot first instead would lose
+	// exactly those calls.
+	//
+	// Without this, a request that began before the tab was opened stays
+	// invisible for as long as it runs — and the long ones are the point.
+	if filter.live {
+		if err := writeEvent(w, "inflight_sync", s.liveSnapshot(filter)); err != nil {
+			return
+		}
+	}
 	_ = rc.Flush()
 
 	ticker := time.NewTicker(heartbeatInterval)
@@ -140,15 +209,26 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, filter strea
 		case <-ctx.Done():
 			return
 
-		case entry, open := <-sub.Events:
+		case event, open := <-sub.Events:
 			if !open {
 				return
+			}
+			entry := event.Entry
+			if entry == nil {
+				continue
+			}
+			if event.State == logstream.StateLive && !filter.live {
+				continue
 			}
 			// The broker hands every subscriber the same pointer, so the copy
 			// has to happen before anything is rewritten on it: redacting in
 			// place would blank the text in an administrator's feed too.
 			blocked := filter.redact && strings.HasPrefix(entry.Error, relay.BlockedLogPrefix)
 			if !filter.matches(entry, blocked) {
+				// A placeholder already drawn for this call is left to the next
+				// reconciliation rather than chased here: the filters a running
+				// row can newly fail are the ones it could not have matched
+				// while it was still running anyway.
 				continue
 			}
 			if blocked {
@@ -156,11 +236,11 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, filter strea
 				visible.Error = relay.BlockedLogRedacted
 				entry = &visible
 			}
-			payload, err := json.Marshal(entry)
-			if err != nil {
-				continue
+			name := "log"
+			if event.State == logstream.StateLive {
+				name = "inflight"
 			}
-			if _, err := fmt.Fprintf(w, "event: log\ndata: %s\n\n", payload); err != nil {
+			if err := writeEvent(w, name, feedEvent{Key: event.Key, Entry: entry}); err != nil {
 				return
 			}
 			_ = rc.Flush()
@@ -170,6 +250,15 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, filter strea
 			// reporting events this consumer was too slow to receive.
 			if _, err := fmt.Fprintf(w, ": ping %d\n\n", sub.Dropped()); err != nil {
 				return
+			}
+			if filter.live {
+				// Re-stating the whole set on every heartbeat is what keeps a row
+				// from spinning forever after the event that would have retired
+				// it was dropped on a slow feed — and what refills the view for a
+				// console that was not drawing these rows a moment ago.
+				if err := writeEvent(w, "inflight_sync", s.liveSnapshot(filter)); err != nil {
+					return
+				}
 			}
 			_ = rc.Flush()
 		}

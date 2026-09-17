@@ -732,6 +732,60 @@ body {
   background: var(--app-surface-sunken);
 }
 
+/* A settled row fills this bar with the share of the wait spent before the
+   first byte. A running call has no such share yet, so the bar drifts instead
+   of measuring anything. */
+.duration-bar--running {
+  animation: duration-bar-drift 1.6s ease-in-out infinite;
+  background: linear-gradient(
+    to top,
+    transparent 0%,
+    var(--app-brand) 50%,
+    transparent 100%
+  );
+}
+
+@keyframes duration-bar-drift {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(-4px);
+  }
+
+  50% {
+    opacity: 1;
+    transform: translateY(4px);
+  }
+}
+
+/* A call that has not finished. Tinted rather than animated: several of these
+   can sit on screen for minutes at a time, and anything that pulses per row
+   turns the top of the table into a light show. */
+.log-table--live .ant-table-tbody > tr.log-row--running > td {
+  background: var(--app-brand-soft);
+  cursor: default;
+}
+
+.log-table--live .ant-table-tbody > tr.log-row--running:hover > td {
+  background: var(--app-brand-soft);
+}
+
+/* The boundary between what is still running and what already happened. Drawn
+   under the last running row so the two blocks read as two blocks. */
+.log-table--live
+  .ant-table-tbody
+  > tr.log-row--running:not(:has(+ tr.log-row--running))
+  > td {
+  border-bottom: 1px solid var(--app-border-strong);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .duration-bar--running {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
 .tag-list {
   display: flex;
   flex-wrap: wrap;

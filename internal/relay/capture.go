@@ -85,6 +85,13 @@ type capturedRequest struct {
 	headers     map[string][]string
 	body        []byte
 	contentType string
+	// liveKey ties the in-flight announcements of this call to the row that
+	// ends it, so a console can replace the placeholder it drew instead of
+	// appending a second row for the same request. Empty for a call that was
+	// answered before it ever reached an upstream: nothing was announced, so
+	// there is nothing to replace. It rides here because this struct is already
+	// what every logging path carries from the request to the row it writes.
+	liveKey string
 	// Filled in once an upstream has answered; sanitising a response happens
 	// after the client already has the bytes, so it is not on the critical
 	// path in the same way.

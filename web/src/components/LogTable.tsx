@@ -30,6 +30,7 @@ import {
 import {
   CopyOutlined,
   KeyOutlined,
+  LoadingOutlined,
   ReloadOutlined,
   RobotOutlined,
   SearchOutlined,
@@ -87,6 +88,32 @@ interface Props {
   reloadToken?: number;
 }
 
+/**
+ * A row that is either a settled log entry or a call still in flight.
+ *
+ * The two share a shape on purpose: an in-flight call is the same record with
+ * everything it has not produced yet left at zero, so every column renders it
+ * without a parallel set of components. live_key is what tells them apart, and
+ * it is also the handle the settled row uses to replace this one.
+ */
+type LogRow = RequestLog & { live_key?: string };
+
+const isLive = (row: LogRow) => row.live_key !== undefined;
+
+/** Table row key. Live rows have no id yet, so they key off their own handle. */
+const rowKeyOf = (row: LogRow) =>
+  row.live_key !== undefined ? `live:${row.live_key}` : String(row.id);
+
+// Past this, a call that is still running is worth a second look rather than
+// just being slow. Deliberately generous: a long agentic completion legitimately
+// runs this long, so it colours the number instead of flagging an error.
+const SLOW_CALL_MS = 60_000;
+
+// How many consecutive reconciliations may miss a placeholder before it is
+// dropped. One is not enough: a call leaves the server's live set as soon as the
+// caller has been answered, a moment before its row is written.
+const INFLIGHT_SYNC_GRACE = 2;
+
 const statusTone = (code: number) =>
   code < 400 ? "green" : code < 500 ? "orange" : "red";
 
@@ -114,7 +141,8 @@ const LIVE_ROW_SHIFT_MS = 620;
 const LIVE_ROW_SHIFT_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
 
 interface LiveRowLayout {
-  entryID: number;
+  /** Row key of the record being inserted, settled or still running. */
+  rowKey: string;
   tops: Map<string, number>;
 }
 
@@ -169,6 +197,15 @@ export default function LogTable({
   const hoveringRef = useRef(false);
   const hoverBuffer = useRef<RequestLog[]>([]);
   const [hoverPending, setHoverPending] = useState(0);
+  // Calls the server has announced and not yet settled. The ref is always
+  // current; the state is the committed view, which is what lets the hover
+  // pause cover placeholders as well as arrivals.
+  const [liveCalls, setLiveCalls] = useState<ReadonlyMap<string, LogRow>>(
+    () => new Map(),
+  );
+  const liveRef = useRef<ReadonlyMap<string, LogRow>>(new Map());
+  // Per placeholder, how many reconciliations in a row have not mentioned it.
+  const missedSyncs = useRef(new Map<string, number>());
   const [page, setPage] = useState(1);
   const { defaultPageSize } = useSettings();
   const [pageSize, setPageSize] = useState(defaultPageSize);
@@ -200,7 +237,7 @@ export default function LogTable({
   // transform, which lets a busy feed continue smoothly from the exact visual
   // position reached by the previous push.
   const captureLiveLayout = useCallback(
-    (entryID: number) => {
+    (rowKey: string) => {
       const root = liveTableRoot.current?.nativeElement;
       if (
         !admin ||
@@ -218,7 +255,7 @@ export default function LogTable({
           const key = row.dataset.rowKey;
           if (key) tops.set(key, row.getBoundingClientRect().top);
         });
-      pendingLiveLayout.current = { entryID, tops };
+      pendingLiveLayout.current = { rowKey, tops };
     },
     [admin],
   );
@@ -273,7 +310,7 @@ export default function LogTable({
         ".ant-table-tbody > tr[data-row-key]",
       ),
     ];
-    const entryKey = String(snapshot.entryID);
+    const entryKey = snapshot.rowKey;
     const entryExists = visibleRows.some(
       (row) => row.dataset.rowKey === entryKey,
     );
@@ -316,7 +353,9 @@ export default function LogTable({
       animation.onfinish = release;
       animation.oncancel = release;
     });
-  }, [enteringRowIDs, rows]);
+    // liveCalls belongs here with rows: a call announced as running inserts a
+    // row of its own, and that push has to be absorbed the same way.
+  }, [enteringRowIDs, rows, liveCalls]);
 
   // The rate pulse only makes sense on page 1, in the live window, on the
   // admin surface — for a regular user it would reflect their own traffic
@@ -461,9 +500,28 @@ export default function LogTable({
   // other page every arrival would shift the rows the user is reading. Nothing
   // is lost — the counter says how many piled up, and page 1 is one click away.
   const canStream = live && page === 1 && !range;
+  const streamEnabled = live && !range;
+  // Reserved for the global board. On one account's page nearly every row would
+  // flicker through a placeholder without telling anyone anything; here, "what
+  // is running right now" is the question the page exists to answer.
+  //
+  // This gates the drawing only. The set itself is tracked whenever the feed is
+  // connected, so stepping to page four and back shows what is running now
+  // rather than an empty block waiting on the next announcement.
+  const showLive = Boolean(admin) && canStream;
   const [pending, setPending] = useState(0);
 
+  // Live rows are held in a ref and published to state only when the pointer is
+  // away, for the same reason arrivals are parked.
+  const commitLive = useCallback((next: ReadonlyMap<string, LogRow>) => {
+    liveRef.current = next;
+    if (!hoveringRef.current) setLiveCalls(next);
+  }, []);
+
   const flushHoverBuffer = useCallback(() => {
+    setLiveCalls((current) =>
+      current === liveRef.current ? current : liveRef.current,
+    );
     const buffered = hoverBuffer.current;
     if (!buffered.length) return;
     hoverBuffer.current = [];
@@ -482,8 +540,56 @@ export default function LogTable({
 
   const streamState = useLogStream({
     url: streamURL,
-    enabled: live && !range,
-    onEntry: (entry) => {
+    enabled: streamEnabled,
+    onInflight: ({ key, entry }) => {
+      if (!admin) return;
+      // Only a first sighting moves the rows below it; a re-announcement of a
+      // call already on screen rewrites one row in place.
+      if (showLive && !hoveringRef.current && !liveRef.current.has(key)) {
+        captureLiveLayout(`live:${key}`);
+      }
+      // Upsert, not append: the same key is announced again each time the call
+      // is routed or retried, so the row names the upstream being waited on.
+      const next = new Map(liveRef.current);
+      next.set(key, { ...entry, live_key: key });
+      commitLive(next);
+    },
+    onInflightSync: (calls) => {
+      if (!admin) return;
+      if (!calls.length && !liveRef.current.size) return;
+      // Adopted wholesale: the server is naming the complete set this feed
+      // should be showing, which recovers a start that never arrived as well as
+      // an end that never did.
+      const next = new Map<string, LogRow>();
+      for (const { key, entry } of calls) {
+        next.set(key, { ...entry, live_key: key });
+        missedSyncs.current.delete(key);
+      }
+      for (const [key, row] of liveRef.current) {
+        if (next.has(key)) continue;
+        // A grace period before dropping: a call leaves the server's live set
+        // the moment the caller has been answered, a beat before its row is
+        // written, and a sync landing in that window must not erase a
+        // placeholder whose real row is already on its way.
+        const misses = (missedSyncs.current.get(key) ?? 0) + 1;
+        if (misses < INFLIGHT_SYNC_GRACE) {
+          missedSyncs.current.set(key, misses);
+          next.set(key, row);
+          continue;
+        }
+        missedSyncs.current.delete(key);
+      }
+      commitLive(next);
+    },
+    onEntry: (entry, key) => {
+      // Retire the placeholder first, and on every page: the settled row is the
+      // same call, and listing it twice is the one outcome worth ruling out.
+      if (key && liveRef.current.has(key)) {
+        const next = new Map(liveRef.current);
+        next.delete(key);
+        missedSyncs.current.delete(key);
+        commitLive(next);
+      }
       if (page !== 1) {
         setPending((count) => count + 1);
         return;
@@ -497,7 +603,7 @@ export default function LogTable({
         }
         return;
       }
-      captureLiveLayout(entry.id);
+      captureLiveLayout(String(entry.id));
       animateLiveRow(entry.id);
       setRows((current) => {
         // The list request may already have returned this row; the stream and
@@ -510,6 +616,11 @@ export default function LogTable({
       // The stream dropped and came back; quietly reload the first page to
       // recover entries that were published while the connection was down.
       if (page === 1) void load(true);
+      // Whatever was running when the connection dropped may well have finished
+      // in the meantime. The reconnect is answered with a fresh set, so drop
+      // the stale one rather than waiting for it to be reconciled away.
+      missedSyncs.current.clear();
+      commitLive(new Map());
     },
   });
 
@@ -520,6 +631,47 @@ export default function LogTable({
       void load();
     }
   }, [load, page, pending]);
+
+  // A new stream is a new set: the filters it was opened with decide what gets
+  // announced, so rows admitted by the previous ones are no longer news. The
+  // server states whatever is still running as soon as the feed connects.
+  //
+  // Keyed to the feed rather than to the page, so paging away and back keeps
+  // the set that is still on the wire.
+  useEffect(() => {
+    liveRef.current = new Map();
+    missedSyncs.current.clear();
+    setLiveCalls((current) => (current.size ? new Map() : current));
+  }, [streamURL, streamEnabled]);
+
+  // Newest first, like the rows below them, so the time column still reads
+  // top-to-bottom as one descending sequence.
+  const liveRows = useMemo(() => {
+    if (!showLive) return [] as LogRow[];
+    return [...liveCalls.values()].sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+  }, [liveCalls, showLive]);
+  const hasLive = liveRows.length > 0;
+
+  // A running call's only moving part is how long it has been running, so the
+  // clock ticks for as long as one is on screen and stops when none is.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasLive) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [hasLive]);
+
+  // Live rows sit above the newest settled row, and the page is trimmed back to
+  // the size the operator chose: a burst of traffic pushes history down instead
+  // of growing the table past its own pagination.
+  const tableRows = useMemo<LogRow[]>(
+    () => (hasLive ? [...liveRows, ...rows].slice(0, pageSize) : rows),
+    [hasLive, liveRows, pageSize, rows],
+  );
 
   const dirty = Boolean(
     keywordInput ||
@@ -741,6 +893,15 @@ export default function LogTable({
             {hoverPending} 条新记录待插入（悬停时暂停）
           </Typography.Text>
         )}
+        {/* Worth stating even though the rows are visible: a busy moment can
+            push some of them past the end of the page. */}
+        {hasLive && (
+          <Tooltip title="已转发给上游、尚未结束的调用，结束后会就地换成正式记录">
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {liveRows.length} 条进行中
+            </Typography.Text>
+          </Tooltip>
+        )}
         {extra}
       </Space>
 
@@ -758,16 +919,24 @@ export default function LogTable({
       >
         <Table
           ref={liveTableRoot}
-          rowKey="id"
+          rowKey={rowKeyOf}
           size="small"
           className={`table-clickable${admin ? " log-table--live" : ""}`}
           loading={loading}
-          dataSource={rows}
+          dataSource={tableRows}
           rowClassName={(row) =>
-            enteringRowIDs.has(row.id) ? "log-row--enter" : ""
+            isLive(row)
+              ? "log-row--running"
+              : enteringRowIDs.has(row.id)
+                ? "log-row--enter"
+                : ""
           }
           scroll={{ x: scrollX }}
-          onRow={(row) => ({
+          onRow={(row) => {
+            // A call that has not finished has no stored exchange to read, so
+            // it is not a click target: the drawer would open on nothing.
+            if (isLive(row)) return {};
+            return {
             onClick: (event) => {
               // A drag-select also emits a click on the row in some browsers.
               // Only suppress that click when the active selection touches this
@@ -791,7 +960,8 @@ export default function LogTable({
             onKeyDown: (event) => {
               if (event.key === "Enter") openDetail(row);
             },
-          })}
+            };
+          }}
           locale={{
             emptyText: loadError ? (
               <EmptyState
@@ -840,12 +1010,20 @@ export default function LogTable({
               ...COLUMN_GEOMETRY.createdAt,
               title: "时间 / ID",
               dataIndex: "created_at",
-              render: (value: string, row: RequestLog) => (
-                <Tooltip title={formatTime(value)}>
+              render: (value: string, row: LogRow) => (
+                <Tooltip
+                  title={
+                    isLive(row)
+                      ? `开始于 ${formatTime(value)}，尚未结束`
+                      : formatTime(value)
+                  }
+                >
                   <div className="cell-stack">
                     <span className="mono">{formatTimeShort(value)}</span>
+                    {/* A running call has no id yet — the row number is minted
+                        by the database when the call settles. */}
                     <span className="mono text-muted cell-stack__sub">
-                      #{row.id}
+                      {isLive(row) ? "在途" : `#${row.id}`}
                     </span>
                   </div>
                 </Tooltip>
@@ -986,8 +1164,15 @@ export default function LogTable({
               ...COLUMN_GEOMETRY.status,
               title: "状态",
               dataIndex: "status_code",
-              render: (code: number, row: RequestLog) => (
+              render: (code: number, row: LogRow) => (
                 <Space size={4}>
+                  {isLive(row) ? (
+                    <Tooltip title="已转发给上游，还在等待回应">
+                      <Tag color="processing" icon={<LoadingOutlined />}>
+                        进行中
+                      </Tag>
+                    </Tooltip>
+                  ) : (
                   <Tooltip
                     title={
                       row.error && code < 400
@@ -997,6 +1182,7 @@ export default function LogTable({
                   >
                     <Tag color={rowTone(row)}>{code}</Tag>
                   </Tooltip>
+                  )}
                   {/* Streaming used to be its own column; it is one bit, so it
                     rides along with the status it qualifies. */}
                   {row.stream && (
@@ -1028,7 +1214,33 @@ export default function LogTable({
               ...COLUMN_GEOMETRY.duration,
               dataIndex: "duration_ms",
               align: "left",
-              render: (value: number, row: RequestLog) => {
+              render: (value: number, row: LogRow) => {
+                if (isLive(row)) {
+                  const elapsed = Math.max(
+                    0,
+                    now - new Date(row.created_at).getTime(),
+                  );
+                  return (
+                    <Tooltip title={`已运行 ${formatDuration(elapsed)}`}>
+                      <div className="duration-cell">
+                        <span className="duration-bar duration-bar--running" aria-hidden />
+                        <div className="cell-stack">
+                          <span
+                            className="mono"
+                            style={
+                              elapsed >= SLOW_CALL_MS
+                                ? { color: "var(--app-warning)" }
+                                : undefined
+                            }
+                          >
+                            {formatDuration(elapsed)}
+                          </span>
+                          <span className="text-muted cell-stack__sub">…</span>
+                        </div>
+                      </div>
+                    </Tooltip>
+                  );
+                }
                 const ratio =
                   value > 0 && row.ttfb_ms > 0
                     ? Math.min(row.ttfb_ms / value, 1)
@@ -1082,7 +1294,12 @@ export default function LogTable({
                 </Tooltip>
               ),
               align: "right",
-              render: (_: unknown, row: RequestLog) => (
+              render: (_: unknown, row: LogRow) =>
+                // Usage is only known once the upstream has answered, and a
+                // running call showing 0 would read as a call that used none.
+                isLive(row) ? (
+                  <span className="text-muted">-</span>
+                ) : (
                 <Tooltip
                   title={`输入 ${formatNumber(row.prompt_tokens)} · 输出 ${formatNumber(
                     row.completion_tokens,
@@ -1098,14 +1315,19 @@ export default function LogTable({
                     </span>
                   </div>
                 </Tooltip>
-              ),
+                ),
             },
             {
               ...COLUMN_GEOMETRY.cost,
               title: "费用",
               dataIndex: "cost",
               align: "right",
-              render: (value: number) => formatUSD(value),
+              render: (value: number, row: LogRow) =>
+                isLive(row) ? (
+                  <span className="text-muted">-</span>
+                ) : (
+                  formatUSD(value)
+                ),
             },
             {
               ...COLUMN_GEOMETRY.error,
