@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/faketoken/faketoken/internal/model"
@@ -16,6 +17,13 @@ import (
 
 // CatalogSource names where imported prices come from.
 const CatalogSource = "models.dev"
+
+// minCatalogueModels is the size below which a fetched catalogue looks
+// broken rather than small. models.dev carries a few hundred first-party
+// models; fewer than this means a degraded or reshaped response, and an
+// unattended seed must not fill an empty table from it. The console's
+// import shows a diff first, so it is not gated.
+const minCatalogueModels = 100
 
 // OptCatalogSyncedAt records (RFC 3339) when the catalogue was last written
 // into the price table. It lives in the options table next to the billing
@@ -34,6 +42,9 @@ type PriceChange struct {
 // operator.
 type ImportPlan struct {
 	Overwrite bool `json:"overwrite"`
+	// DryRun exists so a preview response can be posted back verbatim as
+	// the apply request; the server ignores it on the way in.
+	DryRun bool `json:"dry_run,omitempty"`
 	// Added are models the table does not have yet.
 	Added []model.ModelPrice `json:"added"`
 	// Changed are existing rows the catalogue prices differently. Always
@@ -46,7 +57,15 @@ type ImportPlan struct {
 	Unchanged int `json:"unchanged"`
 	// Total is how many models the catalogue offered.
 	Total int `json:"total"`
+	// FeedSHA256 identifies the feed this plan was computed from. Apply
+	// refuses a plan whose feed is not the one most recently fetched, so a
+	// stale preview cannot quietly land after the catalogue moved.
+	FeedSHA256 string `json:"feed_sha256,omitempty"`
 }
+
+// ErrStaleFeed reports that a plan was computed from a different feed than
+// the one most recently fetched. The console answers with a fresh preview.
+var ErrStaleFeed = errors.New("the catalogue changed since this plan was previewed; pull it again")
 
 // Importer copies the models.dev catalogue into the price table. It never
 // deletes: models.dev drops names that clients are still sending, and a
@@ -55,6 +74,9 @@ type Importer struct {
 	st     *store.Store
 	client *http.Client
 	url    string
+
+	mu       sync.Mutex
+	fetchSHA string // sha256 of the most recently fetched feed
 }
 
 func NewImporter(st *store.Store, url string) *Importer {
@@ -65,6 +87,13 @@ func NewImporter(st *store.Store, url string) *Importer {
 		// without leaving the console hanging when the host has no egress.
 		client: &http.Client{Timeout: 60 * time.Second},
 	}
+}
+
+// lastFetch reports the hash of the most recently fetched feed.
+func (im *Importer) lastFetch() string {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	return im.fetchSHA
 }
 
 // URL reports where the catalogue is pulled from.
@@ -85,7 +114,7 @@ type CatalogStatus struct {
 
 func (im *Importer) Status(ctx context.Context) CatalogStatus {
 	status := CatalogStatus{Source: CatalogSource, URL: im.url}
-	at, err := im.SyncedAt(ctx)
+	at, err := im.syncedAt(ctx)
 	switch {
 	case err != nil:
 		// Losing the timestamp must not take the price list down with it.
@@ -103,6 +132,10 @@ func (im *Importer) Plan(ctx context.Context, overwrite bool) (*ImportPlan, erro
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", im.url, err)
 	}
+	im.mu.Lock()
+	im.fetchSHA = cat.FeedSHA256
+	im.mu.Unlock()
+
 	// A renamed provider id silently drops a whole vendor from the table.
 	if len(cat.Missing) > 0 {
 		slog.Warn("providers missing from the feed", "url", im.url, "providers", cat.Missing)
@@ -112,7 +145,9 @@ func (im *Importer) Plan(ctx context.Context, overwrite bool) (*ImportPlan, erro
 	if err != nil {
 		return nil, err
 	}
-	return planImport(existing, cat.Prices, overwrite), nil
+	plan := planImport(existing, cat.Prices, overwrite)
+	plan.FeedSHA256 = cat.FeedSHA256
+	return plan, nil
 }
 
 // planImport is the pure half of Plan, so the modes are testable without a
@@ -132,9 +167,19 @@ func planImport(existing []*model.ModelPrice, incoming []model.ModelPrice, overw
 		Added:   []model.ModelPrice{},
 		Changed: []PriceChange{},
 	}
+	addedKeys := make(map[string]struct{}, len(incoming))
 	for _, price := range incoming {
-		old, ok := current[strings.ToLower(price.Model)]
+		key := strings.ToLower(price.Model)
+		old, ok := current[key]
 		if !ok {
+			// The catalogue is already deduplicated case-insensitively, but
+			// this is a pure function with its own contract: a second
+			// case-variant must not become a second row the pricer would
+			// shadow. UpdatedAt stays zero: the row does not exist yet.
+			if _, dup := addedKeys[key]; dup {
+				continue
+			}
+			addedKeys[key] = struct{}{}
 			plan.Added = append(plan.Added, price)
 			continue
 		}
@@ -149,6 +194,9 @@ func planImport(existing []*model.ModelPrice, incoming []model.ModelPrice, overw
 		next := price
 		next.Model = old.Model
 		next.PerRequestPrice = old.PerRequestPrice
+		// Carry the row's current stamp so the reported diff shows a real
+		// time instead of the zero value; the upsert stamps it again on write.
+		next.UpdatedAt = old.UpdatedAt
 		if sameRates(*old, next) {
 			plan.Unchanged++
 			continue
@@ -164,23 +212,24 @@ func sameRates(a, b model.ModelPrice) bool {
 		a.CachedPrice == b.CachedPrice
 }
 
-// Apply writes a plan and stamps the sync time.
+// Apply writes a plan and stamps the sync time, all in one transaction: a
+// write interrupted halfway must leave the old prices standing, not a mix
+// of old and new. A plan computed from a feed other than the one most
+// recently fetched is refused: the operator confirmed a preview of one
+// catalogue, and a different one must not land instead.
 func (im *Importer) Apply(ctx context.Context, plan *ImportPlan) error {
+	if plan.FeedSHA256 != im.lastFetch() {
+		return ErrStaleFeed
+	}
+
+	rows := make([]*model.ModelPrice, 0, len(plan.Added)+len(plan.Changed))
 	for i := range plan.Added {
-		// Copy: the store takes a pointer, and the plan is reported back to
-		// the caller unmodified.
-		row := plan.Added[i]
-		if err := im.st.UpsertPrice(ctx, &row); err != nil {
-			return err
-		}
+		rows = append(rows, &plan.Added[i])
 	}
 	for i := range plan.Changed {
-		row := plan.Changed[i].New
-		if err := im.st.UpsertPrice(ctx, &row); err != nil {
-			return err
-		}
+		rows = append(rows, &plan.Changed[i].New)
 	}
-	return im.st.SetOption(ctx, OptCatalogSyncedAt, time.Now().UTC().Format(time.RFC3339))
+	return im.st.UpsertPrices(ctx, rows, OptCatalogSyncedAt, time.Now().UTC().Format(time.RFC3339))
 }
 
 // Import is Plan followed by Apply.
@@ -198,10 +247,8 @@ func (im *Importer) Import(ctx context.Context, overwrite bool) (*ImportPlan, er
 	return plan, nil
 }
 
-// SeedIfEmpty fills a price table that has never held anything. A table with
-// rows, or one the operator synced and then emptied on purpose, is left
-// alone: refilling it would start billing a gateway that was meant to be
-// free.
+// SeedIfEmpty fills a price table that has never held anything: rows present,
+// or a table deliberately emptied after a sync, both mean it is not empty.
 func (im *Importer) SeedIfEmpty(ctx context.Context) (seeded bool, err error) {
 	existing, err := im.st.ListPrices(ctx)
 	if err != nil {
@@ -219,15 +266,27 @@ func (im *Importer) SeedIfEmpty(ctx context.Context) (seeded bool, err error) {
 		return false, err
 	}
 
-	if _, err := im.Import(ctx, false); err != nil {
+	// Nobody reviews a diff on this path, so refuse a feed that looks
+	// structurally wrong before it becomes the billing table.
+	plan, err := im.Plan(ctx, false)
+	if err != nil {
 		return false, err
 	}
+	if plan.Total < minCatalogueModels {
+		return false, fmt.Errorf("catalogue holds %d priced models, below the %d expected from %s; not seeding",
+			plan.Total, minCatalogueModels, CatalogSource)
+	}
+	if err := im.Apply(ctx, plan); err != nil {
+		return false, err
+	}
+	slog.Info("seeded the price table from the catalogue", "source", CatalogSource,
+		"url", im.url, "models", len(plan.Added))
 	return true, nil
 }
 
-// SyncedAt reads the last sync stamp; zero when the catalogue was never
+// syncedAt reads the last sync stamp; zero when the catalogue was never
 // imported.
-func (im *Importer) SyncedAt(ctx context.Context) (time.Time, error) {
+func (im *Importer) syncedAt(ctx context.Context) (time.Time, error) {
 	raw, err := im.st.GetOption(ctx, OptCatalogSyncedAt)
 	if errors.Is(err, store.ErrNotFound) {
 		return time.Time{}, nil

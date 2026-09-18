@@ -133,10 +133,21 @@ func run() error {
 	}
 }
 
+// seedPriceTimeout bounds the background seed so a hung database cannot park
+// the goroutine forever. It only has to cover one catalogue fetch plus the
+// batch write; being killed mid-write is safe because Apply is one
+// transaction.
+const seedPriceTimeout = 5 * time.Minute
+
 // seedPrices fills an empty price table from the catalogue. It runs in the
 // background and never fails the boot: a host without egress still serves,
 // and the console can run the same import by hand.
 func seedPrices(ctx context.Context, im *billing.Importer, pricer *billing.Pricer) {
+	// Dying mid-write is safe: Apply is one transaction, so it either leaves
+	// the table untouched (and the next boot seeds again) or complete.
+	ctx, cancel := context.WithTimeout(ctx, seedPriceTimeout)
+	defer cancel()
+
 	if !im.Enabled() {
 		slog.Info("price catalogue import is disabled", "env", "MODELS_DEV_URL")
 		return

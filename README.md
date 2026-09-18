@@ -225,7 +225,7 @@ claude-*:max=high
 
 模型价格支持最长前缀匹配：配了 `gpt-4o` 之后，`gpt-4o-2024-11-20` 自动沿用，不必逐个快照维护。
 
-**价格表**：价格不存在二进制里，而是从 [models.dev](https://models.dev) 在线拉取，覆盖 OpenAI / Anthropic / Google / xAI / DeepSeek / Moonshot / Z.AI / 通义 / MiniMax / Mistral 等 18 家一方厂商（单位是「美元 / 100 万 token」）。入口在控制台「模型价格 → 拉取最新价格」，分两种模式：
+**价格表**：价格不存在二进制里，而是从 [models.dev](https://models.dev) 在线拉取，覆盖 OpenAI / Anthropic / Google / xAI / DeepSeek / Moonshot / Z.AI / 通义 / MiniMax / Mistral 等 19 家一方厂商（单位是「美元 / 100 万 token」）。入口在控制台「模型价格 → 拉取最新价格」，分两种模式：
 
 | 模式 | 行为 |
 | --- | --- |

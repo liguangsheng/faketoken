@@ -262,6 +262,11 @@ export interface PriceImportPlan {
   kept: number
   /** Existing rows already at the catalogue's rate. */
   unchanged: number
+  /**
+   * Identifies the feed this plan was computed from. Sending the plan back
+   * applies it only if the catalogue is still these bytes; otherwise 409.
+   */
+  feed_sha256?: string
 }
 
 /** One model in the plaza: reachable by the caller's group, with base prices. */
@@ -642,15 +647,22 @@ export const api = {
     deletePrice: (model: string) =>
       request<unknown>('DELETE', `/api/admin/prices/${encodeURIComponent(model)}`),
     /**
-     * Pulls the models.dev catalogue. With `dryRun` it only reports what the
-     * write would change, which is what the console previews before letting a
-     * price that bills real money move.
+     * Pulls the models.dev catalogue and reports what a write would change,
+     * without writing. The returned plan goes back to `applyPriceImport`
+     * once the operator has confirmed the diff.
      */
-    importPrices: (overwrite: boolean, dryRun = false) =>
+    previewPriceImport: (overwrite: boolean) =>
       request<PriceImportPlan>(
         'POST',
-        `/api/admin/prices/import${qs({ overwrite, dry_run: dryRun })}`,
+        `/api/admin/prices/import${qs({ overwrite, dry_run: true })}`,
       ),
+    /**
+     * Applies exactly the plan that was previewed. The server refuses with
+     * 409 when it has since fetched a different catalogue, so what the
+     * operator confirmed is what lands.
+     */
+    applyPriceImport: (plan: PriceImportPlan) =>
+      request<PriceImportPlan>('POST', '/api/admin/prices/import', plan),
     /** Models a channel serves that nothing prices yet. */
     unpricedModels: () => request<UnpricedReport>('GET', '/api/admin/prices/unpriced'),
 

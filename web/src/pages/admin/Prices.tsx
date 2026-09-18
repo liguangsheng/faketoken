@@ -269,26 +269,14 @@ export default function Prices() {
     }
   }
 
-  const applyImport = async (overwrite: boolean) => {
-    try {
-      const written = await api.admin.importPrices(overwrite)
-      message.success(
-        `已写入 ${written.added.length} 个模型` +
-          (written.changed.length ? `，覆盖 ${written.changed.length} 个` : ''),
-      )
-      await load()
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '写入失败')
-    }
-  }
-
   // The pull happens on the server, so this is only the confirmation step. It
   // asks for a dry run first: a price is what every request is billed on, and
-  // the diff is what makes the write reviewable.
+  // the diff is what makes the write reviewable. Confirming sends that exact
+  // plan back — the server refuses it if the catalogue moved in between.
   const importCatalog = async (overwrite: boolean) => {
     setImporting(true)
     try {
-      const plan = await api.admin.importPrices(overwrite, true)
+      const plan = await api.admin.previewPriceImport(overwrite)
       if (!plan.added.length && !plan.changed.length) {
         message.info(
           plan.kept > 0
@@ -303,7 +291,19 @@ export default function Prices() {
         content: <PricePlanPreview plan={plan} />,
         okText: overwrite ? '确认覆盖' : '确认写入',
         okButtonProps: { danger: overwrite },
-        onOk: () => applyImport(overwrite),
+        onOk: async () => {
+          try {
+            const written = await api.admin.applyPriceImport(plan)
+            message.success(
+              `已写入 ${written.added.length} 个模型` +
+                (written.changed.length ? `，覆盖 ${written.changed.length} 个` : ''),
+            )
+            await load()
+          } catch (error) {
+            message.error(error instanceof Error ? error.message : '写入失败')
+            throw error
+          }
+        },
       })
     } catch (error) {
       message.error(error instanceof Error ? error.message : '拉取 models.dev 失败')

@@ -598,9 +598,11 @@ type attemptOutcome struct {
 	status  int
 	message string
 	// streamFailed marks a call the upstream answered 2xx and then failed
-	// inside the body — an SSE error event, or a JSON error object. The status
-	// stays whatever went over the wire, so this flag is the only thing that
-	// tells the breaker and the channel counters that the call did not work.
+	// inside the body — an SSE error event, or a JSON error object. The bytes
+	// are already on the wire, so the status cannot be changed for the caller;
+	// this flag is what tells the breaker and the channel counters that the
+	// call did not work. A rate limit inside the body additionally rewrites
+	// status to 429, which is the status every bookkeeping decision reads.
 	streamFailed      bool
 	usage             model.Usage
 	hasUsage          bool
@@ -830,6 +832,14 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 		out.streamFailed = true
 		out.message = streamFailureMessage(failure)
 		out.retryAfter = parseRetryAfter(resp.Header)
+		if failure.RateLimited() {
+			// The caller already has the upstream's 2xx and its bytes, so the
+			// wire status cannot change. Every later decision reads this field
+			// though, so the call is recorded as the 429 it is: the log shows a
+			// rate limit instead of a clean 200, and the partial usage is not
+			// billed.
+			out.status = http.StatusTooManyRequests
+		}
 	}
 	if pumpErr != nil {
 		out.kind = outcomeAborted

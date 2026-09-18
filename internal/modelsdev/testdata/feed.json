@@ -51,6 +51,17 @@
       }
     }
   },
+  "meta": {
+    "id": "meta",
+    "name": "Meta",
+    "models": {
+      "GPT-4O": {
+        "id": "GPT-4O",
+        "name": "Case variant",
+        "cost": {"input": 55, "output": 55}
+      }
+    }
+  },
   "openrouter": {
     "id": "openrouter",
     "name": "OpenRouter",

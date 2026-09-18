@@ -158,3 +158,76 @@ func TestStreamErrorAccumulatorKeepsTheFirstFailure(t *testing.T) {
 		t.Fatalf("Result = %+v, %v; want the first failure", got, ok)
 	}
 }
+
+// RateLimited decides which in-body failures stand for a 429. The relay uses
+// it to rewrite the bookkeeping of a stream that ends in a rate limit, so the
+// table pins both directions: what must be judged a rate limit, and what must
+// keep the status line it relayed.
+func TestStreamErrorRateLimited(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name:    "anthropic rate limit",
+			payload: `{"error":{"message":"Concurrency limit exceeded","type":"rate_limit_error"}}`,
+			want:    true,
+		},
+		{
+			name:    "gateway rate limit variant",
+			payload: `{"error":{"message":"slow down","type":"rate_limit_exceeded"}}`,
+			want:    true,
+		},
+		{
+			name:    "plain http name",
+			payload: `{"error":{"type":"too_many_requests","message":"slow down"}}`,
+			want:    true,
+		},
+		{
+			name:    "gemini nests the code",
+			payload: `{"error":{"code":429,"message":"Resource has been exhausted","status":"RESOURCE_EXHAUSTED"}}`,
+			want:    true,
+		},
+		{
+			name:    "gemini enum as the type",
+			payload: `{"error":{"type":"RESOURCE_EXHAUSTED","message":"quota"}}`,
+			want:    true,
+		},
+		// Failures that are not rate limits. They are still logged with their
+		// reason and still bench the channel, but the relay keeps the 200 it
+		// relayed and bills the usage the stream carried.
+		{
+			name:    "overloaded",
+			payload: `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`,
+			want:    false,
+		},
+		{
+			name:    "server error",
+			payload: `{"error":{"message":"boom","type":"server_error"}}`,
+			want:    false,
+		},
+		{
+			name:    "gateway names only a code",
+			payload: `{"error":{"code":503}}`,
+			want:    false,
+		},
+		{
+			name:    "quota exhaustion",
+			payload: `{"error":{"type":"insufficient_quota","message":"You exceeded your current quota"}}`,
+			want:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, ok := ExtractStreamError([]byte(tc.payload))
+			if !ok {
+				t.Fatalf("failure went unrecognised: %s", tc.payload)
+			}
+			if got := e.RateLimited(); got != tc.want {
+				t.Errorf("RateLimited() = %v, want %v for %+v", got, tc.want, e)
+			}
+		})
+	}
+}

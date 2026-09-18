@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 )
 
@@ -23,6 +24,28 @@ type StreamError struct {
 	// Status is the HTTP status the payload names for itself. Gemini nests a
 	// real code, some gateways copy one in; 0 when nothing was stated.
 	Status int
+}
+
+// RateLimited reports whether this in-body failure is the upstream refusing
+// the call for rate reasons, whatever status line carried it. A stream that
+// answers 200 and then fails this way has to be judged like the 429 it would
+// have been had the upstream said so up front: logged as a rate limit, the
+// channel benched, the partial usage not billed.
+func (e StreamError) RateLimited() bool {
+	if e.Status == http.StatusTooManyRequests {
+		return true
+	}
+	t := strings.ToLower(strings.TrimSpace(e.Type))
+	if strings.Contains(t, "rate_limit") {
+		return true
+	}
+	// Gateways also pass through the plain-HTTP name and Gemini's reason
+	// enum instead of a type of their own.
+	switch t {
+	case "too_many_requests", "resource_exhausted":
+		return true
+	}
+	return false
 }
 
 // rawStreamError covers the error shapes of the three dialects plus the

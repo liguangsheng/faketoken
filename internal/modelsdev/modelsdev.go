@@ -10,18 +10,27 @@ package modelsdev
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/faketoken/faketoken/internal/model"
 )
 
 // maxBody caps the download; the feed is about 5 MB today.
 const maxBody = 32 << 20
+
+// maxSaneRate caps one rate in USD per 1M tokens; nothing first-party costs
+// more. Rows above it are skipped, so a feed whose units changed under us
+// (per-1K, per-token) skips everything and dies in the "no priced models"
+// refusal instead of billing 1000×.
+const maxSaneRate = 1000
 
 // providers is both the allow-list and the precedence order: the first
 // provider to publish a model id wins, so `glm-4.7` is priced the way Z.AI
@@ -52,12 +61,16 @@ var providers = []string{
 type Catalogue struct {
 	// Prices is sorted by model name.
 	Prices []model.ModelPrice
+	// FeedSHA256 identifies the exact bytes this catalogue was parsed from,
+	// so an importer can verify that a plan it is about to apply still
+	// describes the feed it was previewed against.
+	FeedSHA256 string
 	// Missing lists allow-listed providers absent from the feed: the sign
 	// that models.dev renamed one and a vendor silently dropped out.
 	Missing []string
-	// Duplicates counts models skipped because a higher-precedence provider
-	// had already priced the same id.
-	Duplicates int
+	// duplicates counts models skipped because a higher-precedence provider
+	// had already priced the same id. Only the parser and its tests read it.
+	duplicates int
 }
 
 type provider struct {
@@ -75,24 +88,30 @@ type cost struct {
 	CacheRead *float64 `json:"cache_read"`
 }
 
+// ErrUpstream marks failures that come from the catalogue endpoint —
+// unreachable, non-200, malformed, empty — as opposed to local storage
+// failures. The console answers 502 for it, so an operator can tell
+// "models.dev is broken" from "this gateway is broken".
+var ErrUpstream = errors.New("catalogue upstream")
+
 // Fetch downloads the feed and reduces it.
 func Fetch(ctx context.Context, client *http.Client, url string) (*Catalogue, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: bad endpoint %q: %v", ErrUpstream, url, err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: request %s: %v", ErrUpstream, url, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s returned HTTP %d", url, resp.StatusCode)
+		return nil, fmt.Errorf("%w: %s returned HTTP %d", ErrUpstream, url, resp.StatusCode)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: read %s: %v", ErrUpstream, url, err)
 	}
 	return Parse(raw)
 }
@@ -102,10 +121,11 @@ func Fetch(ctx context.Context, client *http.Client, url string) (*Catalogue, er
 func Parse(raw []byte) (*Catalogue, error) {
 	var feed map[string]provider
 	if err := json.Unmarshal(raw, &feed); err != nil {
-		return nil, fmt.Errorf("decode catalogue: %w", err)
+		return nil, fmt.Errorf("%w: decode catalogue: %v", ErrUpstream, err)
 	}
 
-	out := &Catalogue{}
+	sum := sha256.Sum256(raw)
+	out := &Catalogue{FeedSHA256: hex.EncodeToString(sum[:])}
 	seen := map[string]struct{}{}
 	for _, id := range providers {
 		found, ok := feed[id]
@@ -129,17 +149,24 @@ func Parse(raw []byte) (*Catalogue, error) {
 			if price.InputPrice < 0 || price.OutputPrice < 0 || price.CachedPrice < 0 {
 				continue
 			}
-			if _, taken := seen[m.ID]; taken {
-				out.Duplicates++
+			if price.InputPrice > maxSaneRate || price.OutputPrice > maxSaneRate || price.CachedPrice > maxSaneRate {
 				continue
 			}
-			seen[m.ID] = struct{}{}
+			// The pricer lower-cases its keys, so ids differing only in case
+			// shadow each other at billing time; keep the higher-precedence
+			// provider's spelling and count the rest as duplicates.
+			key := strings.ToLower(m.ID)
+			if _, taken := seen[key]; taken {
+				out.duplicates++
+				continue
+			}
+			seen[key] = struct{}{}
 			out.Prices = append(out.Prices, price)
 		}
 	}
 
 	if len(out.Prices) == 0 {
-		return nil, errors.New("catalogue holds no priced models")
+		return nil, fmt.Errorf("%w: catalogue holds no priced models", ErrUpstream)
 	}
 	sort.Slice(out.Prices, func(i, j int) bool { return out.Prices[i].Model < out.Prices[j].Model })
 	return out, nil

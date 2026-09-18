@@ -113,3 +113,19 @@ func TestPlanImportLeavesUnknownExistingModelsAlone(t *testing.T) {
 		t.Fatalf("plan = %+v, want a single addition", plan)
 	}
 }
+
+func TestPlanImportDeduplicatesCaseVariants(t *testing.T) {
+	// The pricer lower-cases its keys: two rows differing only in case are
+	// one model at billing time, and the second would silently shadow the
+	// first.
+	incoming := []model.ModelPrice{
+		{Model: "gpt-5", InputPrice: 1.25, OutputPrice: 10},
+		{Model: "GPT-5", InputPrice: 9, OutputPrice: 9},
+	}
+
+	plan := planImport(nil, incoming, false)
+
+	if len(plan.Added) != 1 || plan.Added[0].Model != "gpt-5" {
+		t.Fatalf("added = %+v, want a single row under the first spelling", plan.Added)
+	}
+}

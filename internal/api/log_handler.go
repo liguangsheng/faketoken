@@ -9,6 +9,7 @@ import (
 
 	"github.com/faketoken/faketoken/internal/billing"
 	"github.com/faketoken/faketoken/internal/model"
+	"github.com/faketoken/faketoken/internal/modelsdev"
 	"github.com/faketoken/faketoken/internal/relay"
 	"github.com/faketoken/faketoken/internal/store"
 )
@@ -200,9 +201,12 @@ func (s *Server) handleListPrices(w http.ResponseWriter, r *http.Request) {
 
 // handleImportPrices refreshes the price table from the models.dev catalogue.
 // It is deliberately additive by default: an operator's own rates outrank a
-// third-party catalogue unless they ask for the overwrite. With ?dry_run=true
-// it reports what the import would change and writes nothing, so the console
-// can show the difference before a price that bills real money moves.
+// third-party catalogue unless they ask for the overwrite. Three forms:
+//
+//   - ?dry_run=true: pull the catalogue, report what a write would change.
+//   - a JSON body holding the plan a dry run returned: apply exactly that
+//     plan, refused with 409 if a newer catalogue was fetched in between.
+//   - neither: plan and apply in one step, for callers that skip the preview.
 func (s *Server) handleImportPrices(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	overwrite := queryBool(r, "overwrite")
@@ -214,17 +218,41 @@ func (s *Server) handleImportPrices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A body means "apply this plan", not "plan again": the operator
+	// confirmed a specific preview, and re-planning could land something
+	// else if the catalogue moved in between.
+	var submitted *billing.ImportPlan
+	if r.ContentLength != 0 {
+		if !decode(w, r, &submitted) {
+			return
+		}
+	}
+
 	var (
 		plan *billing.ImportPlan
 		err  error
 	)
-	if dryRun {
+	switch {
+	case dryRun:
 		plan, err = s.importer.Plan(ctx, overwrite)
-	} else {
+	case submitted != nil:
+		plan = submitted
+		err = s.importer.Apply(ctx, submitted)
+	default:
 		plan, err = s.importer.Import(ctx, overwrite)
 	}
 	if err != nil {
-		failErr(w, err)
+		switch {
+		case errors.Is(err, billing.ErrStaleFeed):
+			fail(w, http.StatusConflict, err.Error())
+		case errors.Is(err, modelsdev.ErrUpstream):
+			// The catalogue endpoint is the operator's mirror or models.dev;
+			// 502 says "the upstream is the problem", not this gateway.
+			slog.Warn("price catalogue fetch failed", "error", err)
+			fail(w, http.StatusBadGateway, err.Error())
+		default:
+			failErr(w, err)
+		}
 		return
 	}
 	// A dry run changes nothing, so the in-memory table is still correct.
@@ -236,13 +264,14 @@ func (s *Server) handleImportPrices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ok(w, map[string]any{
-		"dry_run":   dryRun,
-		"overwrite": plan.Overwrite,
-		"total":     plan.Total,
-		"added":     plan.Added,
-		"changed":   plan.Changed,
-		"kept":      plan.Kept,
-		"unchanged": plan.Unchanged,
+		"dry_run":     dryRun,
+		"overwrite":   plan.Overwrite,
+		"total":       plan.Total,
+		"added":       plan.Added,
+		"changed":     plan.Changed,
+		"kept":        plan.Kept,
+		"unchanged":   plan.Unchanged,
+		"feed_sha256": plan.FeedSHA256,
 	})
 }
 
