@@ -221,7 +221,7 @@ export default function Invites() {
         />
       )}
 
-      <Space wrap size={8} style={{ marginBottom: 12 }}>
+      <Space wrap className="filter-bar" size={8} style={{ marginBottom: 12 }}>
         <Input
           allowClear
           prefix={<SearchOutlined className="text-muted" />}

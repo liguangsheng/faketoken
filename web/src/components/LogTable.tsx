@@ -28,9 +28,13 @@ import {
   Typography,
 } from "antd";
 import {
+  ApiOutlined,
+  ClockCircleOutlined,
   CopyOutlined,
+  FieldTimeOutlined,
   KeyOutlined,
   LoadingOutlined,
+  NumberOutlined,
   ReloadOutlined,
   RobotOutlined,
   SearchOutlined,
@@ -117,6 +121,14 @@ const INFLIGHT_SYNC_GRACE = 2;
 const statusTone = (code: number) =>
   code < 400 ? "green" : code < 500 ? "orange" : "red";
 
+// The card's left stripe reads pass/fail down a phone list without parsing any
+// number. Maps the same tone the status tag uses to a card modifier class.
+const cardTone = (row: LogRow): string => {
+  if (isLive(row)) return "live";
+  const tone = rowTone(row);
+  return tone === "green" ? "ok" : tone === "orange" ? "warn" : "err";
+};
+
 // An upstream can answer 200 and then fail inside the body — an SSE stream
 // that ends with an error event is the common case. The status code we
 // relayed is still the truth, so it is shown unchanged; only the colour
@@ -154,6 +166,11 @@ interface LiveRowLayout {
  * 错误 declares no width and takes whatever is left over; the floor here is
  * what the hand-tuned scroll.x used to leave it (1670 less the 1440 of fixed
  * columns), so a wide window looks exactly as it did before.
+ */
+/**
+ * Column widths and their reveal breakpoints, for the desktop/tablet table.
+ * On a phone the table drops to a single full-width column (see phoneColumns),
+ * so this geometry only drives the md+ layout and its scroll width.
  */
 const COLUMN_GEOMETRY = {
   createdAt: { width: 150 },
@@ -770,6 +787,115 @@ export default function LogTable({
     </Tooltip>
   );
 
+  // On a phone a horizontally scrolling table can only ever show a slice of a
+  // row at once. Collapse it instead to one full-width column whose cell packs
+  // every field a log is read for — model, status, cost, timing, tokens,
+  // channel, error — into a compact card. Nothing is hidden behind a swipe.
+  const phoneColumns = [
+    {
+      title: "调用记录",
+      key: "row",
+      render: (_: unknown, row: LogRow) => {
+        const live = isLive(row);
+        const mapped = row.upstream_model && row.upstream_model !== row.model;
+        const elapsed = live
+          ? Math.max(0, now - new Date(row.created_at).getTime())
+          : 0;
+        return (
+          <div className={`log-card log-card--${cardTone(row)}`}>
+            <div className="log-card__top">
+              <span className="log-card__model mono">{row.model}</span>
+              <span className="log-card__cost mono">
+                {live ? "" : formatUSD(row.cost)}
+              </span>
+            </div>
+
+            {mapped && (
+              <div className="log-card__mapped mono text-muted">
+                → {row.upstream_model}
+              </div>
+            )}
+
+            <div className="log-card__tags">
+              {live ? (
+                <Tag color="processing" icon={<LoadingOutlined />}>
+                  进行中
+                </Tag>
+              ) : (
+                <Tag color={rowTone(row)} style={{ marginInlineEnd: 0 }}>
+                  {row.status_code}
+                </Tag>
+              )}
+              {row.stream && <Tag color="blue">流</Tag>}
+              {row.retries > 0 && <Tag color="gold">×{row.retries + 1}</Tag>}
+              {row.reasoning_effort && (
+                <Tag color={REASONING_TONE[row.reasoning_effort] ?? "default"}>
+                  {row.reasoning_effort}
+                </Tag>
+              )}
+              {row.client_type && row.client_type !== "unknown" && (
+                <Tag>{row.client_type}</Tag>
+              )}
+            </div>
+
+            <div className="log-card__meta">
+              <span className="log-card__meta-item">
+                <ClockCircleOutlined />
+                <span className="log-card__meta-text">
+                  {formatTimeShort(row.created_at)}
+                </span>
+              </span>
+              {!live && (
+                <span className="log-card__meta-item log-card__meta-item--end">
+                  <span className="log-card__meta-text log-card__meta-id">
+                    #{row.id}
+                  </span>
+                </span>
+              )}
+              <span className="log-card__meta-item">
+                <FieldTimeOutlined />
+                <span className="log-card__meta-text">
+                  {live
+                    ? formatDuration(elapsed)
+                    : formatDuration(row.duration_ms)}
+                </span>
+              </span>
+              {!live && (
+                <span className="log-card__meta-item log-card__meta-item--end">
+                  <NumberOutlined />
+                  <span className="log-card__meta-text">
+                    {formatCompact(row.prompt_tokens)}/
+                    {formatCompact(row.completion_tokens)}
+                  </span>
+                </span>
+              )}
+              {row.channel_id > 0 && (
+                <span className="log-card__meta-item log-card__meta-item--wide">
+                  <ApiOutlined />
+                  <span className="log-card__meta-text">
+                    #{row.channel_id}
+                    {row.channel_name ? ` ${row.channel_name}` : ""}
+                  </span>
+                </span>
+              )}
+              <span className="log-card__meta-item log-card__meta-item--wide">
+                <KeyOutlined />
+                <span className="log-card__meta-text">
+                  {admin && row.username ? `${row.username} · ` : ""}
+                  {row.token_name || "-"}
+                </span>
+              </span>
+            </div>
+
+            {row.error && (
+              <div className="log-card__error">{row.error}</div>
+            )}
+          </div>
+        );
+      },
+    },
+  ];
+
   return (
     <>
       {showRate && admin && (
@@ -801,7 +927,7 @@ export default function LogTable({
           {liveToggle}
         </Space>
       )}
-      <Space wrap style={{ marginBottom: 12 }} size={8}>
+      <Space wrap className="filter-bar" style={{ marginBottom: 12 }} size={8}>
         <Input
           allowClear
           prefix={<SearchOutlined className="text-muted" />}
@@ -928,7 +1054,7 @@ export default function LogTable({
           ref={liveTableRoot}
           rowKey={rowKeyOf}
           size="small"
-          className={`table-clickable${admin ? " log-table--live" : ""}`}
+          className={`table-clickable${admin ? " log-table--live" : ""}${narrow ? " log-table--phone" : ""}`}
           loading={loading}
           dataSource={tableRows}
           rowClassName={(row) =>
@@ -938,7 +1064,7 @@ export default function LogTable({
                 ? "log-row--enter"
                 : ""
           }
-          scroll={{ x: scrollX }}
+          scroll={narrow ? undefined : { x: scrollX }}
           onRow={(row) => {
             // A call that has not finished has no stored exchange to read, so
             // it is not a click target: the drawer would open on nothing.
@@ -1006,7 +1132,7 @@ export default function LogTable({
               setPageSize(nextSize);
             },
           }}
-          columns={[
+          columns={narrow ? phoneColumns : [
             {
               // The id identifies the row and the timestamp places it; they are
               // read together and neither needs a column of its own.

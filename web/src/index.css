@@ -351,6 +351,52 @@ body {
   overflow-x: auto;
 }
 
+/* On a phone a header search box keeps its desktop width and leaves the row
+   half empty; let it take the full width and drop the buttons below it. */
+@media (max-width: 575px) {
+  .page-header__extra {
+    width: 100%;
+  }
+
+  .page-header__extra > .ant-input-affix-wrapper,
+  .page-header__extra > .ant-input {
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+}
+
+/* A strip of search boxes and selects above a table. Each control declares a
+   fixed desktop width; on a phone those widths wrap into a ragged stack. Below
+   sm the Space becomes a full-width row whose items grow to share it and wrap
+   two-up, so the controls fill the screen instead of keeping their fixed size. */
+@media (max-width: 575px) {
+  .filter-bar.ant-space {
+    display: flex;
+    width: 100%;
+  }
+
+  /* Only the search/select controls share the row; a reset or delete button
+     keeps its natural size instead of stretching to a full column. */
+  .filter-bar > .ant-space-item:has(.ant-input-affix-wrapper),
+  .filter-bar > .ant-space-item:has(> .ant-input),
+  .filter-bar > .ant-space-item:has(.ant-select),
+  .filter-bar > .ant-space-item:has(.ant-picker),
+  .filter-bar > .ant-space-item:has(.ant-input-number) {
+    flex: 1 1 140px;
+    min-width: 0;
+  }
+
+  /* Inline width:Npx on the controls is what pins the desktop size; only
+     !important reaches past it. */
+  .filter-bar .ant-input-affix-wrapper,
+  .filter-bar .ant-input,
+  .filter-bar .ant-select,
+  .filter-bar .ant-picker,
+  .filter-bar .ant-input-number {
+    width: 100% !important;
+  }
+}
+
 /* A form label outside antd Form (Playground uses hand-rolled fields). Kept in
    step with the Form labelColor tokens rather than borrowed from StatCard. */
 .field-label {
@@ -821,6 +867,182 @@ body {
 
 .ant-table-wrapper .ant-table-tbody > tr > td {
   transition: background-color 0.15s ease;
+}
+
+/* On a phone a log row is read for the model, its status and what it cost, and
+   every one of those is a short token. Shrinking the type and squeezing the
+   cell padding turns "one field per screen" into a legible five-column row
+   without changing what any cell says. Scoped to the log table so the denser
+   admin tables elsewhere keep their comfortable size. */
+@media (max-width: 768px) {
+  .log-table--phone .ant-table.ant-table-small {
+    font-size: 12px;
+  }
+
+  .log-table--phone .ant-table-small .ant-table-thead > tr > th,
+  .log-table--phone .ant-table-small .ant-table-tbody > tr > td {
+    padding: 8px 10px;
+  }
+
+  /* rc-table lets a cell grow to its content; a long unbreakable token would
+     push the single column past the viewport and bring back the horizontal
+     scroll the card layout exists to kill. Fixed layout + a hard 100% caps the
+     cell at the screen and lets the ellipsis rules inside actually bite. */
+  .log-table--phone .ant-table-small table {
+    table-layout: fixed;
+    width: 100%;
+  }
+
+  .log-table--phone .ant-table-small .ant-table-tbody > tr > td {
+    max-width: 0;
+  }
+
+  .log-table--phone .mono {
+    font-size: 11.5px;
+  }
+
+  .log-table--phone .ant-tag {
+    font-size: 11px;
+    line-height: 18px;
+    padding-inline: 5px;
+  }
+}
+
+/* The one full-width cell a log row collapses into on a phone: a compact card
+   that stacks everything a scrolling table would have spread across columns.
+   A colour stripe down the left edge carries pass/warn/fail, so the outcome of
+   a whole screen of rows reads before any number does. */
+.log-card {
+  border-inline-start: 3px solid var(--app-border-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-inline-start: 10px;
+}
+
+.log-card--ok {
+  border-inline-start-color: var(--app-success);
+}
+
+.log-card--warn {
+  border-inline-start-color: var(--app-warning);
+}
+
+.log-card--err {
+  border-inline-start-color: var(--app-danger);
+}
+
+.log-card--live {
+  border-inline-start-color: var(--app-brand);
+}
+
+.log-card__top {
+  align-items: baseline;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.log-card__model {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 650;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-card__cost {
+  flex: none;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.log-card__mapped {
+  font-size: 11px;
+  margin-top: -3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.log-card__tags .ant-tag {
+  margin-inline-end: 0;
+}
+
+/* The supporting facts. A fixed two-column grid where each row pairs a
+   left-aligned field with a right-aligned one (time|id, duration|tokens), so
+   both edges of the card carry weight instead of everything bunching left. The
+   two long fields (channel, key) span the full width and truncate. Icons lead
+   each cell so the fields are told apart by shape, not by reading their
+   values. */
+.log-card__meta {
+  color: var(--app-text-muted);
+  display: grid;
+  font-size: 11.5px;
+  gap: 4px 12px;
+  /* minmax(0, 1fr), not 1fr: a grid track's implicit minimum is min-content,
+     so a long unbreakable value would otherwise widen its column past the
+     card and reintroduce the horizontal scroll. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  line-height: 1.5;
+}
+
+.log-card__meta-item {
+  align-items: center;
+  display: flex;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  gap: 5px;
+  min-width: 0;
+}
+
+.log-card__meta-item .anticon {
+  color: var(--app-text-faint);
+  flex: none;
+  font-size: 11px;
+}
+
+/* The right-hand field of a pair sits against the card's right edge. */
+.log-card__meta-item--end {
+  justify-content: flex-end;
+}
+
+/* Channel and key names run long, so they claim the whole row and truncate. */
+.log-card__meta-item--wide {
+  grid-column: 1 / -1;
+}
+
+/* The row id is a reference, not a fact worth an icon; dimmed. */
+.log-card__meta-id {
+  color: var(--app-text-faint);
+}
+
+.log-card__meta-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-card__error {
+  color: var(--app-danger);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow: hidden;
+  /* A long error is often one unbroken string (a URL, a JSON blob); let it
+     break anywhere so it wraps inside the card instead of widening it. */
+  overflow-wrap: anywhere;
+  /* Two lines of the error, then ellipsis; the drawer holds the rest. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 /* 折叠分区嵌在抽屉表单里时，与相邻的 Divider 分区左缘对齐。 */
