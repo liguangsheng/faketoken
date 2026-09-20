@@ -67,9 +67,6 @@ export interface Channel {
   retry_backoff_ms: number
   test_model: string
   supported_protocols: string[]
-  convert_messages_to_chat: boolean
-  convert_responses_to_chat: boolean
-  /** Renames the thinking level on the way upstream, e.g. `{max: 'xhigh'}`. */
   /**
    * Thinking-level renames, keyed by which models they apply to: "*" is every
    * model the channel serves, "gpt-5*" a prefix, a bare name only itself.

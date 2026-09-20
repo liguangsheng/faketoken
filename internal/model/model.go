@@ -48,21 +48,6 @@ func (c *Channel) Routable() bool {
 	return c.Status == StatusEnabled && !c.Archived
 }
 
-// SupportsProtocol reports whether the channel advertises the protocol. An
-// empty slice is treated as "every protocol" so a channel created before the
-// column existed keeps routing as it did before.
-func (c *Channel) SupportsProtocol(protocol string) bool {
-	if protocol == "" || len(c.SupportedProtocols) == 0 {
-		return true
-	}
-	for _, p := range c.SupportedProtocols {
-		if p == protocol {
-			return true
-		}
-	}
-	return false
-}
-
 type User struct {
 	ID           int64     `json:"id"`
 	Username     string    `json:"username"`
@@ -164,9 +149,7 @@ type Channel struct {
 	// The probe narrows it; the operator can edit it. Empty means every
 	// dialect, so an old channel keeps routing as it did before the column
 	// existed.
-	SupportedProtocols     []string `json:"supported_protocols"`
-	ConvertMessagesToChat  bool     `json:"convert_messages_to_chat"`
-	ConvertResponsesToChat bool     `json:"convert_responses_to_chat"`
+	SupportedProtocols []string `json:"supported_protocols"`
 	// ReasoningEffortMapping renames the thinking level a caller asked for into
 	// the one this upstream accepts ("max" -> "xhigh"), per model.
 	//

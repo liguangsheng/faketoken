@@ -47,8 +47,6 @@ type channelInput struct {
 	// Empty means every dialect, so channels created before the field existed
 	// keep routing as they did before.
 	SupportedProtocols     []string            `json:"supported_protocols"`
-	ConvertMessagesToChat  bool                `json:"convert_messages_to_chat"`
-	ConvertResponsesToChat bool                `json:"convert_responses_to_chat"`
 	ReasoningEffortMapping model.EffortMapping `json:"reasoning_effort_mapping"`
 	AllowAttachments       *bool               `json:"allow_attachments"`
 	LockUserAgent          bool                `json:"lock_user_agent"`
@@ -85,8 +83,6 @@ func (in channelInput) toModel(id int64) *model.Channel {
 		RetryBackoffMS:         max(in.RetryBackoffMS, 0),
 		TestModel:              strings.TrimSpace(in.TestModel),
 		SupportedProtocols:     in.SupportedProtocols,
-		ConvertMessagesToChat:  in.ConvertMessagesToChat,
-		ConvertResponsesToChat: in.ConvertResponsesToChat,
 		ReasoningEffortMapping: model.NormaliseEffortMapping(in.ReasoningEffortMapping),
 		AllowAttachments:       in.AllowAttachments == nil || *in.AllowAttachments,
 		LockUserAgent:          in.LockUserAgent,
@@ -288,18 +284,6 @@ func validChannelRetry(in channelInput) (string, bool) {
 	return "", true
 }
 
-func validProtocolConversion(in channelInput) (string, bool) {
-	if (!in.ConvertMessagesToChat && !in.ConvertResponsesToChat) || len(in.SupportedProtocols) == 0 {
-		return "", true
-	}
-	for _, protocol := range in.SupportedProtocols {
-		if strings.TrimSpace(protocol) == model.ProtocolChatCompletions {
-			return "", true
-		}
-	}
-	return "protocol conversion requires chat_completions in supported_protocols", false
-}
-
 func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	var in channelInput
 	if !decode(w, r, &in) {
@@ -318,10 +302,6 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if message, ok := validKeepalive(in); !ok {
-		fail(w, http.StatusBadRequest, message)
-		return
-	}
-	if message, ok := validProtocolConversion(in); !ok {
 		fail(w, http.StatusBadRequest, message)
 		return
 	}
@@ -367,10 +347,6 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if message, ok := validKeepalive(in); !ok {
-		fail(w, http.StatusBadRequest, message)
-		return
-	}
-	if message, ok := validProtocolConversion(in); !ok {
 		fail(w, http.StatusBadRequest, message)
 		return
 	}
