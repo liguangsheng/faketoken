@@ -633,22 +633,14 @@ func (s *Server) logChannelTest(ctx context.Context, admin *model.User,
 		entry.Cost, _ = s.pricer.Cost(entry.Model, result.Usage, admin.Group, ch.PriceRatio)
 	}
 
-	if err := s.store.InsertLog(ctx, entry); err != nil {
-		// A missing log line must not turn a successful probe into a failure.
-		slog.Error("channel test log insert failed", "channel", ch.ID, "error", err)
-		return
-	}
-	// No key: a probe is issued and logged in one place, so no console ever
-	// drew a placeholder for it.
-	s.stream.Publish("", entry)
-
-	// The exchange itself is the most useful part of a probe: it shows what
-	// was asked and exactly how the upstream answered.
-	detail := result.Detail
-	detail.LogID = entry.ID
-	if err := s.store.InsertLogDetail(ctx, &detail); err != nil {
-		slog.Error("channel test detail insert failed", "log", entry.ID, "error", err)
-	}
+	// No live key: a probe is issued and logged in one place, so no console
+	// ever drew a placeholder for it. The exchange itself is the most useful
+	// part of a probe — it shows what was asked and exactly how the upstream
+	// answered — and it is already sanitised.
+	s.relay.PersistLog(ctx, entry, "", func(int) *model.RequestLogDetail {
+		detail := result.Detail
+		return &detail
+	})
 }
 
 // ------------------------------------------------------------ bulk actions

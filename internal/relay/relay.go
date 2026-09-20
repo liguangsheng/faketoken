@@ -1114,9 +1114,7 @@ func (rl *Relay) settle(p *principal, entry *model.RequestLog, captured *capture
 	}
 	applyResponseDetails(captured, out)
 
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 10*time.Second)
-	go func() {
-		defer cancel()
+	detached(func(ctx context.Context) {
 		if entry.Cost > 0 {
 			if err := rl.st.ConsumeQuota(ctx, p.user.ID, p.token.ID, entry.Cost); err != nil {
 				slog.Error("quota settlement failed", "user", p.user.ID, "error", err)
@@ -1127,17 +1125,8 @@ func (rl *Relay) settle(p *principal, entry *model.RequestLog, captured *capture
 			failure = entry.Error
 		}
 		rl.st.RecordChannelResult(ctx, ch.ID, entry.Cost, failure)
-		if err := rl.st.InsertLog(ctx, entry); err != nil {
-			slog.Error("request log insert failed", "error", err)
-		} else {
-			// Detail first, then the announcement. A console that is told about
-			// a row immediately opens it, and converting the bodies takes long
-			// enough for a large request that the reverse order would show
-			// "no longer retained" for a detail that was still being written.
-			rl.recordDetail(ctx, entry.ID, captured)
-			rl.publishLog(captured.liveKey, entry)
-		}
-	}()
+		rl.PersistLog(ctx, entry, captured.liveKey, captured.detail)
+	})
 }
 
 // finish logs a request that never reached an upstream.
@@ -1146,6 +1135,8 @@ func (rl *Relay) finish(entry *model.RequestLog, captured *capturedRequest,
 	entry.StatusCode = int32(status)
 	entry.DurationMS = int32(time.Since(started).Milliseconds())
 	entry.Error = message
+	// No upstream answered, so the reply the caller got is the one this relay
+	// wrote; the log shows that instead of nothing.
 	if captured.responseBody == "" {
 		body, _ := json.MarshalIndent(map[string]any{
 			"error": map[string]any{"message": message, "status": status},
@@ -1156,26 +1147,52 @@ func (rl *Relay) finish(entry *model.RequestLog, captured *capturedRequest,
 		captured.responseBody = string(body)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	detached(func(ctx context.Context) {
+		rl.PersistLog(ctx, entry, captured.liveKey, captured.detail)
+	})
+}
+
+// logWriteBudget bounds the detached write of one log row and its bodies. It
+// is independent of the request context on purpose: the caller may already be
+// gone, and the row still has to land.
+const logWriteBudget = 10 * time.Second
+
+// detached runs fn on its own goroutine, off the path the caller is waiting on.
+func detached(fn func(ctx context.Context)) {
+	ctx, cancel := context.WithTimeout(context.Background(), logWriteBudget)
 	go func() {
 		defer cancel()
-		if err := rl.st.InsertLog(ctx, entry); err != nil {
-			slog.Error("request log insert failed", "error", err)
-		} else {
-			// Detail first, then the announcement. A console that is told about
-			// a row immediately opens it, and converting the bodies takes long
-			// enough for a large request that the reverse order would show
-			// "no longer retained" for a detail that was still being written.
-			rl.recordDetail(ctx, entry.ID, captured)
-			rl.publishLog(captured.liveKey, entry)
-		}
+		fn(ctx)
 	}()
 }
 
-// recordDetail converts the captured request and stores it. This runs on the
-// detached logging goroutine, which is the whole point: the conversion is the
-// expensive part and the caller has already been answered.
-func (rl *Relay) recordDetail(ctx context.Context, logID int64, captured *capturedRequest) {
+// PersistLog stores the row, then its bodies, then tells the consoles. It is
+// the one path every logged call goes through — relayed, refused, or probed
+// from the console — so the three steps cannot drift apart.
+//
+// Detail before the announcement: a console that is told about a row opens it
+// at once, and converting the bodies takes long enough for a large request
+// that the reverse order would show "no longer retained" for a detail that
+// was still being written.
+//
+// liveKey names the placeholder this row replaces; empty when nothing was
+// announced. detail is called only when bodies are being retained, which is
+// what keeps the conversion off the path when the window is closed.
+func (rl *Relay) PersistLog(ctx context.Context, entry *model.RequestLog, liveKey string,
+	detail func(limit int) *model.RequestLogDetail) {
+
+	if err := rl.st.InsertLog(ctx, entry); err != nil {
+		slog.Error("request log insert failed", "error", err)
+		return
+	}
+	rl.recordDetail(ctx, entry.ID, detail)
+	rl.publishLog(liveKey, entry)
+}
+
+// recordDetail converts the captured exchange and stores it.
+func (rl *Relay) recordDetail(ctx context.Context, logID int64,
+	detail func(limit int) *model.RequestLogDetail) {
+
 	if logID == 0 {
 		return
 	}
@@ -1189,9 +1206,9 @@ func (rl *Relay) recordDetail(ctx context.Context, logID int64, captured *captur
 		return
 	}
 
-	detail := captured.detail(rl.captureLimit())
-	detail.LogID = logID
-	if err := rl.st.InsertLogDetail(ctx, detail); err != nil {
+	row := detail(rl.captureLimit())
+	row.LogID = logID
+	if err := rl.st.InsertLogDetail(ctx, row); err != nil {
 		// A missing diagnostic body must never surface to the caller, whose
 		// request has already been answered.
 		slog.Error("request detail insert failed", "log", logID, "error", err)

@@ -75,11 +75,18 @@ func captureRequest(r *http.Request, body []byte) *capturedRequest {
 // detail does the deferred work and produces the row to store.
 func (c *capturedRequest) detail(limit int) *model.RequestLogDetail {
 	requestBody, truncated := sanitizeBody(c.contentType, c.body, false, limit)
+	responseHeaders := c.responseHeaders
+	if responseHeaders == nil {
+		// A call that ended before any upstream answered has no headers to
+		// show. The column is NOT NULL and a nil map is encoded as NULL, which
+		// would lose the whole row instead of showing an empty header list.
+		responseHeaders = map[string][]string{}
+	}
 	return &model.RequestLogDetail{
 		RequestHeaders:    c.headers,
 		RequestBody:       requestBody,
 		RequestTruncated:  truncated,
-		ResponseHeaders:   c.responseHeaders,
+		ResponseHeaders:   responseHeaders,
 		ResponseBody:      c.responseBody,
 		ResponseTruncated: c.responseTruncated,
 	}
