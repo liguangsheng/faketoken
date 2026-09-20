@@ -105,8 +105,8 @@ func (in channelInput) toModel(id int64) *model.Channel {
 }
 
 func cleanUserAgentLocks(in map[string]string) map[string]string {
-	out := make(map[string]string, len(validUserAgentProtocols))
-	for protocol := range validUserAgentProtocols {
+	out := make(map[string]string, len(model.AllProtocols))
+	for _, protocol := range model.AllProtocols {
 		if value := strings.TrimSpace(in[protocol]); value != "" {
 			out[protocol] = value
 		}
@@ -156,11 +156,7 @@ func validEffortMapping(in channelInput) (string, bool) {
 	return "", true
 }
 
-var validUserAgentProtocols = map[string]bool{
-	model.ProtocolChatCompletions: true,
-	model.ProtocolResponses:       true,
-	model.ProtocolMessages:        true,
-}
+const protocolHint = "protocol must be chat_completions, responses, or messages"
 
 func (s *Server) handleClearChannelUserAgent(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r, "id")
@@ -169,8 +165,8 @@ func (s *Server) handleClearChannelUserAgent(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	protocol := strings.TrimSpace(r.URL.Query().Get("protocol"))
-	if !validUserAgentProtocols[protocol] {
-		fail(w, http.StatusBadRequest, "protocol must be chat_completions, responses, or messages")
+	if !model.ValidProtocol(protocol) {
+		fail(w, http.StatusBadRequest, protocolHint)
 		return
 	}
 	updated, err := s.store.ClearChannelUserAgent(r.Context(), id, protocol)
@@ -479,9 +475,9 @@ func (s *Server) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength > 0 && !decode(w, r, &in) {
 		return
 	}
-	if !relay.ValidTestProtocol(in.Protocol) {
-		fail(w, http.StatusBadRequest,
-			"protocol must be responses, chat_completions, or messages")
+	// Empty is allowed: the probe defaults it to chat completions.
+	if p := strings.TrimSpace(in.Protocol); p != "" && !model.ValidProtocol(p) {
+		fail(w, http.StatusBadRequest, protocolHint)
 		return
 	}
 

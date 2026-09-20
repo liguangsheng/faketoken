@@ -152,7 +152,7 @@ type TestOptions struct {
 // TestChannel sends the smallest possible completion so an operator can verify
 // credentials, routing and model mapping in one click.
 func (rl *Relay) TestChannel(ctx context.Context, ch *model.Channel, testModel string) TestResult {
-	return rl.TestChannelWith(ctx, ch, TestOptions{Model: testModel, Protocol: TestProtocolChatCompletions})
+	return rl.TestChannelWith(ctx, ch, TestOptions{Model: testModel, Protocol: model.ProtocolChatCompletions})
 }
 
 // TestChannelWith runs a probe, optionally carrying a prompt.
@@ -334,32 +334,19 @@ func extractReply(body []byte) string {
 // answer worth storing.
 const probeBodyLimit = 256 << 10
 
-// probeRequest builds the smallest request that answers the question being
-// asked: without a prompt one token is enough to prove the credential works,
-// while a prompted probe needs room for a real reply.
-const (
-	TestProtocolResponses       = "responses"
-	TestProtocolChatCompletions = "chat_completions"
-	TestProtocolMessages        = "messages"
-)
-
-func ValidTestProtocol(protocol string) bool {
-	switch strings.TrimSpace(protocol) {
-	case "", TestProtocolResponses, TestProtocolChatCompletions, TestProtocolMessages:
-		return true
-	default:
-		return false
-	}
-}
-
+// normaliseTestProtocol defaults an unspecified probe to chat completions,
+// the dialect every compatible gateway answers.
 func normaliseTestProtocol(protocol string) string {
 	protocol = strings.TrimSpace(protocol)
 	if protocol == "" {
-		return TestProtocolChatCompletions
+		return model.ProtocolChatCompletions
 	}
 	return protocol
 }
 
+// probeRequest builds the smallest request that answers the question being
+// asked: without a prompt one token is enough to prove the credential works,
+// while a prompted probe needs room for a real reply.
 func probeRequest(protocol, modelName, prompt string) (string, []byte) {
 	maxTokens := 1
 	text := "hi"
@@ -371,14 +358,14 @@ func probeRequest(protocol, modelName, prompt string) (string, []byte) {
 	}
 
 	switch protocol {
-	case TestProtocolMessages:
+	case model.ProtocolMessages:
 		payload, _ := json.Marshal(map[string]any{
 			"model":      modelName,
 			"max_tokens": maxTokens,
 			"messages":   []map[string]string{{"role": "user", "content": text}},
 		})
 		return "/v1/messages", payload
-	case TestProtocolResponses:
+	case model.ProtocolResponses:
 		payload, _ := json.Marshal(map[string]any{
 			"model": modelName, "input": text, "max_output_tokens": maxTokens,
 		})

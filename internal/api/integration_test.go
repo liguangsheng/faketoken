@@ -6997,9 +6997,9 @@ func TestChannelTestCanChooseEachRequestProtocol(t *testing.T) {
 	tests := []struct {
 		protocol, endpoint, reply, auth, xAPIKey string
 	}{
-		{protocol: relay.TestProtocolResponses, endpoint: "/v1/responses", reply: "responses-ok", auth: "Bearer upstream-key"},
-		{protocol: relay.TestProtocolChatCompletions, endpoint: "/v1/chat/completions", reply: "chat-ok", auth: "Bearer upstream-key"},
-		{protocol: relay.TestProtocolMessages, endpoint: "/v1/messages", reply: "messages-ok", xAPIKey: "upstream-key"},
+		{protocol: model.ProtocolResponses, endpoint: "/v1/responses", reply: "responses-ok", auth: "Bearer upstream-key"},
+		{protocol: model.ProtocolChatCompletions, endpoint: "/v1/chat/completions", reply: "chat-ok", auth: "Bearer upstream-key"},
+		{protocol: model.ProtocolMessages, endpoint: "/v1/messages", reply: "messages-ok", xAPIKey: "upstream-key"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.protocol, func(t *testing.T) {

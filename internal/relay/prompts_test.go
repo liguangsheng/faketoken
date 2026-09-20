@@ -3,6 +3,8 @@ package relay
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/faketoken/faketoken/internal/model"
 )
 
 func TestPromptTemplatesAreUsable(t *testing.T) {
@@ -46,7 +48,7 @@ func TestPromptTemplatesAreImmutableFromOutside(t *testing.T) {
 func TestProbeRequestSizesTheReplyBudget(t *testing.T) {
 	// Without a prompt the probe only proves the credential works, so one
 	// token keeps it nearly free.
-	for _, protocol := range []string{TestProtocolChatCompletions, TestProtocolMessages} {
+	for _, protocol := range []string{model.ProtocolChatCompletions, model.ProtocolMessages} {
 		_, payload := probeRequest(protocol, "m", "")
 		var decoded struct {
 			MaxTokens int `json:"max_tokens"`
@@ -59,7 +61,7 @@ func TestProbeRequestSizesTheReplyBudget(t *testing.T) {
 		}
 	}
 
-	path, payload := probeRequest(TestProtocolChatCompletions, "m", "讲个笑话")
+	path, payload := probeRequest(model.ProtocolChatCompletions, "m", "讲个笑话")
 	if path != "/v1/chat/completions" {
 		t.Fatalf("path = %q", path)
 	}
@@ -79,7 +81,7 @@ func TestProbeRequestSizesTheReplyBudget(t *testing.T) {
 		t.Fatalf("prompt was not carried: %s", payload)
 	}
 
-	responsePath, responsePayload := probeRequest(TestProtocolResponses, "m", "讲个笑话")
+	responsePath, responsePayload := probeRequest(model.ProtocolResponses, "m", "讲个笑话")
 	if responsePath != "/v1/responses" {
 		t.Fatalf("responses path = %q", responsePath)
 	}

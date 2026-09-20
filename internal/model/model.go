@@ -3,6 +3,7 @@ package model
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -40,6 +41,9 @@ const (
 
 // AllProtocols lists every known upstream dialect.
 var AllProtocols = []string{ProtocolChatCompletions, ProtocolResponses, ProtocolMessages}
+
+// ValidProtocol reports whether p names one of AllProtocols.
+func ValidProtocol(p string) bool { return slices.Contains(AllProtocols, p) }
 
 // Routable reports whether the channel may serve traffic at all. It is what the
 // routing tables' enabled flag is derived from, so an archived channel cannot
