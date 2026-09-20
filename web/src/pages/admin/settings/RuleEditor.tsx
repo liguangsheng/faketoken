@@ -1,7 +1,7 @@
 import { Button, Form, Input, Select, Space } from 'antd'
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 
-import type { BlockRule } from '../../../api/client'
+import type { BlockRule } from '../../../api/types'
 import { MAX_REPLIES, MAX_RULE_NAME, STATUS_OPTIONS, nonEmpty } from './shared'
 
 interface Props {

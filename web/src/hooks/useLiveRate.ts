@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import type { RequestLog } from '../api/client'
+import type { RequestLog } from '../api/types'
 
 const WINDOW_MS = 60_000
 

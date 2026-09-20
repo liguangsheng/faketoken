@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Alert, Button, Collapse, Form, Select, Space, Switch, Tag, Typography } from 'antd'
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 
-import type { BlockRule } from '../../../api/client'
+import type { BlockRule } from '../../../api/types'
 import EmptyState from '../../../components/EmptyState'
 import RuleEditor from './RuleEditor'
 import SettingsForm from './SettingsForm'

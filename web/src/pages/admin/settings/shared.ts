@@ -1,4 +1,4 @@
-import type { ConsoleSettings } from '../../../api/client'
+import type { ConsoleSettings } from '../../../api/types'
 
 /**
  * Everything the tab panels share: the bounds the server enforces, the option
