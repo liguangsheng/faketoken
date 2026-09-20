@@ -1762,6 +1762,46 @@ func TestChannelCanRejectConversationAttachmentsBeforeUpstream(t *testing.T) {
 	}
 }
 
+// A channel that refuses attachments is passed over, not the request: the next
+// candidate that takes them gets it, and the refusing upstream never sees it.
+func TestAttachmentRoutesPastChannelsThatRefuseIt(t *testing.T) {
+	h := newHarness(t)
+	textOnly := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "should not be reached", 1, 1)
+	})
+	vision := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "seen", 1, 1)
+	})
+	allow := false
+	// The refusing channel outranks the accepting one, so the only way the
+	// request reaches vision is by being routed past text-only.
+	h.createChannel(channelInput{
+		Name: "text-only", Type: "openai", BaseURL: textOnly.URL, APIKey: "upstream-key",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"}, Priority: 100,
+		AllowAttachments: &allow,
+	})
+	h.createChannel(channelInput{
+		Name: "vision", Type: "openai", BaseURL: vision.URL, APIKey: "upstream-key",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"}, Priority: 1,
+	})
+	body := `{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}]}`
+	resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", h.createKey(), body)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("attachment request: HTTP %d, want 200: %s", resp.StatusCode, raw)
+	}
+	if !strings.Contains(string(raw), "seen") {
+		t.Fatalf("attachment request was not answered by the accepting channel: %s", raw)
+	}
+	if got := textOnly.requests.Load(); got != 0 {
+		t.Fatalf("refusing channel was reached %d time(s)", got)
+	}
+	if got := vision.requests.Load(); got != 1 {
+		t.Fatalf("accepting channel was reached %d time(s), want 1", got)
+	}
+}
+
 func TestChannelHeadersOverrideGeneratedAuthentication(t *testing.T) {
 	h := newHarness(t)
 

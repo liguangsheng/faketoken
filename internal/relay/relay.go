@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -517,7 +518,19 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 		lastMessage string
 		attempts    int
 		lastOutcome attemptOutcome
+		// refusedAttachment records that at least one channel was passed over
+		// because it does not take attachments, so the request can be answered
+		// with that reason when nothing else was left to try.
+		refusedAttachment bool
 	)
+
+	// Deciding whether the body carries an attachment means parsing all of it,
+	// and a conversation replayed by a coding agent runs to megabytes. Parsed
+	// at most once, and only if a candidate actually needs the answer: most
+	// channels take attachments and never ask.
+	hasAttachment := sync.OnceValue(func() bool {
+		return hasConversationAttachment(r.Header.Get("Content-Type"), body)
+	})
 
 	// Channels that recently failed move to the back of the queue instead of
 	// being dropped: a degraded upstream still beats a hard failure when it is
@@ -542,11 +555,12 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 		if err != nil {
 			continue
 		}
-		if !ch.AllowAttachments && hasConversationAttachment(r.Header.Get("Content-Type"), body) {
-			const message = "请求不能携带附件"
-			rl.finish(entry, captured, started, http.StatusTooManyRequests, message)
-			writeError(w, http.StatusTooManyRequests, "invalid_request_error", "attachments_not_allowed", message)
-			return
+		// A channel that does not take attachments is passed over, not the
+		// request refused: another candidate may well take them. Like the RPM
+		// skip below, it costs no budget and no rate-limit slot.
+		if !ch.AllowAttachments && hasAttachment() {
+			refusedAttachment = true
+			continue
 		}
 
 		// Per-channel RPM cap. A channel over its rate is treated like a
@@ -640,6 +654,18 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 				}
 			}
 		}
+	}
+
+	// Nothing was tried and the only reason is the attachment. Answered as
+	// its own error rather than as a failed attempt: no upstream was involved,
+	// and the caller can act on it by dropping the attachment. A rate-limit
+	// skip outranks it when both happened, because that one clears by itself
+	// on retry. Neither the channel nor its name is disclosed.
+	if attempts == 0 && refusedAttachment && lastStatus == 0 {
+		const message = "请求不能携带附件"
+		rl.finish(entry, captured, started, http.StatusTooManyRequests, message)
+		writeError(w, http.StatusTooManyRequests, "invalid_request_error", "attachments_not_allowed", message)
+		return
 	}
 
 	if lastStatus == 0 {
