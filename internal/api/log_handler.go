@@ -78,9 +78,8 @@ func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 // megabytes and the list is fetched constantly, so they travel only when
 // somebody opens a specific call.
 func (s *Server) handleAdminLogDetail(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid log id")
+	id, valid := idParam(w, r, "log")
+	if !valid {
 		return
 	}
 

@@ -65,6 +65,17 @@ func pathID(r *http.Request, name string) (int64, error) {
 	return strconv.ParseInt(r.PathValue(name), 10, 64)
 }
 
+// idParam reads the {id} path segment and answers 400 when it is not a
+// number. subject names the resource in the message ("channel", "user").
+func idParam(w http.ResponseWriter, r *http.Request, subject string) (int64, bool) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		fail(w, http.StatusBadRequest, "invalid "+subject+" id")
+		return 0, false
+	}
+	return id, true
+}
+
 func queryInt(r *http.Request, key string, def int) int {
 	if v := r.URL.Query().Get(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {

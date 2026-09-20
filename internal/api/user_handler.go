@@ -68,9 +68,8 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid user id")
+	id, valid := idParam(w, r, "user")
+	if !valid {
 		return
 	}
 	var in userInput
@@ -105,9 +104,8 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid user id")
+	id, valid := idParam(w, r, "user")
+	if !valid {
 		return
 	}
 	if me := userFrom(r.Context()); me.ID == id {
@@ -122,9 +120,8 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGrantQuota(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid user id")
+	id, valid := idParam(w, r, "user")
+	if !valid {
 		return
 	}
 	var in struct {
@@ -146,9 +143,8 @@ func (s *Server) handleGrantQuota(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid user id")
+	id, valid := idParam(w, r, "user")
+	if !valid {
 		return
 	}
 	var in struct {

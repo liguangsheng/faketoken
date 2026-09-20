@@ -91,9 +91,8 @@ func (s *Server) handleListInviteCodes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleInviteStatus(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid invite id")
+	id, valid := idParam(w, r, "invite")
+	if !valid {
 		return
 	}
 	var in struct {

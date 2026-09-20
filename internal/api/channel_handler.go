@@ -155,9 +155,8 @@ func validEffortMapping(in channelInput) (string, bool) {
 const protocolHint = "protocol must be chat_completions, responses, or messages"
 
 func (s *Server) handleClearChannelUserAgent(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid channel id")
+	id, valid := idParam(w, r, "channel")
+	if !valid {
 		return
 	}
 	protocol := strings.TrimSpace(r.URL.Query().Get("protocol"))
@@ -317,9 +316,8 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid channel id")
+	id, valid := idParam(w, r, "channel")
+	if !valid {
 		return
 	}
 	var in channelInput
@@ -340,9 +338,8 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid channel id")
+	id, valid := idParam(w, r, "channel")
+	if !valid {
 		return
 	}
 	if err := s.store.DeleteChannel(r.Context(), id); err != nil {
@@ -353,9 +350,8 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleChannelStatus(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid channel id")
+	id, valid := idParam(w, r, "channel")
+	if !valid {
 		return
 	}
 	var in struct {
@@ -381,9 +377,8 @@ func (s *Server) handleChannelStatus(w http.ResponseWriter, r *http.Request) {
 // traffic from behind the console's collapsed section would be invisible
 // exactly while it mattered.
 func (s *Server) handleChannelArchive(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid channel id")
+	id, valid := idParam(w, r, "channel")
+	if !valid {
 		return
 	}
 	var in struct {
@@ -411,9 +406,8 @@ func (s *Server) handleChannelArchive(w http.ResponseWriter, r *http.Request) {
 // edit has nothing to send for api_key, and the narrow write also cannot
 // blank a field the operator never saw.
 func (s *Server) handleChannelRouting(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid channel id")
+	id, valid := idParam(w, r, "channel")
+	if !valid {
 		return
 	}
 	var in struct {
@@ -517,9 +511,8 @@ func (s *Server) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleChannelModels(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid channel id")
+	id, valid := idParam(w, r, "channel")
+	if !valid {
 		return
 	}
 	models, err := s.store.ListChannelModels(r.Context(), id)
@@ -531,9 +524,8 @@ func (s *Server) handleChannelModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetChannelModels(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid channel id")
+	id, valid := idParam(w, r, "channel")
+	if !valid {
 		return
 	}
 	var in struct {
@@ -761,9 +753,8 @@ func (s *Server) handleBatchTestChannels(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleCloneChannel(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid channel id")
+	id, valid := idParam(w, r, "channel")
+	if !valid {
 		return
 	}
 	var in struct {

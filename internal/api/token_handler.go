@@ -200,9 +200,8 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateToken(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid token id")
+	id, valid := idParam(w, r, "token")
+	if !valid {
 		return
 	}
 	var in tokenInput
@@ -253,9 +252,8 @@ func (s *Server) handleUpdateToken(w http.ResponseWriter, r *http.Request) {
 // listing is fetched constantly and would spray every key through logs, proxy
 // caches and browser history.
 func (s *Server) handleRevealToken(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid token id")
+	id, valid := idParam(w, r, "token")
+	if !valid {
 		return
 	}
 	me := userFrom(r.Context())
@@ -281,9 +279,8 @@ func (s *Server) handleRevealToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid token id")
+	id, valid := idParam(w, r, "token")
+	if !valid {
 		return
 	}
 	me := userFrom(r.Context())

@@ -102,9 +102,8 @@ func (s *Server) handleListRedemptions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRedemptionStatus(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid redemption id")
+	id, valid := idParam(w, r, "redemption")
+	if !valid {
 		return
 	}
 	var in struct {
