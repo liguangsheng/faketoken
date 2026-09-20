@@ -137,7 +137,7 @@ func (rl *Relay) billingJSON(ctx context.Context, ch *model.Channel, path, query
 		req.Header.Set(k, v)
 	}
 
-	client, err := rl.clients.get(ch.ProxyURL)
+	client, err := rl.clients.Get(ch.ProxyURL)
 	if err != nil {
 		return nil, false
 	}

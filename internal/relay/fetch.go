@@ -13,6 +13,7 @@ import (
 
 	"github.com/faketoken/faketoken/internal/model"
 	"github.com/faketoken/faketoken/internal/provider"
+	"github.com/faketoken/faketoken/internal/upstream"
 )
 
 // FetchModels pulls the upstream model catalogue for a channel.
@@ -20,7 +21,7 @@ func (rl *Relay) FetchModels(ctx context.Context, ch *model.Channel) ([]string, 
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	client, err := rl.clients.get(ch.ProxyURL)
+	client, err := rl.clients.Get(ch.ProxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +54,7 @@ func (rl *Relay) FetchModels(ctx context.Context, ch *model.Channel) ([]string, 
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			lastErr = fmt.Errorf("upstream returned HTTP %d: %s",
-				resp.StatusCode, upstreamErrorMessage(body))
+				resp.StatusCode, upstream.ErrorMessage(body))
 			continue
 		}
 
@@ -196,7 +197,7 @@ func (rl *Relay) TestChannelWith(ctx context.Context, ch *model.Channel, opts Te
 	// it was actually sent; sanitizeHeaders is what keeps the key out.
 	detail.RequestHeaders = sanitizeHeaders(req.Header)
 
-	client, err := rl.clients.get(ch.ProxyURL)
+	client, err := rl.clients.Get(ch.ProxyURL)
 	if err != nil {
 		return TestResult{Model: testModel, UpstreamModel: upstreamModel,
 			Endpoint: path, Message: err.Error(), Detail: detail}
@@ -239,7 +240,7 @@ func (rl *Relay) TestChannelWith(ctx context.Context, ch *model.Channel, opts Te
 		result.Usage = usage
 	}
 	if !result.OK {
-		result.Message = upstreamErrorMessage(body)
+		result.Message = upstream.ErrorMessage(body)
 		if result.Message == "" {
 			result.Message = fmt.Sprintf("upstream returned HTTP %d", resp.StatusCode)
 		}

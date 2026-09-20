@@ -1,4 +1,7 @@
-package relay
+// Package upstream owns the HTTP side of talking to a provider: the pooled
+// clients every outbound call goes through, and the reading of what a provider
+// says when it refuses one.
+package upstream
 
 import (
 	"net"
@@ -8,25 +11,20 @@ import (
 	"time"
 )
 
-// clientPool hands out one http.Client per upstream proxy configuration so
-// that connection pools are reused across requests instead of rebuilt.
-type clientPool struct {
+// Pool hands out one http.Client per proxy configuration so that connection
+// pools are reused across requests instead of rebuilt.
+type Pool struct {
 	mu      sync.RWMutex
 	clients map[string]*http.Client
 }
 
-func newClientPool() *clientPool {
-	return &clientPool{clients: map[string]*http.Client{}}
+func NewPool() *Pool {
+	return &Pool{clients: map[string]*http.Client{}}
 }
 
-// HTTPClient hands out the pooled client for one proxy setting ("" for a direct
-// connection) so callers outside this package reuse its connections and its
-// no-redirect policy instead of building a second client of their own.
-func (rl *Relay) HTTPClient(proxyURL string) (*http.Client, error) {
-	return rl.clients.get(proxyURL)
-}
-
-func (p *clientPool) get(proxyURL string) (*http.Client, error) {
+// Get returns the client for one proxy setting ("" for a direct connection).
+// Every caller shares its connections and its no-redirect policy.
+func (p *Pool) Get(proxyURL string) (*http.Client, error) {
 	p.mu.RLock()
 	c, ok := p.clients[proxyURL]
 	p.mu.RUnlock()

@@ -29,6 +29,7 @@ import (
 	"github.com/faketoken/faketoken/internal/model"
 	"github.com/faketoken/faketoken/internal/provider"
 	"github.com/faketoken/faketoken/internal/store"
+	"github.com/faketoken/faketoken/internal/upstream"
 )
 
 // maxRequestBody bounds how much of a client request is buffered. Buffering is
@@ -39,7 +40,7 @@ type Relay struct {
 	st      *store.Store
 	pricer  *billing.Pricer
 	cfg     *config.Config
-	clients *clientPool
+	clients *upstream.Pool
 	breaker *breaker
 	limiter *rpmLimiter
 	// tokenLimiter is the same sliding window keyed by token id, enforcing
@@ -71,12 +72,12 @@ type Relay struct {
 	cancels *liveCancels
 }
 
-func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config) *Relay {
+func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config, clients *upstream.Pool) *Relay {
 	rl := &Relay{
 		st:           st,
 		pricer:       pricer,
 		cfg:          cfg,
-		clients:      newClientPool(),
+		clients:      clients,
 		breaker:      newBreaker(),
 		limiter:      newRPMLimiter(),
 		tokenLimiter: newRPMLimiter(),
@@ -90,6 +91,12 @@ func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config) *Relay {
 
 // SetLogStream attaches the broker that pushes new entries to the console.
 func (rl *Relay) SetLogStream(broker *logstream.Broker) { rl.stream = broker }
+
+// HTTPClient hands out the pooled client for one proxy setting ("" for a
+// direct connection).
+func (rl *Relay) HTTPClient(proxyURL string) (*http.Client, error) {
+	return rl.clients.Get(proxyURL)
+}
 
 // publishLog notifies live consoles. Called only after the row is committed,
 // so what a console shows always matches what a reload would return. The key
@@ -830,7 +837,7 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 	}
 	req.ContentLength = int64(len(outBody))
 
-	client, err := rl.clients.get(ch.ProxyURL)
+	client, err := rl.clients.Get(ch.ProxyURL)
 	if err != nil {
 		return attemptOutcome{kind: outcomeRetry, status: http.StatusBadGateway,
 			message: "invalid channel proxy: " + err.Error()}
@@ -858,7 +865,7 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 		return attemptOutcome{
 			kind:            outcomeRetry,
 			status:          resp.StatusCode,
-			message:         upstreamErrorMessage(snippet),
+			message:         upstream.ErrorMessage(snippet),
 			retryAfter:      parseRetryAfter(resp.Header),
 			responseHeaders: sanitizeHeaders(resp.Header), responseBody: responseBody,
 			responseTruncated: responseTruncated,
@@ -894,7 +901,7 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 		responseTruncated: responseTruncated,
 	}
 	if resp.StatusCode >= 400 {
-		out.message = upstreamErrorMessage(sniff.Body())
+		out.message = upstream.ErrorMessage(sniff.Body())
 	} else if failure, failed := sniff.StreamError(); failed {
 		// A 2xx that carries an error object is a failure the status line hides.
 		// Gateways under load answer 200 text/event-stream, ping a few times and
@@ -991,31 +998,6 @@ func retryable(status int) bool {
 		return true
 	}
 	return false
-}
-
-func upstreamErrorMessage(body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	var payload struct {
-		Error struct {
-			Message string `json:"message"`
-			Type    string `json:"type"`
-		} `json:"error"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(body, &payload); err == nil {
-		if payload.Error.Message != "" {
-			return payload.Error.Message
-		}
-		if payload.Message != "" {
-			return payload.Message
-		}
-	}
-	if len(body) > 500 {
-		body = body[:500]
-	}
-	return strings.TrimSpace(string(body))
 }
 
 // streamFailureMessage renders an in-body failure for the log. The upstream's
