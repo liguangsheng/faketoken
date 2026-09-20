@@ -13,6 +13,7 @@ import (
 
 	"github.com/faketoken/faketoken/internal/model"
 	"github.com/faketoken/faketoken/internal/provider"
+	"github.com/faketoken/faketoken/internal/redact"
 	"github.com/faketoken/faketoken/internal/upstream"
 )
 
@@ -176,7 +177,7 @@ func (rl *Relay) TestChannelWith(ctx context.Context, ch *model.Channel, opts Te
 	prompt := strings.TrimSpace(opts.Prompt)
 	path, payload := probeRequest(normaliseTestProtocol(opts.Protocol), upstreamModel, prompt)
 	limit := rl.captureLimit()
-	requestBody, requestTruncated := sanitizeBody("application/json", payload, false, limit)
+	requestBody, requestTruncated := redact.Body("application/json", payload, false, limit)
 	detail := model.RequestLogDetail{
 		RequestBody:      requestBody,
 		RequestTruncated: requestTruncated,
@@ -195,7 +196,7 @@ func (rl *Relay) TestChannelWith(ctx context.Context, ch *model.Channel, opts Te
 	}
 	// Captured after the credential is applied so the log shows the request as
 	// it was actually sent; sanitizeHeaders is what keeps the key out.
-	detail.RequestHeaders = sanitizeHeaders(req.Header)
+	detail.RequestHeaders = redact.Headers(req.Header)
 
 	client, err := rl.clients.Get(ch.ProxyURL)
 	if err != nil {
@@ -218,9 +219,9 @@ func (rl *Relay) TestChannelWith(ctx context.Context, ch *model.Channel, opts Te
 	if overflowed {
 		body = body[:probeBodyLimit]
 	}
-	responseBody, responseTruncated := sanitizeBody(
+	responseBody, responseTruncated := redact.Body(
 		resp.Header.Get("Content-Type"), body, overflowed, limit)
-	detail.ResponseHeaders = sanitizeHeaders(resp.Header)
+	detail.ResponseHeaders = redact.Headers(resp.Header)
 	detail.ResponseBody = responseBody
 	detail.ResponseTruncated = responseTruncated
 	result := TestResult{

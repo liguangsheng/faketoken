@@ -25,21 +25,6 @@ func conversationBody(turns int) []byte {
 	return body
 }
 
-// sanitizeBody runs on the request and again on the response of every relayed
-// call, so its cost is paid per request rather than per inspection.
-func BenchmarkSanitizeBody(b *testing.B) {
-	for _, turns := range []int{10, 100, 1000} {
-		body := conversationBody(turns)
-		b.Run(fmt.Sprintf("%dKiB", len(body)/1024), func(b *testing.B) {
-			b.SetBytes(int64(len(body)))
-			b.ReportAllocs()
-			for b.Loop() {
-				sanitizeBody("application/json", body, false, DefaultCaptureLimit)
-			}
-		})
-	}
-}
-
 // matchBlocked folds the whole body once per request when any group is set.
 func BenchmarkMatchBlocked(b *testing.B) {
 	body := conversationBody(100)

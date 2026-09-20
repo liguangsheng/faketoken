@@ -3,12 +3,14 @@ package relay
 import (
 	"strings"
 	"testing"
+
+	"github.com/faketoken/faketoken/internal/redact"
 )
 
 // The exact shape that started this: a 200 text/event-stream, a few pings, then
 // an error event. The status line says the call worked, the body says it did not.
 func TestUsageSnifferReportsAnthropicStreamError(t *testing.T) {
-	sniff := newUsageSniffer("text/event-stream", DefaultCaptureLimit)
+	sniff := newUsageSniffer("text/event-stream", redact.DefaultCaptureLimit)
 	_, _ = sniff.Write([]byte("data: {\"type\":\"ping\"}\n\n" +
 		"data: {\"type\":\"ping\"}\n\n" +
 		"data: {\"error\":{\"message\":\"Concurrency limit exceeded for account, please retry later\"," +
@@ -31,7 +33,7 @@ func TestUsageSnifferReportsAnthropicStreamError(t *testing.T) {
 // A stream that carried content before failing still has to be flagged: the
 // caller got a partial answer, and the channel still refused to finish it.
 func TestUsageSnifferReportsStreamErrorAfterContent(t *testing.T) {
-	sniff := newUsageSniffer("text/event-stream", DefaultCaptureLimit)
+	sniff := newUsageSniffer("text/event-stream", redact.DefaultCaptureLimit)
 	_, _ = sniff.Write([]byte(
 		"data: {\"choices\":[{\"delta\":{\"content\":\"he\"}}]}\n\n" +
 			"data: {\"choices\":[{\"delta\":{}}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n" +
@@ -50,7 +52,7 @@ func TestUsageSnifferReportsStreamErrorAfterContent(t *testing.T) {
 // An error split across two writes is the normal case on the wire: the sniffer
 // sees whatever the transport hands it, not whole events.
 func TestUsageSnifferReassemblesStreamErrorAcrossWrites(t *testing.T) {
-	sniff := newUsageSniffer("text/event-stream", DefaultCaptureLimit)
+	sniff := newUsageSniffer("text/event-stream", redact.DefaultCaptureLimit)
 	_, _ = sniff.Write([]byte("data: {\"error\":{\"mess"))
 	if _, failed := sniff.StreamError(); failed {
 		t.Fatal("half an event was already scored as a failure")
@@ -66,7 +68,7 @@ func TestUsageSnifferReassemblesStreamErrorAcrossWrites(t *testing.T) {
 // Some upstreams put the failure only in the event name and send an unlabelled
 // payload, which is invisible to a detector that reads the data line alone.
 func TestUsageSnifferReadsErrorEventName(t *testing.T) {
-	sniff := newUsageSniffer("text/event-stream", DefaultCaptureLimit)
+	sniff := newUsageSniffer("text/event-stream", redact.DefaultCaptureLimit)
 	_, _ = sniff.Write([]byte("event: error\ndata: {\"message\":\"account suspended\"}\n\n"))
 
 	failure, failed := sniff.StreamError()
@@ -81,7 +83,7 @@ func TestUsageSnifferReadsErrorEventName(t *testing.T) {
 // An event name only applies until the blank line that closes its event.
 // Leaking it would mark every later chunk as a failure.
 func TestUsageSnifferForgetsEventNameAfterTheEvent(t *testing.T) {
-	sniff := newUsageSniffer("text/event-stream", DefaultCaptureLimit)
+	sniff := newUsageSniffer("text/event-stream", redact.DefaultCaptureLimit)
 	_, _ = sniff.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
 
@@ -93,7 +95,7 @@ func TestUsageSnifferForgetsEventNameAfterTheEvent(t *testing.T) {
 // A completed stream must stay clean, or every request would be logged as a
 // failure and every channel benched.
 func TestUsageSnifferAcceptsHealthyStream(t *testing.T) {
-	sniff := newUsageSniffer("text/event-stream", DefaultCaptureLimit)
+	sniff := newUsageSniffer("text/event-stream", redact.DefaultCaptureLimit)
 	_, _ = sniff.Write([]byte(
 		"event: content_block_delta\n" +
 			"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"the error was mine\"}}\n\n" +
@@ -108,7 +110,7 @@ func TestUsageSnifferAcceptsHealthyStream(t *testing.T) {
 // The same failure arrives without SSE framing when a client asks for a
 // non-streamed reply, and it is just as invisible behind a 200.
 func TestUsageSnifferReportsNonStreamErrorBody(t *testing.T) {
-	sniff := newUsageSniffer("application/json", DefaultCaptureLimit)
+	sniff := newUsageSniffer("application/json", redact.DefaultCaptureLimit)
 	_, _ = sniff.Write([]byte(`{"error":{"code":429,"message":"Resource has been exhausted"}}`))
 
 	failure, failed := sniff.StreamError()
@@ -121,7 +123,7 @@ func TestUsageSnifferReportsNonStreamErrorBody(t *testing.T) {
 }
 
 func TestUsageSnifferAcceptsHealthyNonStreamBody(t *testing.T) {
-	sniff := newUsageSniffer("application/json", DefaultCaptureLimit)
+	sniff := newUsageSniffer("application/json", redact.DefaultCaptureLimit)
 	_, _ = sniff.Write([]byte(`{"choices":[{"message":{"content":"hello"}}],` +
 		`"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
 

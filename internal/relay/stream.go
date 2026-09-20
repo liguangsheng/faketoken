@@ -12,6 +12,7 @@ import (
 
 	"github.com/faketoken/faketoken/internal/model"
 	"github.com/faketoken/faketoken/internal/provider"
+	"github.com/faketoken/faketoken/internal/redact"
 )
 
 // maxSniffBytes caps how much of a non-streamed body is buffered purely for
@@ -41,7 +42,7 @@ type usageSniffer struct {
 
 func newUsageSniffer(contentType string, captureMax int) *usageSniffer {
 	if captureMax <= 0 {
-		captureMax = DefaultCaptureLimit
+		captureMax = redact.DefaultCaptureLimit
 	}
 	return &usageSniffer{
 		captureMax: captureMax,

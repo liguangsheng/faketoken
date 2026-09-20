@@ -28,6 +28,7 @@ import (
 	"github.com/faketoken/faketoken/internal/logstream"
 	"github.com/faketoken/faketoken/internal/model"
 	"github.com/faketoken/faketoken/internal/provider"
+	"github.com/faketoken/faketoken/internal/redact"
 	"github.com/faketoken/faketoken/internal/store"
 	"github.com/faketoken/faketoken/internal/upstream"
 )
@@ -83,7 +84,7 @@ func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config, clients *u
 		tokenLimiter: newRPMLimiter(),
 		cancels:      newLiveCancels(),
 	}
-	rl.capture.Store(DefaultCaptureLimit)
+	rl.capture.Store(redact.DefaultCaptureLimit)
 	rl.retryBudget.Store(int64(cfg.MaxRetries))
 	rl.retryBackoff.Store(int64(cfg.RetryBackoff))
 	return rl
@@ -861,13 +862,13 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 		if truncated {
 			snippet = snippet[:limit]
 		}
-		responseBody, responseTruncated := sanitizeBody(resp.Header.Get("Content-Type"), snippet, truncated, limit)
+		responseBody, responseTruncated := redact.Body(resp.Header.Get("Content-Type"), snippet, truncated, limit)
 		return attemptOutcome{
 			kind:            outcomeRetry,
 			status:          resp.StatusCode,
 			message:         upstream.ErrorMessage(snippet),
 			retryAfter:      parseRetryAfter(resp.Header),
-			responseHeaders: sanitizeHeaders(resp.Header), responseBody: responseBody,
+			responseHeaders: redact.Headers(resp.Header), responseBody: responseBody,
 			responseTruncated: responseTruncated,
 		}
 	}
@@ -888,7 +889,7 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 
 	usage, hasUsage := sniff.Usage()
 	captured, captureTruncated := sniff.Capture()
-	responseBody, responseTruncated := sanitizeBody(contentType, captured, captureTruncated, rl.captureLimit())
+	responseBody, responseTruncated := redact.Body(contentType, captured, captureTruncated, rl.captureLimit())
 	out := attemptOutcome{
 		kind: outcomeDone, status: resp.StatusCode,
 		headersSent: true,
@@ -897,7 +898,7 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 		// on the response headers while the model is still thinking, so the
 		// wait for headers counts just as much as the wait for the first chunk.
 		ttfb:            headersAt.Sub(dialled) + bodyTTFB,
-		responseHeaders: sanitizeHeaders(resp.Header), responseBody: responseBody,
+		responseHeaders: redact.Headers(resp.Header), responseBody: responseBody,
 		responseTruncated: responseTruncated,
 	}
 	if resp.StatusCode >= 400 {

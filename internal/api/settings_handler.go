@@ -10,10 +10,12 @@ import (
 	"strconv"
 	"strings"
 
+	"time"
+
 	"github.com/faketoken/faketoken/internal/billing"
+	"github.com/faketoken/faketoken/internal/redact"
 	"github.com/faketoken/faketoken/internal/relay"
 	"github.com/faketoken/faketoken/internal/store"
-	"time"
 )
 
 // Console preferences live in the options table alongside the billing policy,
@@ -135,7 +137,7 @@ func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
 	settings := consoleSettings{
 		DefaultPageSize: defaultPageSizeFallback,
 		InitQuotaUSD:    billing.FormatUSD(s.cfg.InitQuota),
-		LogBodyLimit:    relay.DefaultCaptureLimit,
+		LogBodyLimit:    redact.DefaultCaptureLimit,
 		AllowRegister:   s.cfg.AllowRegister,
 		ImportPriority:  importPriorityFallback,
 		ImportWeight:    importWeightFallback,

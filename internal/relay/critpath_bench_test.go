@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/faketoken/faketoken/internal/redact"
 )
 
 // BenchmarkCriticalPathCapture measures what a caller waits for before the
@@ -38,7 +40,7 @@ func BenchmarkCriticalPathCapture(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				c := captureRequest(req, body)
-				_ = c.detail(DefaultCaptureLimit)
+				_ = c.detail(redact.DefaultCaptureLimit)
 			}
 		})
 	}
