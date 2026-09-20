@@ -291,17 +291,48 @@ func (s *Server) initQuota(ctx context.Context) int64 {
 // than being read per request. Called once at startup.
 func (s *Server) LoadRuntimeOptions(ctx context.Context) {
 	settings := s.consoleSettings(ctx)
+	s.applyRuntimeOptions(settings)
+	slog.Info("runtime options loaded", settings.runtimeAttrs()...)
+}
+
+// applyRuntimeOptions pushes the settings the relay and the store consult on
+// every request into memory. One place, so a knob added here reaches both the
+// boot path and the save path.
+func (s *Server) applyRuntimeOptions(settings consoleSettings) {
 	s.relay.SetCaptureLimit(settings.LogBodyLimit)
 	s.store.SetLogDetailKeep(settings.LogDetailKeep)
 	s.relay.SetBlockPolicy(settings.BlockRules, settings.BlockedStatus)
 	s.relay.SetRetryConfig(settings.MaxRetries, time.Duration(settings.RetryBackoffMS)*time.Millisecond)
-	slog.Info("runtime options loaded",
-		"log_body_limit", settings.LogBodyLimit,
-		"log_detail_keep", settings.LogDetailKeep,
-		"block_rules", len(settings.BlockRules),
-		"blocked_keywords", countKeywords(settings.BlockRules),
-		"max_retries", settings.MaxRetries,
-		"retry_backoff_ms", settings.RetryBackoffMS)
+}
+
+// runtimeAttrs is the log line for the in-memory knobs.
+func (c consoleSettings) runtimeAttrs() []any {
+	return []any{
+		"log_body_limit", c.LogBodyLimit,
+		"log_detail_keep", c.LogDetailKeep,
+		"block_rules", len(c.BlockRules),
+		"blocked_keywords", countKeywords(c.BlockRules),
+		"max_retries", c.MaxRetries,
+		"retry_backoff_ms", c.RetryBackoffMS,
+	}
+}
+
+// options is the stored form of the settings, one row per knob.
+func (c consoleSettings) options(encodedRules []byte) map[string]string {
+	return map[string]string{
+		optionDefaultPageSize: strconv.Itoa(c.DefaultPageSize),
+		optionInitQuota:       strconv.FormatInt(billing.ParseUSD(c.InitQuotaUSD), 10),
+		optionLogBodyLimit:    strconv.Itoa(c.LogBodyLimit),
+		optionAllowRegister:   strconv.FormatBool(c.AllowRegister),
+		optionImportPriority:  strconv.Itoa(c.ImportPriority),
+		optionImportWeight:    strconv.Itoa(c.ImportWeight),
+		optionLogDetailKeep:   strconv.Itoa(c.LogDetailKeep),
+		optionRequireInvite:   strconv.FormatBool(c.RequireInviteCode),
+		optionBlockedStatus:   strconv.Itoa(c.BlockedStatus),
+		optionBlockRules:      string(encodedRules),
+		optionMaxRetries:      strconv.Itoa(c.MaxRetries),
+		optionRetryBackoff:    strconv.Itoa(c.RetryBackoffMS),
+	}
 }
 
 // handleGetSettings is readable by any signed-in user: a regular account still
@@ -399,46 +430,24 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for key, value := range map[string]string{
-		optionDefaultPageSize: strconv.Itoa(in.DefaultPageSize),
-		optionInitQuota:       strconv.FormatInt(billing.ParseUSD(in.InitQuotaUSD), 10),
-		optionLogBodyLimit:    strconv.Itoa(in.LogBodyLimit),
-		optionAllowRegister:   strconv.FormatBool(in.AllowRegister),
-		optionImportPriority:  strconv.Itoa(in.ImportPriority),
-		optionImportWeight:    strconv.Itoa(in.ImportWeight),
-		optionLogDetailKeep:   strconv.Itoa(in.LogDetailKeep),
-		optionRequireInvite:   strconv.FormatBool(in.RequireInviteCode),
-		optionBlockedStatus:   strconv.Itoa(in.BlockedStatus),
-		optionBlockRules:      string(encodedRules),
-		optionMaxRetries:      strconv.Itoa(in.MaxRetries),
-		optionRetryBackoff:    strconv.Itoa(in.RetryBackoffMS),
-	} {
-		if err := s.store.SetOption(r.Context(), key, value); err != nil {
-			failErr(w, err)
-			return
-		}
+	// The normalised rules are what gets stored and applied, so the relay
+	// matches on exactly what the console reads back.
+	in.BlockRules = rules
+	if err := s.store.SetOptions(r.Context(), in.options(encodedRules)); err != nil {
+		failErr(w, err)
+		return
 	}
+	// Only after the write landed: memory must not run ahead of a store that
+	// refused the change.
+	s.applyRuntimeOptions(in)
 
-	// Both of these are consulted per relayed request, so they are pushed into
-	// memory rather than read back from the options table every time.
-	s.relay.SetCaptureLimit(in.LogBodyLimit)
-	s.store.SetLogDetailKeep(in.LogDetailKeep)
-	s.relay.SetBlockPolicy(rules, in.BlockedStatus)
-	s.relay.SetRetryConfig(in.MaxRetries, time.Duration(in.RetryBackoffMS)*time.Millisecond)
-
-	slog.Info("console settings updated",
+	slog.Info("console settings updated", append(in.runtimeAttrs(),
 		"default_page_size", in.DefaultPageSize,
 		"init_quota_usd", in.InitQuotaUSD,
-		"log_body_limit", in.LogBodyLimit,
 		"allow_register", in.AllowRegister,
 		"import_priority", in.ImportPriority,
 		"import_weight", in.ImportWeight,
-		"log_detail_keep", in.LogDetailKeep,
-		"block_rules", len(rules),
-		"blocked_keywords", countKeywords(rules),
 		"require_invite_code", in.RequireInviteCode,
-		"blocked_status", in.BlockedStatus,
-		"max_retries", in.MaxRetries,
-		"retry_backoff_ms", in.RetryBackoffMS)
+		"blocked_status", in.BlockedStatus)...)
 	ok(w, s.consoleSettings(r.Context()))
 }

@@ -92,6 +92,24 @@ func (s *Store) SetOption(ctx context.Context, key, value string) error {
 	return err
 }
 
+// SetOptions writes several options as one change. A settings form is saved
+// whole, and a write that stopped halfway would leave the stored policy as a
+// mix of two versions nobody ever chose.
+func (s *Store) SetOptions(ctx context.Context, values map[string]string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+
+	for key, value := range values {
+		if _, err := tx.Exec(ctx, upsertOptionSQL, key, value); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) AllOptions(ctx context.Context) (map[string]string, error) {
 	rows, err := s.pool.Query(ctx, `SELECT key, value FROM options`)
 	if err != nil {
