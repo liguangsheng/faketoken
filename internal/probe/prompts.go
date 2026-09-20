@@ -1,4 +1,4 @@
-package relay
+package probe
 
 // PromptTemplate is a canned probe prompt for the channel test dialog.
 //

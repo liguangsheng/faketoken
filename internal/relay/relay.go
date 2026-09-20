@@ -93,12 +93,6 @@ func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config, clients *u
 // SetLogStream attaches the broker that pushes new entries to the console.
 func (rl *Relay) SetLogStream(broker *logstream.Broker) { rl.stream = broker }
 
-// HTTPClient hands out the pooled client for one proxy setting ("" for a
-// direct connection).
-func (rl *Relay) HTTPClient(proxyURL string) (*http.Client, error) {
-	return rl.clients.Get(proxyURL)
-}
-
 // publishLog notifies live consoles. Called only after the row is committed,
 // so what a console shows always matches what a reload would return. The key
 // names the placeholder this row replaces, and is empty for a call that was
@@ -856,7 +850,7 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 	headersAt := time.Now()
 
 	if resp.StatusCode >= 400 && retryable(resp.StatusCode) {
-		limit := rl.captureLimit()
+		limit := rl.CaptureLimit()
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 		truncated := len(snippet) > limit
 		if truncated {
@@ -883,13 +877,13 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	sniff := newUsageSniffer(contentType, rl.captureLimit())
+	sniff := newUsageSniffer(contentType, rl.CaptureLimit())
 
 	written, bodyTTFB, pumpErr := pump(w, resp.Body, sniff, isStream, rl.cfg.StreamIdleTimeout, cancel)
 
 	usage, hasUsage := sniff.Usage()
 	captured, captureTruncated := sniff.Capture()
-	responseBody, responseTruncated := redact.Body(contentType, captured, captureTruncated, rl.captureLimit())
+	responseBody, responseTruncated := redact.Body(contentType, captured, captureTruncated, rl.CaptureLimit())
 	out := attemptOutcome{
 		kind: outcomeDone, status: resp.StatusCode,
 		headersSent: true,
@@ -1240,7 +1234,7 @@ func (rl *Relay) recordDetail(ctx context.Context, logID int64,
 		return
 	}
 
-	row := detail(rl.captureLimit())
+	row := detail(rl.CaptureLimit())
 	row.LogID = logID
 	if err := rl.st.InsertLogDetail(ctx, row); err != nil {
 		// A missing diagnostic body must never surface to the caller, whose

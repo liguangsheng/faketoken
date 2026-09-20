@@ -20,6 +20,7 @@ import (
 	"github.com/faketoken/faketoken/internal/db"
 	"github.com/faketoken/faketoken/internal/keepalive"
 	"github.com/faketoken/faketoken/internal/model"
+	"github.com/faketoken/faketoken/internal/probe"
 	"github.com/faketoken/faketoken/internal/relay"
 	"github.com/faketoken/faketoken/internal/store"
 	"github.com/faketoken/faketoken/internal/upstream"
@@ -101,8 +102,10 @@ func run() error {
 	logKeepaliveSchedule(ctx, st)
 
 	jwt := auth.NewJWTManager(cfg.JWTSecret, cfg.SessionTTL)
-	rl := relay.New(st, pricer, cfg, upstream.NewPool())
-	server := api.NewServer(cfg, st, jwt, pricer, rl, importer)
+	clients := upstream.NewPool()
+	rl := relay.New(st, pricer, cfg, clients)
+	prober := probe.New(clients, rl.CaptureLimit)
+	server := api.NewServer(cfg, st, jwt, pricer, rl, prober, importer)
 	// The relay caches the session-log body cap in memory, so a restart has to
 	// pick the stored value back up or it would silently revert to the default.
 	server.LoadRuntimeOptions(ctx)

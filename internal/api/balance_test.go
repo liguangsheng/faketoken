@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/faketoken/faketoken/internal/model"
-	"github.com/faketoken/faketoken/internal/relay"
+	"github.com/faketoken/faketoken/internal/probe"
 )
 
 // The billing endpoints exist so another gateway can read the credit behind a
@@ -40,7 +40,7 @@ func TestBillingEndpointsAreReadableByTheBalanceProbe(t *testing.T) {
 		Models: []string{"gpt-4o"}, Groups: []string{"default"},
 	})
 
-	var balance relay.Balance
+	var balance probe.Balance
 	resp = h.do(http.MethodPost, fmt.Sprintf("/api/admin/channels/%d/balance", id),
 		h.admin, nil, &balance)
 	resp.Body.Close()
@@ -82,7 +82,7 @@ func TestSub2APIBalanceUsesItsDedicatedEndpoint(t *testing.T) {
 		Models: []string{"gpt-4o"}, Groups: []string{"default"},
 	})
 
-	var balance relay.Balance
+	var balance probe.Balance
 	resp := h.do(http.MethodPost,
 		fmt.Sprintf("/api/admin/channels/%d/balance/sub2api", id), h.admin, nil, &balance)
 	resp.Body.Close()

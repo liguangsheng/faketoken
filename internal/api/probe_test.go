@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/faketoken/faketoken/internal/model"
-	"github.com/faketoken/faketoken/internal/relay"
+	"github.com/faketoken/faketoken/internal/probe"
 )
 
 // A probe reaches an upstream and spends real money, so it belongs in the log
@@ -27,7 +27,7 @@ func TestChannelTestIsLogged(t *testing.T) {
 		Models: []string{"gpt-4o"}, Groups: []string{"default"},
 	})
 
-	var result relay.TestResult
+	var result probe.TestResult
 	resp := h.do(http.MethodPost, fmt.Sprintf("/api/admin/channels/%d/test", id), h.admin,
 		map[string]any{"model": "gpt-4o", "prompt": "say pong"}, &result)
 	resp.Body.Close()
@@ -224,7 +224,7 @@ func TestConfiguredTestModelIsUsedByTheProbe(t *testing.T) {
 		Groups: []string{"default"},
 	})
 
-	var result relay.TestResult
+	var result probe.TestResult
 	h.do(http.MethodPost, fmt.Sprintf("/api/admin/channels/%d/test", id), h.admin, nil, &result)
 	if !result.OK {
 		t.Fatalf("probe failed: %+v", result)
@@ -253,7 +253,7 @@ func TestPromptedChannelTestReturnsTheModelReply(t *testing.T) {
 		Models: []string{"gpt-4o", "gpt-4o-mini"}, Groups: []string{"default"},
 	})
 
-	var result relay.TestResult
+	var result probe.TestResult
 	h.do(http.MethodPost, fmt.Sprintf("/api/admin/channels/%d/test", id), h.admin,
 		map[string]any{"model": "gpt-4o-mini", "prompt_template": "json-output"}, &result)
 
@@ -320,7 +320,7 @@ func TestChannelTestCanChooseEachRequestProtocol(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.protocol, func(t *testing.T) {
-			var result relay.TestResult
+			var result probe.TestResult
 			resp := h.do(http.MethodPost, fmt.Sprintf("/api/admin/channels/%d/test", id), h.admin,
 				map[string]any{"model": "gpt-4o", "protocol": tc.protocol, "prompt": "ping"}, &result)
 			resp.Body.Close()
@@ -357,7 +357,7 @@ func TestPromptedChannelTestFlagsAnEmptyReply(t *testing.T) {
 		Models: []string{"gpt-4o"}, Groups: []string{"default"},
 	})
 
-	var result relay.TestResult
+	var result probe.TestResult
 	h.do(http.MethodPost, fmt.Sprintf("/api/admin/channels/%d/test", id), h.admin,
 		map[string]any{"prompt": "你好"}, &result)
 
@@ -389,7 +389,7 @@ func TestPromptTemplatesEndpoint(t *testing.T) {
 	h := newHarness(t)
 
 	var listed struct {
-		Data []relay.PromptTemplate `json:"data"`
+		Data []probe.PromptTemplate `json:"data"`
 	}
 	resp := h.do(http.MethodGet, "/api/admin/prompt-templates", h.admin, nil, &listed)
 	resp.Body.Close()

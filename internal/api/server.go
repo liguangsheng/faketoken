@@ -11,24 +11,29 @@ import (
 	"github.com/faketoken/faketoken/internal/billing"
 	"github.com/faketoken/faketoken/internal/config"
 	"github.com/faketoken/faketoken/internal/logstream"
+	"github.com/faketoken/faketoken/internal/probe"
 	"github.com/faketoken/faketoken/internal/relay"
 	"github.com/faketoken/faketoken/internal/store"
 )
 
 type Server struct {
-	cfg      *config.Config
-	store    *store.Store
-	jwt      *auth.JWTManager
-	pricer   *billing.Pricer
-	relay    *relay.Relay
+	cfg    *config.Config
+	store  *store.Store
+	jwt    *auth.JWTManager
+	pricer *billing.Pricer
+	relay  *relay.Relay
+	// prober is the console's side of an upstream: model pulls, test
+	// requests, balance reads. Separate from the relay so what the operator
+	// does by hand never shares code with what a client request goes through.
+	prober   *probe.Prober
 	stream   *logstream.Broker
 	importer *billing.Importer
 }
 
 func NewServer(cfg *config.Config, st *store.Store, jwt *auth.JWTManager,
-	pricer *billing.Pricer, rl *relay.Relay, importer *billing.Importer) *Server {
+	pricer *billing.Pricer, rl *relay.Relay, prober *probe.Prober, importer *billing.Importer) *Server {
 	s := &Server{cfg: cfg, store: st, jwt: jwt, pricer: pricer, relay: rl,
-		stream: logstream.New(), importer: importer}
+		prober: prober, stream: logstream.New(), importer: importer}
 	// The relay produces the events this server hands out.
 	rl.SetLogStream(s.stream)
 	return s

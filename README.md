@@ -304,7 +304,10 @@ internal/model        领域模型
 internal/store        Postgres 仓储层
 internal/auth         密码、JWT、API Key、AES 加密
 internal/provider     上游方言适配（鉴权位置、模型清单、用量解析）
+internal/upstream     上游 HTTP 连接池、错误体解析
 internal/relay        转发核心：选路、重试、熔断、流式、用量嗅探
+internal/probe        控制台侧的上游探测：拉模型、测试请求、查余额
+internal/redact       日志正文脱敏与截断
 internal/billing      价格表与费用计算
 internal/modelsdev    models.dev 目录的拉取与解析
 internal/api          HTTP 路由与管理接口

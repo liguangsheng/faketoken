@@ -1,4 +1,4 @@
-package relay
+package probe
 
 import (
 	"bytes"
@@ -18,11 +18,11 @@ import (
 )
 
 // FetchModels pulls the upstream model catalogue for a channel.
-func (rl *Relay) FetchModels(ctx context.Context, ch *model.Channel) ([]string, error) {
+func (p *Prober) FetchModels(ctx context.Context, ch *model.Channel) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	client, err := rl.clients.Get(ch.ProxyURL)
+	client, err := p.clients.Get(ch.ProxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -153,12 +153,12 @@ type TestOptions struct {
 
 // TestChannel sends the smallest possible completion so an operator can verify
 // credentials, routing and model mapping in one click.
-func (rl *Relay) TestChannel(ctx context.Context, ch *model.Channel, testModel string) TestResult {
-	return rl.TestChannelWith(ctx, ch, TestOptions{Model: testModel, Protocol: model.ProtocolChatCompletions})
+func (p *Prober) TestChannel(ctx context.Context, ch *model.Channel, testModel string) TestResult {
+	return p.TestChannelWith(ctx, ch, TestOptions{Model: testModel, Protocol: model.ProtocolChatCompletions})
 }
 
 // TestChannelWith runs a probe, optionally carrying a prompt.
-func (rl *Relay) TestChannelWith(ctx context.Context, ch *model.Channel, opts TestOptions) TestResult {
+func (p *Prober) TestChannelWith(ctx context.Context, ch *model.Channel, opts TestOptions) TestResult {
 	testModel := opts.Model
 	// Explicit request wins, then the channel's configured probe model. Falling
 	// back to the first served model is a last resort: it is arbitrary, and a
@@ -176,7 +176,7 @@ func (rl *Relay) TestChannelWith(ctx context.Context, ch *model.Channel, opts Te
 
 	prompt := strings.TrimSpace(opts.Prompt)
 	path, payload := probeRequest(normaliseTestProtocol(opts.Protocol), upstreamModel, prompt)
-	limit := rl.captureLimit()
+	limit := p.limit()
 	requestBody, requestTruncated := redact.Body("application/json", payload, false, limit)
 	detail := model.RequestLogDetail{
 		RequestBody:      requestBody,
@@ -198,7 +198,7 @@ func (rl *Relay) TestChannelWith(ctx context.Context, ch *model.Channel, opts Te
 	// it was actually sent; sanitizeHeaders is what keeps the key out.
 	detail.RequestHeaders = redact.Headers(req.Header)
 
-	client, err := rl.clients.Get(ch.ProxyURL)
+	client, err := p.clients.Get(ch.ProxyURL)
 	if err != nil {
 		return TestResult{Model: testModel, UpstreamModel: upstreamModel,
 			Endpoint: path, Message: err.Error(), Detail: detail}

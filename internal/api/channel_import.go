@@ -263,7 +263,7 @@ func (s *Server) handleImportChannel(w http.ResponseWriter, r *http.Request) {
 	// A failed probe is reported, not fatal: the address and credential are
 	// still worth keeping, and the model list can be filled in by hand.
 	if !in.SkipModels {
-		models, err := s.relay.FetchModels(r.Context(), &model.Channel{
+		models, err := s.prober.FetchModels(r.Context(), &model.Channel{
 			BaseURL: guess.BaseURL, APIKey: probeKey, AuthStyle: probeAuthStyle,
 		})
 		if err != nil {

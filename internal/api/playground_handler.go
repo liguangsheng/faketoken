@@ -91,7 +91,7 @@ func (s *Server) handlePlaygroundRelay(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	client, err := s.relay.HTTPClient("")
+	client, err := s.prober.Client("")
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return

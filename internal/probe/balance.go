@@ -1,4 +1,4 @@
-package relay
+package probe
 
 import (
 	"context"
@@ -27,27 +27,21 @@ type Balance struct {
 	Message   string   `json:"message,omitempty"`
 }
 
-// FetchBalance is kept as a compatibility alias for the original route, which
-// now has the unambiguous new-api meaning.
-func (rl *Relay) FetchBalance(ctx context.Context, ch *model.Channel) Balance {
-	return rl.FetchNewAPIBalance(ctx, ch)
-}
-
-func (rl *Relay) FetchNewAPIBalance(ctx context.Context, ch *model.Channel) Balance {
+func (p *Prober) FetchNewAPIBalance(ctx context.Context, ch *model.Channel) Balance {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	if balance, ok := rl.newAPIBalance(ctx, ch); ok {
+	if balance, ok := p.newAPIBalance(ctx, ch); ok {
 		return balance
 	}
 	return Balance{Provider: "new-api", Message: "the upstream did not expose new-api billing endpoints"}
 }
 
-func (rl *Relay) FetchSub2APIBalance(ctx context.Context, ch *model.Channel) Balance {
+func (p *Prober) FetchSub2APIBalance(ctx context.Context, ch *model.Channel) Balance {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	if balance, ok := rl.sub2APIBalance(ctx, ch); ok {
+	if balance, ok := p.sub2APIBalance(ctx, ch); ok {
 		return balance
 	}
 	return Balance{Provider: "sub2api", Message: "the upstream did not expose a sub2api usage endpoint"}
@@ -57,8 +51,8 @@ func (rl *Relay) FetchSub2APIBalance(ctx context.Context, ch *model.Channel) Bal
 // one-api expose. The subscription call carries the grant, the usage call the
 // spend; the latter is best effort because a channel that only reports its
 // remaining credit is still worth showing.
-func (rl *Relay) newAPIBalance(ctx context.Context, ch *model.Channel) (Balance, bool) {
-	subscription, ok := rl.billingJSON(ctx, ch, "/dashboard/billing/subscription", "")
+func (p *Prober) newAPIBalance(ctx context.Context, ch *model.Channel) (Balance, bool) {
+	subscription, ok := p.billingJSON(ctx, ch, "/dashboard/billing/subscription", "")
 	if !ok {
 		return Balance{}, false
 	}
@@ -66,7 +60,7 @@ func (rl *Relay) newAPIBalance(ctx context.Context, ch *model.Channel) (Balance,
 	total := firstNumber(subscription, []string{"hard_limit_usd", "system_hard_limit_usd", "soft_limit_usd"})
 
 	var used *float64
-	if usage, ok := rl.billingJSON(ctx, ch, "/dashboard/billing/usage",
+	if usage, ok := p.billingJSON(ctx, ch, "/dashboard/billing/usage",
 		"start_date=2020-01-01&end_date=2099-12-31"); ok {
 		// new-api reports usage in cents while the subscription is in dollars.
 		if cents := firstNumber(usage, []string{"total_usage"}); cents != nil {
@@ -92,8 +86,8 @@ func (rl *Relay) newAPIBalance(ctx context.Context, ch *model.Channel) (Balance,
 
 // sub2APIBalance reads the sub2api usage endpoint, whose amounts hide at
 // several nesting depths and are sometimes encoded as strings.
-func (rl *Relay) sub2APIBalance(ctx context.Context, ch *model.Channel) (Balance, bool) {
-	payload, ok := rl.billingJSON(ctx, ch, "/usage", "")
+func (p *Prober) sub2APIBalance(ctx context.Context, ch *model.Channel) (Balance, bool) {
+	payload, ok := p.billingJSON(ctx, ch, "/usage", "")
 	if !ok {
 		return Balance{}, false
 	}
@@ -123,7 +117,7 @@ func (rl *Relay) sub2APIBalance(ctx context.Context, ch *model.Channel) (Balance
 
 // billingJSON performs one authenticated GET and decodes a JSON object,
 // reporting false for anything that is not a 2xx JSON object.
-func (rl *Relay) billingJSON(ctx context.Context, ch *model.Channel, path, query string) (map[string]any, bool) {
+func (p *Prober) billingJSON(ctx context.Context, ch *model.Channel, path, query string) (map[string]any, bool) {
 	target := provider.JoinURL(ch.BaseURL, path)
 	if query != "" {
 		target += "?" + query
@@ -137,7 +131,7 @@ func (rl *Relay) billingJSON(ctx context.Context, ch *model.Channel, path, query
 		req.Header.Set(k, v)
 	}
 
-	client, err := rl.clients.Get(ch.ProxyURL)
+	client, err := p.clients.Get(ch.ProxyURL)
 	if err != nil {
 		return nil, false
 	}

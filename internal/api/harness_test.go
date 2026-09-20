@@ -34,7 +34,9 @@ import (
 	"github.com/faketoken/faketoken/internal/config"
 	"github.com/faketoken/faketoken/internal/db"
 	"github.com/faketoken/faketoken/internal/model"
+	"github.com/faketoken/faketoken/internal/probe"
 	"github.com/faketoken/faketoken/internal/relay"
+
 	// Aliased: this package's mock server is also called upstream.
 	"github.com/faketoken/faketoken/internal/store"
 	upstreampool "github.com/faketoken/faketoken/internal/upstream"
@@ -291,8 +293,10 @@ func newHarnessWithCatalogue(t *testing.T, feed *fakeFeed) *harness {
 
 	jwt := auth.NewJWTManager(cfg.JWTSecret, cfg.SessionTTL)
 	importer := billing.NewImporter(st, cfg.ModelsDevURL)
-	srv := httptest.NewServer(NewServer(cfg, st, jwt, pricer,
-		relay.New(st, pricer, cfg, upstreampool.NewPool()), importer).Handler())
+	clients := upstreampool.NewPool()
+	rl := relay.New(st, pricer, cfg, clients)
+	srv := httptest.NewServer(NewServer(cfg, st, jwt, pricer, rl,
+		probe.New(clients, rl.CaptureLimit), importer).Handler())
 	t.Cleanup(srv.Close)
 
 	h := &harness{t: t, server: srv, store: st, pool: pool, feed: feed}

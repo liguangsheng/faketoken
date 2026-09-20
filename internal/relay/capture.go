@@ -7,9 +7,10 @@ import (
 	"github.com/faketoken/faketoken/internal/redact"
 )
 
-// captureLimit reads the operator-configured cap. It is consulted on every
+// CaptureLimit reads the operator-configured cap. It is consulted on every
 // relayed request, so it lives in memory rather than in the options table.
-func (rl *Relay) captureLimit() int {
+// Exported so the prober can bound a stored probe the same way.
+func (rl *Relay) CaptureLimit() int {
 	if limit := int(rl.capture.Load()); limit > 0 {
 		return limit
 	}

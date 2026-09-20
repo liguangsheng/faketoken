@@ -9,7 +9,7 @@ import (
 // The OpenAI dashboard billing pair, as reimplemented by new-api and one-api.
 // Exposing it lets another gateway add this one as a channel and read the
 // credit behind a key — the same two calls this relay makes when it probes an
-// upstream (see FetchBalance).
+// upstream (see probe.FetchNewAPIBalance).
 //
 // Authenticated by API key rather than by a console session: the caller is a
 // gateway holding a key, not a person holding a login.

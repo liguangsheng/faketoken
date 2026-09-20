@@ -12,8 +12,8 @@ import (
 	"github.com/faketoken/faketoken/internal/auth"
 	"github.com/faketoken/faketoken/internal/keepalive"
 	"github.com/faketoken/faketoken/internal/model"
+	"github.com/faketoken/faketoken/internal/probe"
 	"github.com/faketoken/faketoken/internal/provider"
-	"github.com/faketoken/faketoken/internal/relay"
 	"github.com/faketoken/faketoken/internal/store"
 )
 
@@ -453,7 +453,7 @@ func (s *Server) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 
 	prompt := strings.TrimSpace(in.Prompt)
 	if prompt == "" && in.PromptTemplate != "" {
-		template, found := relay.PromptTemplateByID(in.PromptTemplate)
+		template, found := probe.PromptTemplateByID(in.PromptTemplate)
 		if !found {
 			fail(w, http.StatusBadRequest, "unknown prompt template: "+in.PromptTemplate)
 			return
@@ -464,7 +464,7 @@ func (s *Server) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 
-	result := s.relay.TestChannelWith(ctx, ch, relay.TestOptions{
+	result := s.prober.TestChannelWith(ctx, ch, probe.TestOptions{
 		Model: in.Model, Protocol: in.Protocol, Prompt: prompt,
 	})
 	// Detached from the request context: the probe already finished, and the
@@ -477,7 +477,7 @@ func (s *Server) handleTestChannel(w http.ResponseWriter, r *http.Request) {
 
 // handlePromptTemplates lists the built-in probe prompts.
 func (s *Server) handlePromptTemplates(w http.ResponseWriter, r *http.Request) {
-	ok(w, map[string]any{"data": relay.PromptTemplates()})
+	ok(w, map[string]any{"data": probe.PromptTemplates()})
 }
 
 // handleFetchModels pulls the upstream catalogue. With ?apply=true the result
@@ -489,7 +489,7 @@ func (s *Server) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	models, err := s.relay.FetchModels(r.Context(), ch)
+	models, err := s.prober.FetchModels(r.Context(), ch)
 	if err != nil {
 		fail(w, http.StatusBadGateway, err.Error())
 		return
@@ -556,7 +556,7 @@ const ChannelTestClient = "channel-test"
 // and the channel counters are left alone so a bulk probe does not show up as
 // a spike in that channel's error rate.
 func (s *Server) logChannelTest(ctx context.Context, admin *model.User,
-	ch *model.Channel, result relay.TestResult) {
+	ch *model.Channel, result probe.TestResult) {
 
 	if admin == nil {
 		return
@@ -693,7 +693,7 @@ const batchTestConcurrency = 4
 type batchTestResult struct {
 	ChannelID int64  `json:"channel_id"`
 	Name      string `json:"name"`
-	relay.TestResult
+	probe.TestResult
 }
 
 func (s *Server) handleBatchTestChannels(w http.ResponseWriter, r *http.Request) {
@@ -729,10 +729,10 @@ func (s *Server) handleBatchTestChannels(w http.ResponseWriter, r *http.Request)
 			ch, err := s.store.GetChannel(ctx, id)
 			if err != nil {
 				results[i] = batchTestResult{ChannelID: id,
-					TestResult: relay.TestResult{Message: "channel not found"}}
+					TestResult: probe.TestResult{Message: "channel not found"}}
 				return
 			}
-			result := s.relay.TestChannel(ctx, ch, "")
+			result := s.prober.TestChannel(ctx, ch, "")
 			s.store.MarkChannelTested(ctx, ch.ID, time.Now(), result.Message)
 			s.logChannelTest(ctx, admin, ch, result)
 			// A slice, not a map, and each goroutine owns one index; the reads
@@ -779,7 +779,7 @@ func (s *Server) handleChannelBalance(w http.ResponseWriter, r *http.Request) {
 		failErr(w, err)
 		return
 	}
-	ok(w, s.relay.FetchNewAPIBalance(r.Context(), ch))
+	ok(w, s.prober.FetchNewAPIBalance(r.Context(), ch))
 }
 
 // handleChannelSub2APIBalance queries sub2api's independent /usage endpoint.
@@ -789,7 +789,7 @@ func (s *Server) handleChannelSub2APIBalance(w http.ResponseWriter, r *http.Requ
 		failErr(w, err)
 		return
 	}
-	ok(w, s.relay.FetchSub2APIBalance(r.Context(), ch))
+	ok(w, s.prober.FetchSub2APIBalance(r.Context(), ch))
 }
 
 func (s *Server) handleRebuildAbilities(w http.ResponseWriter, r *http.Request) {

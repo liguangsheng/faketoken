@@ -1,4 +1,4 @@
-package relay
+package probe
 
 import (
 	"encoding/json"
