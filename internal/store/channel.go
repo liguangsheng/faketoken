@@ -22,25 +22,10 @@ func nameConflict(err error, name string) error {
 	return err
 }
 
-// normaliseProtocols trims, dedupes and defaults. An empty slice means every
-// dialect — stored as NULL or an empty array so the default routing keeps
-// treating the channel as universally routable.
-func normaliseProtocols(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, p := range in {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if _, dup := seen[p]; dup {
-			continue
-		}
-		seen[p] = struct{}{}
-		out = append(out, p)
-	}
-	return out
-}
+// normaliseProtocols cleans the dialect list. An empty result means every
+// dialect — stored as an empty array so the default routing keeps treating
+// the channel as universally routable.
+func normaliseProtocols(in []string) []string { return model.NormaliseList(in) }
 
 const channelColumns = `id, name, base_url, auth_style, api_key_enc, status, priority, weight,
 	channel_groups, models, model_mapping, headers, timeout_secs, proxy_url, price_ratio,

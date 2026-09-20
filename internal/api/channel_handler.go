@@ -874,20 +874,10 @@ func normaliseChannelStatus(status int16) int16 {
 	}
 }
 
+// cleanList normalises a list from the form and substitutes fallback when
+// nothing is left.
 func cleanList(in []string, fallback ...string) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(in))
-	for _, v := range in {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			continue
-		}
-		if _, dup := seen[v]; dup {
-			continue
-		}
-		seen[v] = struct{}{}
-		out = append(out, v)
-	}
+	out := model.NormaliseList(in)
 	if len(out) == 0 && len(fallback) > 0 {
 		return fallback
 	}

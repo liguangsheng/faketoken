@@ -244,6 +244,26 @@ func (m *EffortMapping) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// NormaliseList trims each entry, drops the blank ones and the repeats, and
+// keeps first-seen order. Never nil, so a caller can store or encode the
+// result as an empty list rather than a null.
+func NormaliseList(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
 // NormaliseEffortMapping folds every rule into the form the lookup expects and
 // drops the incomplete ones.
 //

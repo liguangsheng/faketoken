@@ -67,7 +67,7 @@ func (rl *Relay) FetchModels(ctx context.Context, ch *model.Channel) ([]string, 
 			continue
 		}
 		sort.Strings(models)
-		return dedupe(models), nil
+		return model.NormaliseList(models), nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no model-list request could be built")
@@ -378,21 +378,4 @@ func probeRequest(protocol, modelName, prompt string) (string, []byte) {
 		})
 		return "/v1/chat/completions", payload
 	}
-}
-
-func dedupe(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, v := range in {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			continue
-		}
-		if _, ok := seen[v]; ok {
-			continue
-		}
-		seen[v] = struct{}{}
-		out = append(out, v)
-	}
-	return out
 }
