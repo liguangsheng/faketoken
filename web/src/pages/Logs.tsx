@@ -1,5 +1,5 @@
 import { api } from '../api/client'
-import LogTable from '../components/LogTable'
+import LogTable from '../components/log/LogTable'
 import PageHeader from '../components/PageHeader'
 
 export default function Logs() {

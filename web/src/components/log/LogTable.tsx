@@ -1,25 +1,20 @@
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import type { ReactNode } from "react";
 import {
-  Alert,
   App,
   Badge,
   Button,
   DatePicker,
-  Descriptions,
   Drawer,
   Input,
   Popconfirm,
-  Segmented,
   Select,
-  Skeleton,
   Space,
   Switch,
   Table,
@@ -31,7 +26,6 @@ import {
 import {
   ApiOutlined,
   ClockCircleOutlined,
-  CopyOutlined,
   FieldTimeOutlined,
   KeyOutlined,
   LoadingOutlined,
@@ -42,7 +36,6 @@ import {
   StopOutlined,
   UserOutlined,
 } from "@ant-design/icons";
-import type { TableRef } from "antd/es/table";
 import dayjs from "dayjs";
 import type { Dayjs } from "dayjs";
 
@@ -51,36 +44,36 @@ import {
   type Page,
   type RequestLog,
   type RequestLogDetail,
-} from "../api/client";
-import { useDebouncedValue } from "../hooks/useDebouncedValue";
-import { useLiveRate } from "../hooks/useLiveRate";
-import { useLogStream } from "../hooks/useLogStream";
-import { useMediaQuery } from "../hooks/useMediaQuery";
+} from "../../api/client";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
+import { useLiveRate } from "../../hooks/useLiveRate";
+import { useLogStream } from "../../hooks/useLogStream";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import {
   useTableScrollX,
   type TableGeometry,
-} from "../hooks/useTableScrollX";
-import { useSettings } from "../settings/SettingsContext";
-import { copyTextToClipboard } from "../utils/clipboard";
-import EmptyState from "./EmptyState";
-import RateCard from "./RateCard";
+} from "../../hooks/useTableScrollX";
+import { useSettings } from "../../settings/SettingsContext";
+import EmptyState from "../EmptyState";
+import RateCard from "../RateCard";
+import LogBody from "./LogBody";
+import LogMeta from "./LogMeta";
+import { useLiveRowAnimation } from "./useLiveRowAnimation";
 import {
-  parseRequestConversation,
-  parseResponseConversation,
-  type ConversationPart,
-  type ConversationTurn,
-  type PartKind,
-} from "../utils/conversation";
+  isLive,
+  rowKeyOf,
+  useInflightCalls,
+  type LogRow,
+} from "./useInflightCalls";
+import { REASONING_TONE, rowTone } from "./tone";
 import {
-  formatBytes,
   formatCompact,
   formatDuration,
   formatNumber,
-  formatPercent,
   formatTime,
   formatTimeShort,
   formatUSD,
-} from "../utils/format";
+} from "../../utils/format";
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null;
 
@@ -94,37 +87,14 @@ interface Props {
   reloadToken?: number;
 }
 
-/**
- * A row that is either a settled log entry or a call still in flight.
- *
- * The two share a shape on purpose: an in-flight call is the same record with
- * everything it has not produced yet left at zero, so every column renders it
- * without a parallel set of components. live_key is what tells them apart, and
- * it is also the handle the settled row uses to replace this one.
- */
-type LogRow = RequestLog & { live_key?: string };
-
-// A type predicate, so the branches that draw a running row can reach its
-// handle without asserting it back into existence.
-const isLive = (row: LogRow): row is LogRow & { live_key: string } =>
-  row.live_key !== undefined;
-
-/** Table row key. Live rows have no id yet, so they key off their own handle. */
-const rowKeyOf = (row: LogRow) =>
-  row.live_key !== undefined ? `live:${row.live_key}` : String(row.id);
-
 // Past this, a call that is still running is worth a second look rather than
 // just being slow. Deliberately generous: a long agentic completion legitimately
 // runs this long, so it colours the number instead of flagging an error.
 const SLOW_CALL_MS = 60_000;
 
-// How many consecutive reconciliations may miss a placeholder before it is
-// dropped. One is not enough: a call leaves the server's live set as soon as the
-// caller has been answered, a moment before its row is written.
-const INFLIGHT_SYNC_GRACE = 2;
-
-const statusTone = (code: number) =>
-  code < 400 ? "green" : code < 500 ? "orange" : "red";
+// A stable empty list, so the table memo does not recompute on every render
+// when nothing live is being drawn.
+const EMPTY_ROWS: LogRow[] = [];
 
 // The card's left stripe reads pass/fail down a phone list without parsing any
 // number. Maps the same tone the status tag uses to a card modifier class.
@@ -133,35 +103,6 @@ const cardTone = (row: LogRow): string => {
   const tone = rowTone(row);
   return tone === "green" ? "ok" : tone === "orange" ? "warn" : "err";
 };
-
-// An upstream can answer 200 and then fail inside the body — an SSE stream
-// that ends with an error event is the common case. The status code we
-// relayed is still the truth, so it is shown unchanged; only the colour
-// follows the error field, because a green 200 on a failed call is what
-// hides these rows entirely.
-const rowTone = (row: { status_code: number; error: string }) =>
-  row.error && row.status_code < 400 ? "orange" : statusTone(row.status_code);
-
-// Only the named levels get a colour; a token budget stays neutral because
-// "16k tokens" carries no ordering against "high".
-const REASONING_TONE: Record<string, string> = {
-  minimal: "default",
-  low: "blue",
-  medium: "gold",
-  high: "red",
-};
-
-// Keep the class around until the highlight has fully faded. The CSS motion is
-// shorter, but the small cushion also covers its per-cell stagger.
-const LIVE_ROW_ANIMATION_MS = 1000;
-const LIVE_ROW_SHIFT_MS = 620;
-const LIVE_ROW_SHIFT_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
-
-interface LiveRowLayout {
-  /** Row key of the record being inserted, settled or still running. */
-  rowKey: string;
-  tops: Map<string, number>;
-}
 
 /**
  * A log is read to find out what happened and when, so the timestamp, the
@@ -199,10 +140,6 @@ const COLUMN_GEOMETRY = {
   clientIP: { width: 130, responsive: ["xl"] },
 } satisfies TableGeometry;
 
-/** Share of the input that came from cache. Zero input means zero rate. */
-const cacheRate = (entry: RequestLog) =>
-  entry.prompt_tokens > 0 ? entry.cached_tokens / entry.prompt_tokens : 0;
-
 export default function LogTable({
   admin,
   fetcher,
@@ -226,15 +163,6 @@ export default function LogTable({
   const hoveringRef = useRef(false);
   const hoverBuffer = useRef<RequestLog[]>([]);
   const [hoverPending, setHoverPending] = useState(0);
-  // Calls the server has announced and not yet settled. The ref is always
-  // current; the state is the committed view, which is what lets the hover
-  // pause cover placeholders as well as arrivals.
-  const [liveCalls, setLiveCalls] = useState<ReadonlyMap<string, LogRow>>(
-    () => new Map(),
-  );
-  const liveRef = useRef<ReadonlyMap<string, LogRow>>(new Map());
-  // Per placeholder, how many reconciliations in a row have not mentioned it.
-  const missedSyncs = useRef(new Map<string, number>());
   const [page, setPage] = useState(1);
   const { defaultPageSize } = useSettings();
   const [pageSize, setPageSize] = useState(defaultPageSize);
@@ -253,138 +181,7 @@ export default function LogTable({
   const [bodiesState, setBodiesState] = useState<
     "idle" | "loading" | "expired" | "failed"
   >("idle");
-  const [enteringRowIDs, setEnteringRowIDs] = useState<ReadonlySet<number>>(
-    () => new Set(),
-  );
-  const enteringRowTimers = useRef(new Map<number, number>());
-  const liveTableRoot = useRef<TableRef>(null);
-  const pendingLiveLayout = useRef<LiveRowLayout | null>(null);
-  const rowShiftAnimations = useRef(new Map<string, Animation>());
 
-  // FLIP starts before React inserts the new record: remember where every
-  // visible row is right now. getBoundingClientRect includes any in-flight
-  // transform, which lets a busy feed continue smoothly from the exact visual
-  // position reached by the previous push.
-  const captureLiveLayout = useCallback(
-    (rowKey: string) => {
-      const root = liveTableRoot.current?.nativeElement;
-      if (
-        !admin ||
-        !root ||
-        window.matchMedia("(prefers-reduced-motion: reduce)").matches
-      ) {
-        pendingLiveLayout.current = null;
-        return;
-      }
-
-      const tops = new Map<string, number>();
-      root
-        .querySelectorAll<HTMLElement>(".ant-table-tbody > tr[data-row-key]")
-        .forEach((row) => {
-          const key = row.dataset.rowKey;
-          if (key) tops.set(key, row.getBoundingClientRect().top);
-        });
-      pendingLiveLayout.current = { rowKey, tops };
-    },
-    [admin],
-  );
-
-  const animateLiveRow = useCallback(
-    (id: number) => {
-      // This treatment is intentionally reserved for the high-traffic global
-      // feed. Historical loads and the regular user's log page stay still.
-      if (!admin) return;
-
-      setEnteringRowIDs((current) => new Set(current).add(id));
-
-      const previousTimer = enteringRowTimers.current.get(id);
-      if (previousTimer !== undefined) window.clearTimeout(previousTimer);
-
-      const timer = window.setTimeout(() => {
-        enteringRowTimers.current.delete(id);
-        setEnteringRowIDs((current) => {
-          if (!current.has(id)) return current;
-          const next = new Set(current);
-          next.delete(id);
-          return next;
-        });
-      }, LIVE_ROW_ANIMATION_MS);
-      enteringRowTimers.current.set(id, timer);
-    },
-    [admin],
-  );
-
-  useEffect(
-    () => () => {
-      enteringRowTimers.current.forEach((timer) => window.clearTimeout(timer));
-      enteringRowTimers.current.clear();
-      pendingLiveLayout.current = null;
-      const animations = [...rowShiftAnimations.current.values()];
-      rowShiftAnimations.current.clear();
-      animations.forEach((animation) => animation.cancel());
-    },
-    [],
-  );
-
-  // React has committed the new table layout, but the browser has not painted
-  // it yet. Move every old row back to its captured position, then animate to
-  // the new one. Visually, the incoming row now pushes the whole list down.
-  useLayoutEffect(() => {
-    const snapshot = pendingLiveLayout.current;
-    const root = liveTableRoot.current?.nativeElement;
-    if (!snapshot || !root) return;
-
-    const visibleRows = [
-      ...root.querySelectorAll<HTMLElement>(
-        ".ant-table-tbody > tr[data-row-key]",
-      ),
-    ];
-    const entryKey = snapshot.rowKey;
-    const entryExists = visibleRows.some(
-      (row) => row.dataset.rowKey === entryKey,
-    );
-
-    // State updates are normally batched. If React happens to commit the
-    // animation marker first, wait for the following rows commit; an entry
-    // already present in the snapshot is merely an SSE/list race (no shift).
-    if (!entryExists && !snapshot.tops.has(entryKey)) return;
-    pendingLiveLayout.current = null;
-
-    // Cancel after capturing the old visual positions, so the next delta is
-    // measured against each row's clean, final layout position.
-    const previousAnimations = [...rowShiftAnimations.current.values()];
-    rowShiftAnimations.current.clear();
-    previousAnimations.forEach((animation) => animation.cancel());
-
-    visibleRows.forEach((row) => {
-      const key = row.dataset.rowKey;
-      if (!key) return;
-      const previousTop = snapshot.tops.get(key);
-      if (previousTop === undefined) return;
-
-      const deltaY = previousTop - row.getBoundingClientRect().top;
-      if (Math.abs(deltaY) < 0.5) return;
-
-      const animation = row.animate(
-        [
-          { transform: `translate3d(0, ${deltaY}px, 0)` },
-          { transform: "translate3d(0, 0, 0)" },
-        ],
-        { duration: LIVE_ROW_SHIFT_MS, easing: LIVE_ROW_SHIFT_EASING },
-      );
-      rowShiftAnimations.current.set(key, animation);
-
-      const release = () => {
-        if (rowShiftAnimations.current.get(key) === animation) {
-          rowShiftAnimations.current.delete(key);
-        }
-      };
-      animation.onfinish = release;
-      animation.oncancel = release;
-    });
-    // liveCalls belongs here with rows: a call announced as running inserts a
-    // row of its own, and that push has to be absorbed the same way.
-  }, [enteringRowIDs, rows, liveCalls]);
 
   // The rate pulse only makes sense on page 1, in the live window, on the
   // admin surface — for a regular user it would reflect their own traffic
@@ -575,17 +372,28 @@ export default function LogTable({
     [message],
   );
 
-  // Live rows are held in a ref and published to state only when the pointer is
-  // away, for the same reason arrivals are parked.
-  const commitLive = useCallback((next: ReadonlyMap<string, LogRow>) => {
-    liveRef.current = next;
-    if (!hoveringRef.current) setLiveCalls(next);
-  }, []);
+  // The set of calls the server says are running. Tracked whenever the feed
+  // is connected; drawn only where showLive says so.
+  const inflight = useInflightCalls({
+    enabled: Boolean(admin),
+    hoveringRef,
+    // A first sighting inserts a row, so the layout is snapshotted before it
+    // lands — but only where the row will actually be drawn.
+    onFirstSighting: (key) => {
+      if (showLive) captureLiveLayout(`live:${key}`);
+    },
+  });
+  // Announced calls and settled arrivals both push the list down; both are
+  // named so the shift is measured after either commit.
+  const {
+    tableRef: liveTableRoot,
+    enteringRowIDs,
+    capture: captureLiveLayout,
+    enter: animateLiveRow,
+  } = useLiveRowAnimation(Boolean(admin), [rows, inflight.liveCalls]);
 
   const flushHoverBuffer = useCallback(() => {
-    setLiveCalls((current) =>
-      current === liveRef.current ? current : liveRef.current,
-    );
+    inflight.publish();
     const buffered = hoverBuffer.current;
     if (!buffered.length) return;
     hoverBuffer.current = [];
@@ -600,60 +408,17 @@ export default function LogTable({
       }
       return next.slice(0, pageSize);
     });
-  }, [page, pageSize]);
+  }, [inflight.publish, page, pageSize]);
 
   const streamState = useLogStream({
     url: streamURL,
     enabled: streamEnabled,
-    onInflight: ({ key, entry }) => {
-      if (!admin) return;
-      // Only a first sighting moves the rows below it; a re-announcement of a
-      // call already on screen rewrites one row in place.
-      if (showLive && !hoveringRef.current && !liveRef.current.has(key)) {
-        captureLiveLayout(`live:${key}`);
-      }
-      // Upsert, not append: the same key is announced again each time the call
-      // is routed or retried, so the row names the upstream being waited on.
-      const next = new Map(liveRef.current);
-      next.set(key, { ...entry, live_key: key });
-      commitLive(next);
-    },
-    onInflightSync: (calls) => {
-      if (!admin) return;
-      if (!calls.length && !liveRef.current.size) return;
-      // Adopted wholesale: the server is naming the complete set this feed
-      // should be showing, which recovers a start that never arrived as well as
-      // an end that never did.
-      const next = new Map<string, LogRow>();
-      for (const { key, entry } of calls) {
-        next.set(key, { ...entry, live_key: key });
-        missedSyncs.current.delete(key);
-      }
-      for (const [key, row] of liveRef.current) {
-        if (next.has(key)) continue;
-        // A grace period before dropping: a call leaves the server's live set
-        // the moment the caller has been answered, a beat before its row is
-        // written, and a sync landing in that window must not erase a
-        // placeholder whose real row is already on its way.
-        const misses = (missedSyncs.current.get(key) ?? 0) + 1;
-        if (misses < INFLIGHT_SYNC_GRACE) {
-          missedSyncs.current.set(key, misses);
-          next.set(key, row);
-          continue;
-        }
-        missedSyncs.current.delete(key);
-      }
-      commitLive(next);
-    },
+    onInflight: ({ key, entry }) => inflight.announce(key, entry),
+    onInflightSync: inflight.sync,
     onEntry: (entry, key) => {
       // Retire the placeholder first, and on every page: the settled row is the
       // same call, and listing it twice is the one outcome worth ruling out.
-      if (key && liveRef.current.has(key)) {
-        const next = new Map(liveRef.current);
-        next.delete(key);
-        missedSyncs.current.delete(key);
-        commitLive(next);
-      }
+      if (key) inflight.retire(key);
       if (page !== 1) {
         setPending((count) => count + 1);
         return;
@@ -683,8 +448,7 @@ export default function LogTable({
       // Whatever was running when the connection dropped may well have finished
       // in the meantime. The reconnect is answered with a fresh set, so drop
       // the stale one rather than waiting for it to be reconciled away.
-      missedSyncs.current.clear();
-      commitLive(new Map());
+      inflight.reset();
     },
   });
 
@@ -703,21 +467,13 @@ export default function LogTable({
   // Keyed to the feed rather than to the page, so paging away and back keeps
   // the set that is still on the wire.
   useEffect(() => {
-    liveRef.current = new Map();
-    missedSyncs.current.clear();
-    setLiveCalls((current) => (current.size ? new Map() : current));
-  }, [streamURL, streamEnabled]);
+    inflight.reset();
+  }, [inflight.reset, streamURL, streamEnabled]);
 
-  // Newest first, like the rows below them, so the time column still reads
-  // top-to-bottom as one descending sequence.
-  const liveRows = useMemo(() => {
-    if (!showLive) return [] as LogRow[];
-    return [...liveCalls.values()].sort(
-      (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-    );
-  }, [liveCalls, showLive]);
+  // Drawn only where showLive says so; the set itself is tracked regardless.
+  const liveRows = showLive ? inflight.liveRows : EMPTY_ROWS;
   const hasLive = liveRows.length > 0;
+  const { liveCalls } = inflight;
 
   // A running call's only moving part is how long it has been running, so the
   // clock ticks for as long as one is on screen and stops when none is.
@@ -1594,384 +1350,5 @@ export default function LogTable({
         {detail && !admin && <LogMeta detail={detail} admin={admin} />}
       </Drawer>
     </>
-  );
-}
-
-// Standard reason phrases for the status codes a relay realistically returns.
-// Anything unlisted simply omits the phrase, which is valid HTTP.
-const REASON_PHRASE: Record<number, string> = {
-  200: "OK",
-  201: "Created",
-  202: "Accepted",
-  204: "No Content",
-  301: "Moved Permanently",
-  302: "Found",
-  304: "Not Modified",
-  307: "Temporary Redirect",
-  308: "Permanent Redirect",
-  400: "Bad Request",
-  401: "Unauthorized",
-  402: "Payment Required",
-  403: "Forbidden",
-  404: "Not Found",
-  405: "Method Not Allowed",
-  408: "Request Timeout",
-  409: "Conflict",
-  410: "Gone",
-  413: "Content Too Large",
-  422: "Unprocessable Content",
-  429: "Too Many Requests",
-  499: "Client Closed Request",
-  500: "Internal Server Error",
-  501: "Not Implemented",
-  502: "Bad Gateway",
-  503: "Service Unavailable",
-  504: "Gateway Timeout",
-};
-
-/**
- * Renders one side of the call as it would appear on the wire: start line,
- * folded headers, blank line, body. Reading a relayed call means comparing it
- * against the upstream's own docs and curl output, and both speak raw HTTP —
- * a JSON rendering of the header map forces a mental translation every time.
- */
-const httpMessage = (
-  kind: "request" | "response",
-  entry: RequestLog,
-  headers: Record<string, string[]> | undefined,
-  body: string | undefined,
-) => {
-  const startLine =
-    kind === "request"
-      ? `${entry.method || "POST"} ${entry.endpoint || "/"} HTTP/1.1`
-      : `HTTP/1.1 ${entry.status_code}${
-          REASON_PHRASE[entry.status_code]
-            ? ` ${REASON_PHRASE[entry.status_code]}`
-            : ""
-        }`;
-
-  // Repeated headers stay on separate lines, which is how they travel.
-  const lines = Object.entries(headers ?? {})
-    .sort(([a], [b]) => a.localeCompare(b))
-    .flatMap(([name, values]) => values.map((value) => `${name}: ${value}`));
-
-  return `${[startLine, ...lines].join("\n")}\n\n${body ?? ""}`;
-};
-
-// LogBody shows one side of a call. The bodies are held for a limited number
-// of recent calls, so "not here" is a normal outcome and is spelled out rather
-// than shown as an empty panel.
-type BodyView = "raw" | "chat";
-
-function LogBody({
-  kind,
-  state,
-  bodies,
-  entry,
-}: {
-  kind: "request" | "response";
-  state: "idle" | "loading" | "expired" | "failed";
-  bodies: RequestLogDetail | null;
-  entry: RequestLog;
-}) {
-  const { message } = App.useApp();
-  const { settings } = useSettings();
-  const [view, setView] = useState<BodyView>("chat");
-
-  // Parsing walks the whole body, which for a streamed response is every SSE
-  // frame; keep it off the render path unless the body actually changed.
-  const rawBody =
-    kind === "request" ? bodies?.request_body : bodies?.response_body;
-  const turns = useMemo(
-    () =>
-      kind === "request"
-        ? parseRequestConversation(rawBody)
-        : parseResponseConversation(rawBody),
-    [kind, rawBody],
-  );
-
-  if (state === "loading") return <Skeleton active paragraph={{ rows: 6 }} />;
-  if (state === "expired") {
-    return (
-      <Alert
-        type="info"
-        showIcon
-        message="这次调用的正文已不再保留"
-        description={`只保留最近 ${formatNumber(settings.log_detail_keep)} 次调用的完整正文，这条已经滚出该范围。可在「全局设置 → 完整日志」调整条数。`}
-      />
-    );
-  }
-  if (state === "failed")
-    return <Alert type="error" showIcon message="加载正文失败" />;
-  if (!bodies) {
-    return (
-      <Alert
-        type="info"
-        showIcon
-        message="未记录正文"
-        description="完整日志当前处于关闭状态，可在「全局设置 → 完整日志」开启。"
-      />
-    );
-  }
-
-  const headers =
-    kind === "request" ? bodies.request_headers : bodies.response_headers;
-  const body = kind === "request" ? bodies.request_body : bodies.response_body;
-  const truncated =
-    kind === "request" ? bodies.request_truncated : bodies.response_truncated;
-  const httpText = httpMessage(kind, entry, headers, body);
-
-  // Non-chat calls (embeddings, audio, …) have nothing to show in the chat
-  // view; land them on the raw message instead of an apology.
-  const effectiveView: BodyView = turns ? view : "raw";
-
-  return (
-    <Space direction="vertical" size={12} style={{ width: "100%" }}>
-      {truncated && (
-        <Alert
-          type="warning"
-          showIcon
-          message={`正文超过 ${formatBytes(settings.log_body_limit)}，已截断或省略`}
-          description="上限可在「全局设置 → 正文捕获」调整。"
-        />
-      )}
-      <Space size={8} wrap>
-        <Segmented
-          size="small"
-          value={effectiveView}
-          onChange={(value) => setView(value as BodyView)}
-          options={[
-            { label: "报文", value: "raw" },
-            { label: "会话", value: "chat", disabled: !turns },
-          ]}
-        />
-        {effectiveView === "raw" ? (
-          <>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              敏感头已脱敏{turns ? "" : " · 该正文不是可识别的对话"}
-            </Typography.Text>
-            <Button
-              size="small"
-              icon={<CopyOutlined />}
-              onClick={() => {
-                void copyTextToClipboard(httpText).then((copied) =>
-                  copied
-                    ? message.success("已复制报文")
-                    : message.warning("浏览器拒绝了剪贴板访问，请手动选中复制"),
-                );
-              }}
-            >
-              复制报文
-            </Button>
-          </>
-        ) : (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {`${turns?.length ?? 0} 条消息${truncated ? "（正文被截断，可能不完整）" : ""}`}
-          </Typography.Text>
-        )}
-      </Space>
-      {effectiveView === "raw" ? (
-        // No inner max-height: the drawer body is the scroll container.
-        <pre className="code-block">{httpText}</pre>
-      ) : (
-        <Conversation turns={turns ?? []} />
-      )}
-    </Space>
-  );
-}
-
-const ROLE_LABEL: Record<string, string> = {
-  system: "system",
-  user: "user",
-  assistant: "assistant",
-  tool: "tool",
-};
-
-const PART_LABEL: Record<PartKind, string> = {
-  text: "",
-  reasoning: "思考",
-  tool_call: "调用工具",
-  tool_result: "工具结果",
-  image: "附件",
-  other: "其他",
-};
-
-// Long system prompts dominate a transcript, so anything past this is folded
-// away behind a toggle. The threshold is generous enough that ordinary turns
-// are never clipped.
-const PART_CLAMP = 1600;
-
-function Conversation({ turns }: { turns: ConversationTurn[] }) {
-  return (
-    <div className="chat-log">
-      {turns.map((turn, index) => (
-        <div key={index} className={`chat-turn chat-turn--${turn.role}`}>
-          <div className="chat-turn__role">
-            {ROLE_LABEL[turn.role] ?? turn.role}
-          </div>
-          <div className="chat-turn__parts">
-            {turn.parts.map((part, partIndex) => (
-              <ChatPart key={partIndex} part={part} />
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ChatPart({ part }: { part: ConversationPart }) {
-  const [expanded, setExpanded] = useState(false);
-  const long = part.text.length > PART_CLAMP;
-  const shown = long && !expanded ? part.text.slice(0, PART_CLAMP) : part.text;
-  const label = PART_LABEL[part.kind];
-
-  return (
-    <div className={`chat-part chat-part--${part.kind}`}>
-      {(label || part.name) && (
-        <div className="chat-part__label">
-          {label}
-          {part.name && <span className="mono"> {part.name}</span>}
-        </div>
-      )}
-      <pre className="chat-part__text">{shown}</pre>
-      {long && (
-        <Button
-          type="link"
-          size="small"
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded
-            ? "收起"
-            : `展开剩余 ${formatNumber(part.text.length - PART_CLAMP)} 字`}
-        </Button>
-      )}
-    </div>
-  );
-}
-
-// LogMeta renders the metadata a log row already carries; no fetch needed.
-function LogMeta({ detail, admin }: { detail: RequestLog; admin?: boolean }) {
-  return (
-    <Descriptions column={1} size="small" bordered>
-      <Descriptions.Item label="ID">
-        <span className="mono">{detail.id}</span>
-      </Descriptions.Item>
-      <Descriptions.Item label="时间">
-        {formatTime(detail.created_at)}
-      </Descriptions.Item>
-      {admin && (
-        <Descriptions.Item label="用户">{detail.username}</Descriptions.Item>
-      )}
-      <Descriptions.Item label="密钥">
-        {detail.token_name || "-"}
-      </Descriptions.Item>
-      <Descriptions.Item label="接口">
-        <span className="mono">{detail.endpoint}</span>
-      </Descriptions.Item>
-      <Descriptions.Item label="请求模型">
-        <span className="mono">{detail.model}</span>
-      </Descriptions.Item>
-      {(!admin ||
-        (detail.upstream_model && detail.upstream_model !== detail.model)) && (
-        <Descriptions.Item label="上游模型">
-          <span className="mono">{detail.upstream_model || detail.model}</span>
-        </Descriptions.Item>
-      )}
-      <Descriptions.Item label="渠道">
-        {detail.channel_id > 0 ? (
-          <>
-            <Tag className="mono">#{detail.channel_id}</Tag>
-            {detail.channel_name || "（已删除）"}
-          </>
-        ) : (
-          "-"
-        )}
-        {detail.retries > 0 && (
-          <Tag color="gold" style={{ marginInlineStart: 8 }}>
-            重试 {detail.retries} 次
-          </Tag>
-        )}
-      </Descriptions.Item>
-      <Descriptions.Item label="状态码">
-        <Tag color={rowTone(detail)}>{detail.status_code}</Tag>
-        {detail.stream ? <Tag color="blue">流式</Tag> : <Tag>非流式</Tag>}
-      </Descriptions.Item>
-      {(!admin || detail.reasoning_effort) && (
-        <Descriptions.Item label="思考强度">
-          {detail.reasoning_effort ? (
-            <Tag color={REASONING_TONE[detail.reasoning_effort] ?? "default"}>
-              {detail.reasoning_effort}
-            </Tag>
-          ) : (
-            <span className="text-muted">未指定</span>
-          )}
-        </Descriptions.Item>
-      )}
-      <Descriptions.Item label="客户端">
-        {detail.client_type && detail.client_type !== "unknown" ? (
-          <Tag>{detail.client_type}</Tag>
-        ) : (
-          <span className="text-muted">未识别</span>
-        )}
-      </Descriptions.Item>
-      <Descriptions.Item label="来源 IP">
-        {detail.client_ip ? (
-          <Tooltip title="来自 X-Forwarded-For；直连本服务的调用方可以自行设置该头，仅供参考">
-            <span className="mono">{detail.client_ip}</span>
-          </Tooltip>
-        ) : (
-          <span className="text-muted">-</span>
-        )}
-      </Descriptions.Item>
-      <Descriptions.Item label="Token 用量">
-        输入 {formatNumber(detail.prompt_tokens)} · 输出{" "}
-        {formatNumber(detail.completion_tokens)} · 合计{" "}
-        {formatNumber(
-          detail.total_tokens ||
-            detail.prompt_tokens + detail.completion_tokens,
-        )}
-      </Descriptions.Item>
-      <Descriptions.Item label="缓存命中">
-        {formatNumber(detail.cached_tokens)}
-        <span className="text-muted">
-          {" "}
-          / {formatNumber(detail.prompt_tokens)} 输入
-        </span>
-      </Descriptions.Item>
-      <Descriptions.Item label="缓存率">
-        <Tooltip title="缓存命中的输入 token 占全部输入的比例；命中部分按缓存价计费">
-          <span>{formatPercent(cacheRate(detail))}</span>
-        </Tooltip>
-      </Descriptions.Item>
-      <Descriptions.Item label="缓存创建">
-        <Tooltip title="写入缓存的输入 token，已计入输入总数；上游通常按高于普通输入的价格计费">
-          <span>{formatNumber(detail.cache_creation_tokens)}</span>
-        </Tooltip>
-      </Descriptions.Item>
-      <Descriptions.Item label="费用">
-        {formatUSD(detail.cost, 6)}
-      </Descriptions.Item>
-      <Descriptions.Item label="耗时">
-        总计 {formatDuration(detail.duration_ms)}
-        {detail.ttfb_ms > 0 && ` · 首字节 ${formatDuration(detail.ttfb_ms)}`}
-      </Descriptions.Item>
-      <Descriptions.Item label="错误">
-        {detail.error ? (
-          <Typography.Paragraph
-            copyable={{ text: detail.error }}
-            style={{
-              color: "var(--app-danger)",
-              marginBottom: 0,
-              whiteSpace: "pre-wrap",
-            }}
-          >
-            {detail.error}
-          </Typography.Paragraph>
-        ) : (
-          <span className="text-muted">无</span>
-        )}
-      </Descriptions.Item>
-    </Descriptions>
   );
 }

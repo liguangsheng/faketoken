@@ -3,7 +3,7 @@ import { App, Button, Dropdown, Space } from 'antd'
 import { DeleteOutlined, DownOutlined } from '@ant-design/icons'
 
 import { api } from '../../api/client'
-import LogTable from '../../components/LogTable'
+import LogTable from '../../components/log/LogTable'
 import PageHeader from '../../components/PageHeader'
 
 const PURGE_OPTIONS = [7, 30, 90]
