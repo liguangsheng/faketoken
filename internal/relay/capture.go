@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/faketoken/faketoken/internal/model"
 )
@@ -32,49 +31,6 @@ func (rl *Relay) captureLimit() int {
 func (rl *Relay) SetCaptureLimit(bytes int) {
 	if bytes > 0 {
 		rl.capture.Store(int64(bytes))
-	}
-}
-
-// DefaultRetryBudget is the fallback max retry count when no stored option
-// exists. Matches the environment default for MAX_RETRIES.
-const DefaultRetryBudget = 3
-
-// DefaultRetryBackoff is the fallback inter-retry base delay when no stored
-// option exists. Matches the environment default for RETRY_BACKOFF.
-const DefaultRetryBackoff = 200 * time.Millisecond
-
-// retryBudgetValue reads the operator-configured cap on how many channels one
-// request may visit before it gives up. A channel's own retry_count is spent on
-// top of it. Consulted per request, so it lives in memory rather than in the
-// options table.
-func (rl *Relay) retryBudgetValue() int {
-	if n := int(rl.retryBudget.Load()); n > 0 {
-		return n
-	}
-	return DefaultRetryBudget
-}
-
-// retryBackoffValue reads the operator-configured inter-retry base delay. It
-// spaces the move to another channel; a channel that sets retry_backoff_ms
-// spaces its own retries with that instead.
-func (rl *Relay) retryBackoffValue() time.Duration {
-	if d := time.Duration(rl.retryBackoff.Load()); d > 0 {
-		return d
-	}
-	return DefaultRetryBackoff
-}
-
-// SetRetryConfig updates the retry attempt cap and the inter-retry backoff
-// base without a restart. The cap counts channels, not attempts: it bounds how
-// many upstreams one request may visit, each of which may be tried several
-// times under its own retry_count.
-func (rl *Relay) SetRetryConfig(maxRetries int, backoff time.Duration) {
-	if maxRetries < 1 {
-		maxRetries = 1
-	}
-	rl.retryBudget.Store(int64(maxRetries))
-	if backoff > 0 {
-		rl.retryBackoff.Store(int64(backoff))
 	}
 }
 
