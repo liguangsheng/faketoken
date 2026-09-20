@@ -126,6 +126,19 @@ func TestFailedChannelTestIsLogged(t *testing.T) {
 	if entry.Cost != 0 {
 		t.Fatalf("a failed probe was billed %d", entry.Cost)
 	}
+
+	// The request that was about to go out is the useful half of a probe that
+	// never got an answer. Its row has no response headers at all, and the
+	// column refuses NULL, so this is the case that used to lose the detail.
+	var detail model.RequestLogDetail
+	r := h.do(http.MethodGet, fmt.Sprintf("/api/admin/logs/%d/detail", entry.ID), h.admin, nil, &detail)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("detail of a failed probe: HTTP %d, want 200", r.StatusCode)
+	}
+	if !strings.Contains(detail.RequestBody, `"gpt-4o"`) {
+		t.Fatalf("the probe's request body was not kept: %q", detail.RequestBody)
+	}
 }
 
 func TestFetchModelsFromUpstream(t *testing.T) {

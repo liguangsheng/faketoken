@@ -1236,6 +1236,16 @@ func (rl *Relay) recordDetail(ctx context.Context, logID int64,
 
 	row := detail(rl.CaptureLimit())
 	row.LogID = logID
+	// A call that ended before any upstream answered has no response headers,
+	// and a probe that never built its request has none on either side. The
+	// columns are NOT NULL and a nil map is encoded as NULL, which would lose
+	// the whole row — for exactly the failures whose detail is most wanted.
+	if row.RequestHeaders == nil {
+		row.RequestHeaders = map[string][]string{}
+	}
+	if row.ResponseHeaders == nil {
+		row.ResponseHeaders = map[string][]string{}
+	}
 	if err := rl.st.InsertLogDetail(ctx, row); err != nil {
 		// A missing diagnostic body must never surface to the caller, whose
 		// request has already been answered.
