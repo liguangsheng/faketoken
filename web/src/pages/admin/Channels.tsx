@@ -1403,43 +1403,57 @@ export default function Channels() {
             // Sits next to the channel it belongs to: what a channel serves is
             // read together with which channel it is, not with the counters.
             // Bounded so the leftover width goes to the channel name — this
-            // column only ever shows a count plus two sample chips.
+            // column only ever shows two counts plus two sample chips.
+            //
+            // Both counts lead, then the samples: the numbers are what the
+            // column is scanned for and they sit at a fixed spot on every row,
+            // while the sample chips are ragged and variable.
+            //
+            // No "+N" tag behind the samples. Once the count leads, a row
+            // reading "模型 12" next to two chips already says the list is cut
+            // short; a third tag repeating it only crowds the row. The full
+            // list it used to carry now hangs off the count itself, which is
+            // also what the mapping tag does.
+            //
+            // Every tag reads "标签 数字": a bare "12 个" needed the header to
+            // say what was being counted, which stops working as soon as a
+            // second count sits beside it.
             ...COLUMN_GEOMETRY.models,
             title: '模型',
             dataIndex: 'models',
-            render: (list: string[], row) => (
-              <div className="tag-list">
-                <Tag color="geekblue">{list.length} 个</Tag>
-                {list.slice(0, 2).map((item) => (
-                  <Tooltip key={item} title={item}>
-                    <Tag
-                      className="mono"
-                      style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                    >
-                      {item}
-                    </Tag>
-                  </Tooltip>
-                ))}
-                {list.length > 2 && (
+            render: (list: string[], row) => {
+              const mapped = Object.keys(row.model_mapping ?? {}).length
+              return (
+                <div className="tag-list">
                   <Tooltip
                     title={
                       // A hundred-model tooltip is an unreadable wall; the
                       // full list lives in the expanded row.
                       list.length > 20
                         ? `${list.slice(0, 20).join('、')} …等 ${list.length} 个，展开行查看全部`
-                        : list.join('、')
+                        : list.join('、') || '未配置，仅按前缀匹配'
                     }
                   >
-                    <Tag>+{list.length - 2}</Tag>
+                    <Tag color="geekblue">模型 {list.length}</Tag>
                   </Tooltip>
-                )}
-                {Object.keys(row.model_mapping ?? {}).length > 0 && (
-                  <Tooltip title={stringifyMapping(row.model_mapping)}>
-                    <Tag color="purple">映射 {Object.keys(row.model_mapping).length}</Tag>
-                  </Tooltip>
-                )}
-              </div>
-            ),
+                  {mapped > 0 && (
+                    <Tooltip title={stringifyMapping(row.model_mapping)}>
+                      <Tag color="purple">映射 {mapped}</Tag>
+                    </Tooltip>
+                  )}
+                  {list.slice(0, 2).map((item) => (
+                    <Tooltip key={item} title={item}>
+                      <Tag
+                        className="mono"
+                        style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                      >
+                        {item}
+                      </Tag>
+                    </Tooltip>
+                  ))}
+                </div>
+              )
+            },
           },
           {
             // Stacked rather than side by side: two labelled numbers read fine
@@ -1861,7 +1875,9 @@ export default function Channels() {
                       dataIndex: 'models',
                       width: 84,
                       responsive: ['md'],
-                      render: (list: string[]) => <Tag color="geekblue">{list.length} 个</Tag>,
+                      // Same tag wording as the main listing, so the archive
+                      // shelf does not read as a different table.
+                      render: (list: string[]) => <Tag color="geekblue">模型 {list.length}</Tag>,
                     },
                     {
                       title: '消费',
