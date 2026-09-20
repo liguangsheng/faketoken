@@ -114,10 +114,6 @@ func cleanUserAgentLocks(in map[string]string) map[string]string {
 	return out
 }
 
-// cleanEffortMapping folds the levels an operator typed to lowercase and drops
-// the half-filled rows the console's key/value editor leaves behind. The store
-// normalises again on write; doing it here as well is what makes the channel
-// returned by a create or update already show what was actually stored.
 // validEffortMapping refuses a rule that maps a level onto whitespace or onto a
 // value carrying JSON punctuation. The rename is spliced into the request body
 // as a JSON string, so a stray quote or brace is either meaningless to the
@@ -280,32 +276,34 @@ func validChannelRetry(in channelInput) (string, bool) {
 	return "", true
 }
 
+// validate checks the form the same way on create and on update: an update
+// that skipped a check could blank out what the create refused to accept.
+func (in channelInput) validate() (string, bool) {
+	if strings.TrimSpace(in.Name) == "" {
+		return "the channel name is required", false
+	}
+	if strings.TrimSpace(in.BaseURL) == "" {
+		return "the channel base URL is required", false
+	}
+	if !validAuthStyle(in.AuthStyle) {
+		return "unsupported authentication style: " + in.AuthStyle, false
+	}
+	for _, check := range []func(channelInput) (string, bool){
+		validKeepalive, validChannelRetry, validEffortMapping,
+	} {
+		if message, ok := check(in); !ok {
+			return message, false
+		}
+	}
+	return "", true
+}
+
 func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	var in channelInput
 	if !decode(w, r, &in) {
 		return
 	}
-	if in.Name == "" {
-		fail(w, http.StatusBadRequest, "the channel name is required")
-		return
-	}
-	if strings.TrimSpace(in.BaseURL) == "" {
-		fail(w, http.StatusBadRequest, "the channel base URL is required")
-		return
-	}
-	if !validAuthStyle(in.AuthStyle) {
-		fail(w, http.StatusBadRequest, "unsupported authentication style: "+in.AuthStyle)
-		return
-	}
-	if message, ok := validKeepalive(in); !ok {
-		fail(w, http.StatusBadRequest, message)
-		return
-	}
-	if message, ok := validChannelRetry(in); !ok {
-		fail(w, http.StatusBadRequest, message)
-		return
-	}
-	if message, ok := validEffortMapping(in); !ok {
+	if message, ok := in.validate(); !ok {
 		fail(w, http.StatusBadRequest, message)
 		return
 	}
@@ -328,29 +326,7 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	// The create path already refuses an empty name; without the same check
-	// here an update could silently blank it out.
-	if strings.TrimSpace(in.Name) == "" {
-		fail(w, http.StatusBadRequest, "the channel name is required")
-		return
-	}
-	if strings.TrimSpace(in.BaseURL) == "" {
-		fail(w, http.StatusBadRequest, "the channel base URL is required")
-		return
-	}
-	if !validAuthStyle(in.AuthStyle) {
-		fail(w, http.StatusBadRequest, "unsupported authentication style: "+in.AuthStyle)
-		return
-	}
-	if message, ok := validKeepalive(in); !ok {
-		fail(w, http.StatusBadRequest, message)
-		return
-	}
-	if message, ok := validChannelRetry(in); !ok {
-		fail(w, http.StatusBadRequest, message)
-		return
-	}
-	if message, ok := validEffortMapping(in); !ok {
+	if message, ok := in.validate(); !ok {
 		fail(w, http.StatusBadRequest, message)
 		return
 	}
