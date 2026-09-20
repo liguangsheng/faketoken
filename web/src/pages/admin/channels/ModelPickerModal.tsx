@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useLayoutEffect, useState } from 'react'
 import { Button, Checkbox, Input, Modal, Space, Tag, Tooltip, Typography } from 'antd'
 
 import EmptyState from '../../../components/EmptyState'
@@ -33,7 +33,9 @@ export default function ModelPickerModal({ state, verb, onCancel, onApply }: Pro
   const [selected, setSelected] = useState<string[]>([])
   const [filter, setFilter] = useState('')
 
-  useEffect(() => {
+  // Before paint: the dialog stays mounted between openings, and a first frame
+  // showing the previous channel's ticks under this one's title is a glitch.
+  useLayoutEffect(() => {
     if (!state) return
     setSelected(state.initial)
     setFilter('')

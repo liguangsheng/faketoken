@@ -128,7 +128,7 @@ export default function Channels() {
   // What the edit drawer is open on; a fresh object per opening, null closes.
   const [draft, setDraft] = useState<ChannelDraft | null>(null)
   // The channel under test, for the probe dialog.
-  const [testing, setTesting] = useState<Channel | null>(null)
+  const [testTarget, setTestTarget] = useState<Channel | null>(null)
   const [importOpen, setImportOpen] = useState(false)
   // The picker that saves straight to a channel; the drawer has its own.
   const [picker, setPicker] = useState<(ModelPickerState & { channel: Channel }) | null>(null)
@@ -953,7 +953,7 @@ export default function Channels() {
                     ],
                     onClick: ({ key }) => {
                       if (key === 'edit') openDrawer(row)
-                      else if (key === 'test') setTesting(row)
+                      else if (key === 'test') setTestTarget(row)
                       else if (key === 'models') void fetchModels(row)
                       else if (key === 'balance-new-api') void showBalance(row, 'new-api')
                       else if (key === 'balance-sub2api') void showBalance(row, 'sub2api')
@@ -1275,7 +1275,7 @@ export default function Channels() {
         }
       />
 
-      <TestChannelModal channel={testing} onClose={() => setTesting(null)} onTested={load} />
+      <TestChannelModal channel={testTarget} onClose={() => setTestTarget(null)} onTested={load} />
 
       <QuickImportModal
         open={importOpen}

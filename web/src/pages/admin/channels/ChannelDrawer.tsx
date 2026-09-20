@@ -578,7 +578,7 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
                       name="allow_attachments"
                       label="允许附件"
                       valuePropName="checked"
-                      tooltip="关闭后，包含图片、文档、文件或音频等附件的会话请求会直接被拒绝，不会发送到上游。"
+                      tooltip="关闭后，包含图片、文档、文件或音频等附件的会话请求会绕过该渠道，交给其他允许附件的渠道；都不允许才拒绝。"
                     >
                       <Switch checkedChildren="允许" unCheckedChildren="拒绝" />
                     </Form.Item>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useState } from 'react'
 import {
   Alert,
   App,
@@ -39,7 +39,9 @@ export default function QuickImportModal({ open, onClose, onApply }: Props) {
   const debounced = useDebouncedValue(text)
 
   // Each opening starts empty; the previous paste is not a useful default.
-  useEffect(() => {
+  // Before paint: the dialog stays mounted between openings, and a first frame
+  // showing the last paste under a fresh title reads as a glitch.
+  useLayoutEffect(() => {
     if (!open) return
     setText('')
     setBaseURL('')
@@ -54,6 +56,10 @@ export default function QuickImportModal({ open, onClose, onApply }: Props) {
   // survives until the text itself changes again.
   useEffect(() => {
     if (!open) return
+    // Only once the debounce has caught up. On reopening, the box is already
+    // empty while the debounced copy still holds the previous paste for a
+    // beat; parsing that would write the old address back over the reset.
+    if (debounced !== text) return
     const trimmed = debounced.trim()
     if (!trimmed) return
 
@@ -80,7 +86,7 @@ export default function QuickImportModal({ open, onClose, onApply }: Props) {
     return () => {
       cancelled = true
     }
-  }, [open, debounced])
+  }, [open, debounced, text])
 
   // probe re-reads the paste and calls the upstream for its model list. Manual
   // corrections in the two fields win here: by the time someone presses the

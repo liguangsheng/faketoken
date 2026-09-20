@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import {
   Alert,
   App,
@@ -51,12 +51,14 @@ export default function TestChannelModal({ channel, onClose, onTested }: Props) 
       .catch(() => setTemplates([]))
   }, [])
 
-  // Each opening starts fresh. A mapping-only channel has no channel.models to
-  // fall back on, and left blank the probe would resolve nothing. The prompt
+  // Each opening starts fresh, before paint: the dialog stays mounted between
+  // openings, and the previous channel's verdict must not show under this
+  // one's title even for a frame. A mapping-only channel has no channel.models
+  // to fall back on, and left blank the probe would resolve nothing. The prompt
   // starts from a random built-in: it makes a meaningful probe one click away,
   // and varying the question stops a channel from looking healthy just because
   // it caches one familiar answer.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!channel) {
       // Reset the seed marker so the next opening draws a fresh prompt.
       setSeeded(false)
