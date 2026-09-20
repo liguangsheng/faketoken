@@ -16,6 +16,7 @@ import {
   Descriptions,
   Drawer,
   Input,
+  Popconfirm,
   Segmented,
   Select,
   Skeleton,
@@ -38,6 +39,7 @@ import {
   ReloadOutlined,
   RobotOutlined,
   SearchOutlined,
+  StopOutlined,
   UserOutlined,
 } from "@ant-design/icons";
 import type { TableRef } from "antd/es/table";
@@ -102,7 +104,10 @@ interface Props {
  */
 type LogRow = RequestLog & { live_key?: string };
 
-const isLive = (row: LogRow) => row.live_key !== undefined;
+// A type predicate, so the branches that draw a running row can reach its
+// handle without asserting it back into existence.
+const isLive = (row: LogRow): row is LogRow & { live_key: string } =>
+  row.live_key !== undefined;
 
 /** Table row key. Live rows have no id yet, so they key off their own handle. */
 const rowKeyOf = (row: LogRow) =>
@@ -174,7 +179,11 @@ interface LiveRowLayout {
  */
 const COLUMN_GEOMETRY = {
   createdAt: { width: 150 },
-  status: { width: 140 },
+  // Sized for the widest run of tags the cell can hold at once:
+  // "进行中" (icon + 3 characters) · "流" · "×3". The in-flight tag is the
+  // long one and it co-occurs with the other two — a streaming call that
+  // switched channels shows all three while it is still running.
+  status: { width: 172 },
   error: { flexMin: 230 },
   model: { width: 210, responsive: ["md"] },
   channel: { width: 140, responsive: ["md"] },
@@ -182,7 +191,10 @@ const COLUMN_GEOMETRY = {
   cost: { width: 100, responsive: ["md"] },
   token: { width: 130, responsive: ["lg"] },
   client: { width: 110, responsive: ["lg"] },
-  tokens: { width: 100, responsive: ["lg"] },
+  // Two compact numbers stacked ("↑1.2M" over "↓845"), so the header is the
+  // widest thing in the column. The slack goes to status and to the error
+  // text, which is the column that actually runs out of room.
+  tokens: { width: 80, responsive: ["lg"] },
   reasoning: { width: 110, responsive: ["xl"] },
   clientIP: { width: 130, responsive: ["xl"] },
 } satisfies TableGeometry;
@@ -532,6 +544,36 @@ export default function LogTable({
   const concurrencyActive = Boolean(admin) && streamEnabled;
   const concurrencyIdleHint = live ? "已选时间范围" : "实时推送已关闭";
   const [pending, setPending] = useState(0);
+
+  // Keys with a cancel in flight. A set rather than a single key because the
+  // operator clearing out a stuck upstream presses several in a row, and a
+  // shared flag would put every button into the same spinner.
+  const [cancelling, setCancelling] = useState<ReadonlySet<string>>(new Set());
+
+  const cancelCall = useCallback(
+    async (key: string) => {
+      setCancelling((current) => new Set(current).add(key));
+      try {
+        await api.admin.cancelInflight(key);
+        // "发出" rather than "已取消": the row settles when the request
+        // goroutine unwinds, which is the event worth believing.
+        message.success("已发出取消");
+      } catch (error) {
+        const text = error instanceof Error ? error.message : "取消失败";
+        // Losing the race with a call that finished on its own is the ordinary
+        // outcome of pressing cancel late, not a fault to alarm anyone with.
+        if (text.includes("已经结束")) message.info(text);
+        else message.error(text);
+      } finally {
+        setCancelling((current) => {
+          const next = new Set(current);
+          next.delete(key);
+          return next;
+        });
+      }
+    },
+    [message],
+  );
 
   // Live rows are held in a ref and published to state only when the pointer is
   // away, for the same reason arrivals are parked.
@@ -1467,8 +1509,31 @@ export default function LogTable({
               title: "错误",
               dataIndex: "error",
               ellipsis: true,
-              render: (value: string) =>
-                value ? (
+              // A running call has no error yet, and it is the only kind of row
+              // that can still be acted on — so the column that would otherwise
+              // show a dash carries the stop button instead of costing the
+              // table a whole column that is empty on every settled row.
+              render: (value: string, row: LogRow) =>
+                isLive(row) ? (
+                  <Popconfirm
+                    title="取消这次调用？"
+                    description="只停掉本网关的等待与转发。上游可能继续生成并照常计费。"
+                    okText="取消调用"
+                    okButtonProps={{ danger: true }}
+                    cancelText="再等等"
+                    onConfirm={() => cancelCall(row.live_key)}
+                  >
+                    <Button
+                      size="small"
+                      type="text"
+                      danger
+                      icon={<StopOutlined />}
+                      loading={cancelling.has(row.live_key)}
+                    >
+                      取消
+                    </Button>
+                  </Popconfirm>
+                ) : value ? (
                   <Tooltip title={value}>
                     <span style={{ color: "var(--app-danger)" }}>{value}</span>
                   </Tooltip>

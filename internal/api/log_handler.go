@@ -100,6 +100,35 @@ func (s *Server) handleAdminLogDetail(w http.ResponseWriter, r *http.Request) {
 	ok(w, detail)
 }
 
+// handleCancelInflight ends a call that is still running.
+//
+// Keyed by the live key rather than a log id because there is no row yet: the
+// call being stopped is precisely the one that has not settled. The key is the
+// same handle the console draws its in-flight row against, so the row an
+// operator is looking at and the goroutine this aborts cannot drift apart.
+func (s *Server) handleCancelInflight(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimSpace(r.PathValue("key"))
+	if key == "" {
+		fail(w, http.StatusBadRequest, "missing the in-flight key")
+		return
+	}
+
+	if !s.relay.CancelLive(key) {
+		// Lost the race with the call finishing on its own. Reported as a 404
+		// so the console can say "已经结束了" instead of "取消失败", which would
+		// read as a system that refused a valid instruction.
+		fail(w, http.StatusNotFound, "该调用已经结束")
+		return
+	}
+
+	// There is no audit log in this system, so the operator's name goes here or
+	// nowhere: a 499 row with no explanation is the kind of thing somebody
+	// spends an afternoon on months later.
+	slog.Warn("an administrator cancelled a running call",
+		"live_key", key, "admin", userFrom(r.Context()).Username)
+	ok(w, map[string]string{"key": key})
+}
+
 func (s *Server) handlePurgeLogs(w http.ResponseWriter, r *http.Request) {
 	days := queryInt(r, "days", 30)
 	if days < 0 {

@@ -707,6 +707,11 @@ export const api = {
     logDetail: (id: number) => request<RequestLogDetail>('GET', `/api/admin/logs/${id}/detail`),
     purgeLogs: (days: number) =>
       request<{ deleted: number }>('DELETE', `/api/admin/logs${qs({ days })}`),
+    /** Aborts a call that is still running. Keyed by its live handle, because
+     *  the call being stopped is the one that has no id yet. 404 means it
+     *  finished on its own first. */
+    cancelInflight: (key: string) =>
+      request<{ key: string }>('POST', `/api/admin/logs/inflight/${encodeURIComponent(key)}/cancel`),
     stats: (params: Record<string, unknown>) =>
       request<Stats>('GET', `/api/admin/stats${qs(params)}`),
   },

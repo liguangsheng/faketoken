@@ -144,6 +144,9 @@ func (s *Server) Handler() http.Handler {
 	// diagnostic rather than something to hand back to the account that sent
 	// it, so it stays on the administrator surface.
 	mux.HandleFunc("GET /api/admin/logs/{id}/detail", s.requireAdmin(s.handleAdminLogDetail))
+	// Keyed by the live key, not a log id: the call being stopped is the one
+	// that has no row yet.
+	mux.HandleFunc("POST /api/admin/logs/inflight/{key}/cancel", s.requireAdmin(s.handleCancelInflight))
 	mux.HandleFunc("DELETE /api/admin/logs", s.requireAdmin(s.handlePurgeLogs))
 	mux.HandleFunc("GET /api/admin/stats", s.requireAdmin(s.handleAdminStats))
 

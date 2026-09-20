@@ -6652,6 +6652,123 @@ func TestAdminLogStreamAnnouncesRunningCalls(t *testing.T) {
 	}
 }
 
+// An operator can end a call that is stuck on an upstream. The caller has to
+// be told, because unlike a client hang-up they are still there waiting.
+func TestAdminCancelsARunningCall(t *testing.T) {
+	h := newHarness(t)
+
+	// Never released: the point is that only the cancel ends this call. The
+	// handler returns when the relay drops the connection.
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	})
+	h.createChannel(channelInput{
+		Name: "stuck", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	feed, closeFeed := h.openFeed(t, "/api/admin/logs/stream", h.admin)
+	defer closeFeed()
+
+	type relayResult struct {
+		status int
+		body   string
+		err    error
+	}
+	// Built by hand rather than through relayRequest: that helper reports
+	// failures with t.Fatal, which is not valid from a goroutine other than the
+	// test's own.
+	relayed := make(chan relayResult, 1)
+	go func() {
+		req, err := http.NewRequest(http.MethodPost,
+			h.server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`))
+		if err != nil {
+			relayed <- relayResult{err: err}
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := h.server.Client().Do(req)
+		if err != nil {
+			relayed <- relayResult{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		relayed <- relayResult{status: resp.StatusCode, body: string(body), err: err}
+	}()
+
+	var liveKey string
+	for liveKey == "" {
+		select {
+		case event := <-feed:
+			if event.name == "inflight" && event.entry.ChannelName == "stuck" {
+				liveKey = event.key
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("the running call was never announced")
+		}
+	}
+
+	cancelled := h.do(http.MethodPost,
+		"/api/admin/logs/inflight/"+liveKey+"/cancel", h.admin, nil, nil)
+	cancelled.Body.Close()
+	if cancelled.StatusCode != http.StatusOK {
+		t.Fatalf("cancel: HTTP %d", cancelled.StatusCode)
+	}
+
+	select {
+	case result := <-relayed:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		// Not an empty 200: a cancelled call that never got upstream headers
+		// has to say so, or net/http answers for it and the caller reads the
+		// silence as success.
+		if result.status != 499 {
+			t.Fatalf("the cancelled caller got HTTP %d: %s", result.status, result.body)
+		}
+		if !strings.Contains(result.body, "administrator") {
+			t.Fatalf("the cancelled caller was not told why: %s", result.body)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cancelled call never returned to its caller")
+	}
+
+	for {
+		select {
+		case event := <-feed:
+			if event.name != "log" || event.key != liveKey {
+				continue
+			}
+			if event.entry.StatusCode != 499 {
+				t.Fatalf("the cancelled call settled as %d", event.entry.StatusCode)
+			}
+			// Named, not merely aborted: a row reading "client closed request"
+			// would send the next reader after a caller who never left.
+			if !strings.Contains(event.entry.Error, "administrator") {
+				t.Fatalf("the settled row did not name the cancel: %q", event.entry.Error)
+			}
+			return
+		case <-time.After(10 * time.Second):
+			t.Fatal("the cancelled call never settled")
+		}
+	}
+}
+
+// Cancelling a call that already finished is a race the console loses often
+// enough that it must not read as a failure.
+func TestCancelUnknownInflightKeyIsNotFound(t *testing.T) {
+	h := newHarness(t)
+
+	resp := h.do(http.MethodPost, "/api/admin/logs/inflight/nope/cancel", h.admin, nil, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("HTTP %d, want 404", resp.StatusCode)
+	}
+}
+
 // A running call has no durable row yet, so a console that reconnects mid-call
 // has to be handed the set outright or the request stays invisible for as long
 // as it runs.

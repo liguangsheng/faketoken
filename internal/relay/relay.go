@@ -64,6 +64,10 @@ type Relay struct {
 	// drops whatever it was holding when the stream reconnects, so a key reused
 	// after a restart can never land on a stale placeholder.
 	liveSeq atomic.Uint64
+	// cancels is how the console reaches a call that is already talking to an
+	// upstream. Keyed by the same live key, so the row an operator is looking
+	// at and the goroutine they abort are the same thing by construction.
+	cancels *liveCancels
 }
 
 func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config) *Relay {
@@ -75,6 +79,7 @@ func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config) *Relay {
 		breaker:      newBreaker(),
 		limiter:      newRPMLimiter(),
 		tokenLimiter: newRPMLimiter(),
+		cancels:      newLiveCancels(),
 	}
 	rl.capture.Store(DefaultCaptureLimit)
 	rl.retryBudget.Store(int64(cfg.MaxRetries))
@@ -140,6 +145,11 @@ func (rl *Relay) endLive(key string) {
 		rl.stream.Forget(key)
 	}
 }
+
+// CancelLive aborts a call that is still running and reports whether there was
+// one to abort. A false return is a race, not a fault: the call settled between
+// the console drawing the button and the press arriving.
+func (rl *Relay) CancelLive(key string) bool { return rl.cancels.cancel(key) }
 
 // Register mounts the relay on the OpenAI, Anthropic and Gemini path prefixes.
 func (rl *Relay) Register(mux *http.ServeMux) {
@@ -474,6 +484,20 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	captured.liveKey = rl.beginLive(entry)
 	defer rl.endLive(captured.liveKey)
 
+	// A call that can be watched should be stoppable. From here the request
+	// runs on a context this process can cancel, not only the one the client
+	// owns, so an operator can end a run that is burning money on an upstream
+	// that will never answer.
+	if captured.liveKey != "" {
+		cancellable, cancel := context.WithCancelCause(r.Context())
+		// nil keeps the cause the operator's cancel already set; on the
+		// ordinary path there is none and this is just the leak check.
+		defer cancel(nil)
+		rl.cancels.add(captured.liveKey, cancel)
+		defer rl.cancels.drop(captured.liveKey)
+		r = r.WithContext(cancellable)
+	}
+
 	rl.dispatch(w, r, p, entry, captured, info, body, order(candidates), started)
 }
 
@@ -586,8 +610,19 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 				rl.settle(p, entry, captured, ch, outcome, started)
 				return
 			case outcomeAborted:
-				// The client hung up or the stream broke after headers were sent;
-				// retrying would corrupt the response.
+				// The client hung up, an operator stopped the call, or the stream
+				// broke after headers were sent. Retrying would corrupt a response
+				// the caller is already holding.
+				//
+				// An abort that landed before the upstream's headers has written
+				// nothing, and returning here would let net/http answer with its
+				// default empty 200 — which nobody was there to read when the
+				// caller hung up, but is a flat lie when an operator killed the
+				// call and the caller is still on the line waiting.
+				if !outcome.headersSent {
+					writeError(w, statusClientClosedRequest, "request_cancelled",
+						"cancelled", outcome.message)
+				}
 				rl.settle(p, entry, captured, ch, outcome, started)
 				return
 			case outcomeRetry:
@@ -635,7 +670,12 @@ type attemptOutcome struct {
 	// this flag is what tells the breaker and the channel counters that the
 	// call did not work. A rate limit inside the body additionally rewrites
 	// status to 429, which is the status every bookkeeping decision reads.
-	streamFailed      bool
+	streamFailed bool
+	// headersSent marks a call whose upstream response headers already reached
+	// the caller. It decides whether an abort still has a response to write:
+	// after this point the status line is spent and the only honest ending is
+	// to stop sending bytes.
+	headersSent       bool
 	usage             model.Usage
 	hasUsage          bool
 	ttfb              time.Duration
@@ -749,7 +789,7 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 	resp, err := client.Do(req)
 	if err != nil {
 		if r.Context().Err() != nil {
-			return attemptOutcome{kind: outcomeAborted, status: 499, message: "client closed request"}
+			return abortedOutcome(r.Context())
 		}
 		return attemptOutcome{kind: outcomeRetry, status: http.StatusBadGateway, message: err.Error()}
 	}
@@ -785,6 +825,7 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 	w.WriteHeader(resp.StatusCode)
 
 	sniff := newUsageSniffer(contentType, rl.captureLimit())
+
 	written, bodyTTFB, pumpErr := pump(w, resp.Body, sniff, isStream, rl.cfg.StreamIdleTimeout, cancel)
 
 	usage, hasUsage := sniff.Usage()
@@ -792,7 +833,8 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 	responseBody, responseTruncated := sanitizeBody(contentType, captured, captureTruncated, rl.captureLimit())
 	out := attemptOutcome{
 		kind: outcomeDone, status: resp.StatusCode,
-		usage: usage, hasUsage: hasUsage,
+		headersSent: true,
+		usage:       usage, hasUsage: hasUsage,
 		// Time to first byte spans the whole upstream call: an upstream may sit
 		// on the response headers while the model is still thinking, so the
 		// wait for headers counts just as much as the wait for the first chunk.
@@ -822,6 +864,11 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 	if pumpErr != nil {
 		out.kind = outcomeAborted
 		out.message = "stream interrupted: " + pumpErr.Error()
+		// An operator killed this one; say so rather than reporting the broken
+		// pipe that killing it produced.
+		if errors.Is(context.Cause(r.Context()), ErrCancelledByOperator) {
+			out.message = cancelledMessage
+		}
 		// A broken pipe is the caller leaving, not the channel misbehaving.
 		out.streamFailed = false
 	}
@@ -845,6 +892,25 @@ func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Chann
 		}
 	}
 	return out
+}
+
+// cancelledMessage is what the log row reads when an operator ended the call.
+const cancelledMessage = "cancelled by an administrator"
+
+// statusClientClosedRequest is nginx's 499. Not an IANA code, but it is the one
+// every log reader already understands as "nobody is waiting for this any
+// more", and it is what the stored row has always carried for an aborted call.
+const statusClientClosedRequest = 499
+
+// abortedOutcome names why a call stopped. A cancelled context is all the
+// request goroutine sees, and the cause is the only thing that still knows
+// whether somebody pressed cancel or the caller simply went away.
+func abortedOutcome(ctx context.Context) attemptOutcome {
+	message := "client closed request"
+	if errors.Is(context.Cause(ctx), ErrCancelledByOperator) {
+		message = cancelledMessage
+	}
+	return attemptOutcome{kind: outcomeAborted, status: statusClientClosedRequest, message: message}
 }
 
 // forwardableQuery reproduces the caller's query string minus `key`, which
