@@ -587,17 +587,22 @@ func TestKeepaliveClosesTheChannelExactlyAtItsTarget(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("request %d: HTTP %d", want, resp.StatusCode)
 		}
-		waitFor(t, func() bool { return h.channel(id).KeepaliveSuccess >= want },
-			waiting(fmt.Sprintf("keepalive success to reach %d", want)))
-
-		ch := h.channel(id)
-		if ch.KeepaliveSuccess != want {
-			t.Fatalf("after %d successful requests the counter is %d", want, ch.KeepaliveSuccess)
-		}
 		// Still open below the target, closed on reaching it.
 		wantStatus, wantOpen := int16(model.StatusEnabled), true
 		if want == 3 {
 			wantStatus, wantOpen = model.StatusDisabled, false
+		}
+		// The counter and the close are two statements, so the counter can
+		// read 3/3 an instant before the window shuts. Wait for the state the
+		// assertion is about, not for the step before it.
+		waitFor(t, func() bool {
+			ch := h.channel(id)
+			return ch.KeepaliveSuccess >= want && ch.KeepaliveOpen == wantOpen
+		}, waiting(fmt.Sprintf("keepalive to reach %d/3 (open=%v)", want, wantOpen)))
+
+		ch := h.channel(id)
+		if ch.KeepaliveSuccess != want {
+			t.Fatalf("after %d successful requests the counter is %d", want, ch.KeepaliveSuccess)
 		}
 		if ch.Status != wantStatus || ch.KeepaliveOpen != wantOpen {
 			t.Fatalf("after %d/3 requests: status %d (want %d), open %v (want %v)",

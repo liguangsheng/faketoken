@@ -322,6 +322,37 @@ func filterAllowed(models, allowed []string) []string {
 
 // -------------------------------------------------------------- relay handler
 
+// call is what one relayed request carries from ServeHTTP to the row that logs
+// it, so the steps along the way share one handle instead of the same eight
+// arguments.
+type call struct {
+	w http.ResponseWriter
+	// r is replaced once the call can be cancelled from the console: from then
+	// on it carries the context this process owns, not only the caller's.
+	r        *http.Request
+	p        *principal
+	entry    *model.RequestLog
+	captured *capturedRequest
+	info     requestInfo
+	body     []byte
+	// protocol is the dialect the caller speaks, resolved once from the path:
+	// routing filters on it and the User-Agent lock is keyed by it.
+	protocol string
+	started  time.Time
+}
+
+// reject answers a request without any upstream being involved, and logs it.
+// logged is the text the row keeps when it should differ from what the caller
+// reads — the operator's reason against the caller's; empty keeps them the
+// same.
+func (rl *Relay) reject(c *call, status int, errType, code, message, logged string) {
+	if logged == "" {
+		logged = message
+	}
+	rl.finish(c, status, logged)
+	writeError(c.w, status, errType, code, message)
+}
+
 func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	ctx := r.Context()
@@ -374,10 +405,13 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ReasoningEffort: info.Effort,
 		ClientType:      clientType(r),
 	}
-	// Only the cheap half is done here; the body is converted later, off the
-	// path the caller is waiting on.
-	captured := captureRequest(r, body)
-	protocol := protocolFromPath(r.URL.Path)
+	c := &call{
+		w: w, r: r, p: p, entry: entry, info: info, body: body, started: started,
+		// Only the cheap half is done here; the body is converted later, off
+		// the path the caller is waiting on.
+		captured: captureRequest(r, body),
+		protocol: protocolFromPath(r.URL.Path),
+	}
 
 	// Checked before routing, pricing or quota: a blocked body should cost
 	// nothing beyond reading it, and must never reach an upstream.
@@ -409,14 +443,14 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Completion: estimateTokens(reply),
 			}
 			sent := writeCannedReply(w, dialect, info.Model, info.Stream, reply, usage)
-			captured.responseBody = sent
-			captured.responseHeaders = map[string][]string{
+			c.captured.responseBody = sent
+			c.captured.responseHeaders = map[string][]string{
 				"Content-Type": {w.Header().Get("Content-Type")},
 			}
 			// Logged with the status the caller saw, and the group and keyword
 			// in the error field so these stay findable under the "only errors"
 			// filter even when that status is a 200.
-			rl.finish(entry, captured, started, status, hit.logMessage())
+			rl.finish(c, status, hit.logMessage())
 			return
 		}
 
@@ -434,36 +468,31 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusUnauthorized
 			message = "the request was rejected by this gateway's content policy"
 		}
-		rl.finish(entry, captured, started, status, hit.logMessage())
-		writeError(w, status, "invalid_request_error", "content_blocked", message)
+		rl.reject(c, status, "invalid_request_error", "content_blocked", message, hit.logMessage())
 		return
 	}
 
 	if info.Model == "" {
-		message := "could not determine the target model from the request"
-		rl.finish(entry, captured, started, http.StatusBadRequest, message)
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "model_required", message)
+		rl.reject(c, http.StatusBadRequest, "invalid_request_error", "model_required",
+			"could not determine the target model from the request", "")
 		return
 	}
 
 	if len(p.token.AllowedModels) > 0 && len(filterAllowed([]string{info.Model}, p.token.AllowedModels)) == 0 {
-		rl.finish(entry, captured, started, http.StatusForbidden,
+		rl.reject(c, http.StatusForbidden, "invalid_request_error", "model_not_allowed",
+			fmt.Sprintf("the model %q is not permitted for this API key", info.Model),
 			fmt.Sprintf("model %q is not allowed for this API key", info.Model))
-		writeError(w, http.StatusForbidden, "invalid_request_error", "model_not_allowed",
-			fmt.Sprintf("the model %q is not permitted for this API key", info.Model))
 		return
 	}
 
-	candidates, err := rl.st.Candidates(ctx, p.group(), info.Model, protocol)
+	candidates, err := rl.st.Candidates(ctx, p.group(), info.Model, c.protocol)
 	if err != nil {
-		rl.finish(entry, captured, started, http.StatusInternalServerError, err.Error())
-		writeError(w, http.StatusInternalServerError, "server_error", "", err.Error())
+		rl.reject(c, http.StatusInternalServerError, "server_error", "", err.Error(), "")
 		return
 	}
 	if len(candidates) == 0 {
-		msg := fmt.Sprintf("no channel in group %q currently serves the model %q", p.group(), info.Model)
-		rl.finish(entry, captured, started, http.StatusNotFound, msg)
-		writeError(w, http.StatusNotFound, "invalid_request_error", "model_not_found", msg)
+		rl.reject(c, http.StatusNotFound, "invalid_request_error", "model_not_found",
+			fmt.Sprintf("no channel in group %q currently serves the model %q", p.group(), info.Model), "")
 		return
 	}
 
@@ -471,42 +500,40 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// money. Refuse before touching an upstream if nobody has priced it: usage
 	// only becomes known after the answer, and an unbillable answer is a gift.
 	if rl.pricer.Blocked(info.Model) {
-		msg := fmt.Sprintf("the model %q has no price configured on this gateway; "+
-			"ask an administrator to set one before using it", info.Model)
 		slog.Warn("refused an unpriced model",
 			"model", info.Model, "user", p.user.Username, "token", p.token.Name)
-		rl.finish(entry, captured, started, http.StatusForbidden, "model has no price configured")
-		writeError(w, http.StatusForbidden, "invalid_request_error", "model_not_priced", msg)
+		rl.reject(c, http.StatusForbidden, "invalid_request_error", "model_not_priced",
+			fmt.Sprintf("the model %q has no price configured on this gateway; "+
+				"ask an administrator to set one before using it", info.Model),
+			"model has no price configured")
 		return
 	}
 
 	// Past this point the call belongs to an upstream and may take minutes, so
 	// the consoles hear about it now instead of only when it settles.
-	captured.liveKey = rl.beginLive(entry)
-	defer rl.endLive(captured.liveKey)
+	c.captured.liveKey = rl.beginLive(entry)
+	defer rl.endLive(c.captured.liveKey)
 
 	// A call that can be watched should be stoppable. From here the request
 	// runs on a context this process can cancel, not only the one the client
 	// owns, so an operator can end a run that is burning money on an upstream
 	// that will never answer.
-	if captured.liveKey != "" {
+	if c.captured.liveKey != "" {
 		cancellable, cancel := context.WithCancelCause(r.Context())
 		// nil keeps the cause the operator's cancel already set; on the
 		// ordinary path there is none and this is just the leak check.
 		defer cancel(nil)
-		rl.cancels.add(captured.liveKey, cancel)
-		defer rl.cancels.drop(captured.liveKey)
-		r = r.WithContext(cancellable)
+		rl.cancels.add(c.captured.liveKey, cancel)
+		defer rl.cancels.drop(c.captured.liveKey)
+		c.r = r.WithContext(cancellable)
 	}
 
-	rl.dispatch(w, r, p, entry, captured, info, body, order(candidates), started)
+	rl.dispatch(c, order(candidates))
 }
 
 // dispatch walks the ordered candidate list until one upstream answers.
-func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
-	entry *model.RequestLog, captured *capturedRequest, info requestInfo, body []byte,
-	candidates []model.Candidate, started time.Time) {
-
+func (rl *Relay) dispatch(c *call, candidates []model.Candidate) {
+	w, r, entry, captured, info, body := c.w, c.r, c.entry, c.captured, c.info, c.body
 	ctx := r.Context()
 	// How many channels one request may visit. A channel's own retry_count is
 	// spent on top of this, so the worst case is channels × (1 + retry_count)
@@ -606,7 +633,7 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 			// elsewhere.
 			rl.routeLive(captured.liveKey, entry, ch)
 
-			outcome := rl.attempt(w, r, ch, entry, info, protocolFromPath(r.URL.Path), body)
+			outcome := rl.attempt(c, ch)
 			switch outcome.kind {
 			case outcomeDone:
 				if outcome.streamFailed {
@@ -621,7 +648,7 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 				} else {
 					rl.breaker.succeed(ch.ID)
 				}
-				rl.settle(p, entry, captured, ch, outcome, started)
+				rl.settle(c, ch, outcome)
 				return
 			case outcomeAborted:
 				// The client hung up, an operator stopped the call, or the stream
@@ -637,7 +664,7 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 					writeError(w, statusClientClosedRequest, "request_cancelled",
 						"cancelled", outcome.message)
 				}
-				rl.settle(p, entry, captured, ch, outcome, started)
+				rl.settle(c, ch, outcome)
 				return
 			case outcomeRetry:
 				lastStatus, lastMessage = outcome.status, outcome.message
@@ -662,9 +689,8 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 	// skip outranks it when both happened, because that one clears by itself
 	// on retry. Neither the channel nor its name is disclosed.
 	if attempts == 0 && refusedAttachment && lastStatus == 0 {
-		const message = "请求不能携带附件"
-		rl.finish(entry, captured, started, http.StatusTooManyRequests, message)
-		writeError(w, http.StatusTooManyRequests, "invalid_request_error", "attachments_not_allowed", message)
+		rl.reject(c, http.StatusTooManyRequests, "invalid_request_error", "attachments_not_allowed",
+			"请求不能携带附件", "")
 		return
 	}
 
@@ -673,9 +699,8 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 		lastMessage = "every candidate channel is unavailable"
 	}
 	applyResponseDetails(captured, lastOutcome)
-	rl.finish(entry, captured, started, lastStatus, lastMessage)
-	writeError(w, lastStatus, "upstream_error", "",
-		fmt.Sprintf("all %d attempt(s) failed: %s", max(attempts, 1), lastMessage))
+	rl.reject(c, lastStatus, "upstream_error", "",
+		fmt.Sprintf("all %d attempt(s) failed: %s", max(attempts, 1), lastMessage), lastMessage)
 }
 
 type outcomeKind int
@@ -714,8 +739,8 @@ type attemptOutcome struct {
 // attempt performs one upstream call. On success it streams the response
 // straight to the client; on a retryable failure it consumes and reports the
 // upstream error without touching the client connection.
-func (rl *Relay) attempt(w http.ResponseWriter, r *http.Request, ch *model.Channel,
-	entry *model.RequestLog, info requestInfo, protocol string, body []byte) attemptOutcome {
+func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
+	w, r, entry, info, body, protocol := c.w, c.r, c.entry, c.info, c.body, c.protocol
 
 	baseURL := ch.BaseURL
 
@@ -1111,12 +1136,12 @@ func (rl *Relay) noteFailure(ctx context.Context, ch *model.Channel, out attempt
 }
 
 // settle prices the request, debits the caller and writes the log entry.
-func (rl *Relay) settle(p *principal, entry *model.RequestLog, captured *capturedRequest,
-	ch *model.Channel, out attemptOutcome, started time.Time) {
+func (rl *Relay) settle(c *call, ch *model.Channel, out attemptOutcome) {
+	p, entry, captured := c.p, c.entry, c.captured
 
 	entry.StatusCode = int32(out.status)
 	entry.TTFBMS = int32(out.ttfb.Milliseconds())
-	entry.DurationMS = int32(time.Since(started).Milliseconds())
+	entry.DurationMS = int32(time.Since(c.started).Milliseconds())
 	entry.Error = out.message
 	entry.PromptTokens = int32(out.usage.PromptTokens)
 	entry.CompletionTokens = int32(out.usage.CompletionTokens)
@@ -1156,10 +1181,10 @@ func (rl *Relay) settle(p *principal, entry *model.RequestLog, captured *capture
 }
 
 // finish logs a request that never reached an upstream.
-func (rl *Relay) finish(entry *model.RequestLog, captured *capturedRequest,
-	started time.Time, status int, message string) {
+func (rl *Relay) finish(c *call, status int, message string) {
+	entry, captured := c.entry, c.captured
 	entry.StatusCode = int32(status)
-	entry.DurationMS = int32(time.Since(started).Milliseconds())
+	entry.DurationMS = int32(time.Since(c.started).Milliseconds())
 	entry.Error = message
 	// No upstream answered, so the reply the caller got is the one this relay
 	// wrote; the log shows that instead of nothing.
