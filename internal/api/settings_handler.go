@@ -120,11 +120,13 @@ type consoleSettings struct {
 	// each with its own reply pool. Never nil, so the console always gets an
 	// array to render.
 	BlockRules []relay.BlockRule `json:"block_rules"`
-	// MaxRetries is the max number of upstream attempts. Each attempt targets
-	// a different channel rather than hammering the one that just failed.
+	// MaxRetries is how many channels one request may visit. Each retry targets
+	// a different channel; a channel may first spend its own retry_count on
+	// attempts against itself.
 	MaxRetries int `json:"max_retries"`
-	// RetryBackoffMS is the base delay between retries, in milliseconds. It
-	// scales with the attempt number and is capped at 2 seconds by the relay.
+	// RetryBackoffMS is the base delay between those channel switches, in
+	// milliseconds. It scales with the attempt number and is capped at 2
+	// seconds by the relay.
 	RetryBackoffMS int `json:"retry_backoff_ms"`
 }
 

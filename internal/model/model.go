@@ -140,7 +140,16 @@ type Channel struct {
 	PriceRatio    float64           `json:"price_ratio"`
 	// RPMLimit caps how many requests the channel may serve per minute. 0
 	// means unlimited; a channel left at 0 has no rate limiting applied.
-	RPMLimit       int32      `json:"rpm_limit"`
+	RPMLimit int32 `json:"rpm_limit"`
+	// RetryCount is how many extra attempts this channel gets before the
+	// request moves on to another one, on top of the global max_retries, which
+	// caps how many channels a request may visit. 0 is the old behaviour: one
+	// shot per channel.
+	RetryCount int32 `json:"retry_count"`
+	// RetryBackoffMS is the base delay between this channel's own retries, in
+	// milliseconds, scaled by the attempt number. 0 inherits the global retry
+	// interval.
+	RetryBackoffMS int32      `json:"retry_backoff_ms"`
 	UsedQuota      int64      `json:"used_quota"`
 	RequestCount   int64      `json:"request_count"`
 	ErrorCount     int64      `json:"error_count"`

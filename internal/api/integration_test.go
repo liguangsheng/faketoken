@@ -7289,3 +7289,57 @@ func (h *harness) waitFor(t *testing.T, what string, cond func() bool) {
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }
+
+// A channel's own retry policy has to survive a create and an update: the relay
+// reads it per attempt, so a column that quietly stayed 0 would make the
+// console's field do nothing at all.
+func TestChannelRetryPolicyRoundTrip(t *testing.T) {
+	h := newHarness(t)
+
+	id := h.createChannel(channelInput{
+		Name: "retry-persist", Type: "openai", BaseURL: "https://up.test", APIKey: "k",
+		Models: []string{"gpt-5"}, Groups: []string{"default"},
+		RetryCount: 4, RetryBackoffMS: 750,
+	})
+
+	saved := h.channel(id)
+	if saved.RetryCount != 4 || saved.RetryBackoffMS != 750 {
+		t.Fatalf("retry policy did not persist: count=%d backoff=%d",
+			saved.RetryCount, saved.RetryBackoffMS)
+	}
+
+	// Clearing it is the same write path, and the way a channel goes back to the
+	// global behaviour.
+	var updated model.Channel
+	body := map[string]any{
+		"name": "retry-persist", "base_url": "https://up.test", "api_key": "",
+		"models": []string{"gpt-5"}, "groups": []string{"default"},
+		"retry_count": 0, "retry_backoff_ms": 0,
+	}
+	resp := h.do(http.MethodPut, fmt.Sprintf("/api/admin/channels/%d", id), h.admin, body, &updated)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update channel: HTTP %d", resp.StatusCode)
+	}
+	if cleared := h.channel(id); cleared.RetryCount != 0 || cleared.RetryBackoffMS != 0 {
+		t.Fatalf("cleared policy did not persist: count=%d backoff=%d",
+			cleared.RetryCount, cleared.RetryBackoffMS)
+	}
+}
+
+// A count the relay would have to honour by hammering one upstream is refused
+// at write time instead of being clamped silently.
+func TestChannelRetryPolicyRejectsOutOfRange(t *testing.T) {
+	h := newHarness(t)
+
+	var created map[string]any
+	resp := h.do(http.MethodPost, "/api/admin/channels", h.admin, map[string]any{
+		"name": "retry-range", "type": "openai", "base_url": "https://up.test",
+		"api_key": "k", "models": []string{"gpt-5"}, "groups": []string{"default"},
+		"retry_count": 21,
+	}, &created)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("retry_count 21: HTTP %d, want 400", resp.StatusCode)
+	}
+}

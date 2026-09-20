@@ -516,6 +516,8 @@ export default function Channels() {
             proxy_url: '',
             price_ratio: 1,
             rpm_limit: 0,
+            retry_count: 0,
+            retry_backoff_ms: 0,
             test_model: '',
             supported_protocols: ['chat_completions', 'responses', 'messages'],
             convert_messages_to_chat: false,
@@ -596,6 +598,8 @@ export default function Channels() {
       proxy_url: values.proxy_url ?? '',
       price_ratio: Number(values.price_ratio ?? 1),
       rpm_limit: Number(values.rpm_limit ?? 0),
+      retry_count: Number(values.retry_count ?? 0),
+      retry_backoff_ms: Number(values.retry_backoff_ms ?? 0),
       test_model: values.test_model ?? '',
       supported_protocols: values.supported_protocols ?? ['chat_completions', 'responses', 'messages'],
       convert_messages_to_chat: Boolean(values.convert_messages_to_chat),
@@ -1653,6 +1657,10 @@ export default function Channels() {
                       {row.price_ratio}
                     </span>
                     <span className="text-muted" style={{ fontSize: 12 }}>
+                      渠道重试 {row.retry_count ? `${row.retry_count} 次` : '关闭'} · 间隔{' '}
+                      {row.retry_backoff_ms ? `${row.retry_backoff_ms}ms` : '全局默认'}
+                    </span>
+                    <span className="text-muted" style={{ fontSize: 12 }}>
                       鉴权 {AUTH_STYLES.find((item) => item.value === row.auth_style)?.label ?? row.auth_style}
                     </span>
                     {row.supported_protocols && row.supported_protocols.length < 3 && (
@@ -2104,6 +2112,30 @@ export default function Channels() {
                           tooltip="每分钟最大请求数，0 表示不限制"
                         >
                           <InputNumber min={0} precision={0} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item
+                          name="retry_count"
+                          label="重试次数"
+                          tooltip="失败后在这个渠道上再试的次数，用完才换下一个渠道。0 表示不重试"
+                        >
+                          <InputNumber min={0} max={20} precision={0} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item
+                          name="retry_backoff_ms"
+                          label="重试间隔（毫秒）"
+                          tooltip="同渠道重试前的等待基数，按重试次数递增，上限 30 秒。0 表示使用全局间隔"
+                        >
+                          <InputNumber
+                            min={0}
+                            max={60000}
+                            step={50}
+                            precision={0}
+                            style={{ width: '100%' }}
+                          />
                         </Form.Item>
                       </Col>
                       <Col xs={24} md={8}>

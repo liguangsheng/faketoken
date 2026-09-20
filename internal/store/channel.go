@@ -44,7 +44,7 @@ func normaliseProtocols(in []string) []string {
 
 const channelColumns = `id, name, base_url, auth_style, api_key_enc, status, priority, weight,
 	channel_groups, models, model_mapping, headers, timeout_secs, proxy_url, price_ratio,
-	rpm_limit, used_quota, request_count, error_count, last_error, last_error_at, tested_at,
+	rpm_limit, retry_count, retry_backoff_ms, used_quota, request_count, error_count, last_error, last_error_at, tested_at,
 	models_synced_at, note, created_at, updated_at, model_prefixes, test_model, supported_protocols,
 	convert_messages_to_chat, convert_responses_to_chat, reasoning_effort_mapping,
 	allow_attachments, lock_user_agent, locked_user_agents,
@@ -56,7 +56,8 @@ func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 	var enc string
 	err := row.Scan(&c.ID, &c.Name, &c.BaseURL, &c.AuthStyle, &enc, &c.Status, &c.Priority,
 		&c.Weight, &c.Groups, &c.Models, &c.ModelMapping, &c.Headers, &c.TimeoutSecs,
-		&c.ProxyURL, &c.PriceRatio, &c.RPMLimit, &c.UsedQuota, &c.RequestCount, &c.ErrorCount,
+		&c.ProxyURL, &c.PriceRatio, &c.RPMLimit, &c.RetryCount, &c.RetryBackoffMS,
+		&c.UsedQuota, &c.RequestCount, &c.ErrorCount,
 		&c.LastError, &c.LastErrorAt, &c.TestedAt, &c.ModelsSyncedAt, &c.Note,
 		&c.CreatedAt, &c.UpdatedAt, &c.ModelPrefixes, &c.TestModel, &c.SupportedProtocols,
 		&c.ConvertMessagesToChat, &c.ConvertResponsesToChat, &c.ReasoningEffortMapping,
@@ -116,14 +117,15 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	row := tx.QueryRow(ctx, `INSERT INTO channels
 		(name, base_url, auth_style, api_key_enc, status, priority, weight, channel_groups,
 		 models, model_mapping, headers, timeout_secs, proxy_url, price_ratio, rpm_limit, note,
+		 retry_count, retry_backoff_ms,
 		 model_prefixes, test_model, supported_protocols, convert_messages_to_chat, convert_responses_to_chat,
 		 reasoning_effort_mapping,
 		 allow_attachments, lock_user_agent, locked_user_agents, keepalive_enabled, keepalive_at, keepalive_target)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
 		RETURNING `+channelColumns,
 		c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, enc, c.Status, c.Priority, c.Weight,
 		c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL, c.PriceRatio,
-		c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel, normaliseProtocols(c.SupportedProtocols),
+		c.RPMLimit, c.Note, c.RetryCount, c.RetryBackoffMS, c.ModelPrefixes, c.TestModel, normaliseProtocols(c.SupportedProtocols),
 		c.ConvertMessagesToChat, c.ConvertResponsesToChat, model.NormaliseEffortMapping(c.ReasoningEffortMapping),
 		c.AllowAttachments,
 		c.LockUserAgent, c.LockedUserAgents,
@@ -153,7 +155,7 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	keyClause := "api_key_enc"
 	args := []any{c.ID, c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, c.Status, c.Priority,
 		c.Weight, c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL,
-		c.PriceRatio, c.RPMLimit, c.Note, c.ModelPrefixes, c.TestModel,
+		c.PriceRatio, c.RPMLimit, c.Note, c.RetryCount, c.RetryBackoffMS, c.ModelPrefixes, c.TestModel,
 		normaliseProtocols(c.SupportedProtocols), c.ConvertMessagesToChat, c.ConvertResponsesToChat,
 		model.NormaliseEffortMapping(c.ReasoningEffortMapping),
 		c.AllowAttachments, c.LockUserAgent, c.LockedUserAgents,
@@ -178,11 +180,12 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		priority = $6, weight = $7,
 		channel_groups = $8, models = $9, model_mapping = $10, headers = $11,
 		timeout_secs = $12, proxy_url = $13, price_ratio = $14, rpm_limit = $15, note = $16,
-		model_prefixes = $17, test_model = $18, supported_protocols = $19,
-		convert_messages_to_chat = $20, convert_responses_to_chat = $21,
-		reasoning_effort_mapping = $22,
-		allow_attachments = $23, lock_user_agent = $24, locked_user_agents = $25,
-		keepalive_enabled = $26, keepalive_at = $27, keepalive_target = $28,
+		retry_count = $17, retry_backoff_ms = $18,
+		model_prefixes = $19, test_model = $20, supported_protocols = $21,
+		convert_messages_to_chat = $22, convert_responses_to_chat = $23,
+		reasoning_effort_mapping = $24,
+		allow_attachments = $25, lock_user_agent = $26, locked_user_agents = $27,
+		keepalive_enabled = $28, keepalive_at = $29, keepalive_target = $30,
 		-- The form carries status, so saving a channel as disabled abandons its
 		-- keepalive window here just as the listing toggle does. Progress is
 		-- otherwise left alone: saving the form must not reset the counter.

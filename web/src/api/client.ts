@@ -61,6 +61,10 @@ export interface Channel {
   proxy_url: string
   price_ratio: number
   rpm_limit: number
+  /** Extra attempts this channel gets before the request moves to another one. 0 = one shot. */
+  retry_count: number
+  /** Base delay between this channel's own retries in ms. 0 = the global interval. */
+  retry_backoff_ms: number
   test_model: string
   supported_protocols: string[]
   convert_messages_to_chat: boolean

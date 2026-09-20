@@ -37,7 +37,12 @@ type channelInput struct {
 	ProxyURL      string            `json:"proxy_url"`
 	PriceRatio    float64           `json:"price_ratio"`
 	RPMLimit      int32             `json:"rpm_limit"`
-	TestModel     string            `json:"test_model"`
+	// RetryCount and RetryBackoffMS are this channel's own retry policy, spent
+	// before the request moves on to another channel. Zero means the old
+	// behaviour: one shot per channel, and the global retry interval.
+	RetryCount     int32  `json:"retry_count"`
+	RetryBackoffMS int32  `json:"retry_backoff_ms"`
+	TestModel      string `json:"test_model"`
 	// SupportedProtocols narrows routing to the dialects the upstream answers.
 	// Empty means every dialect, so channels created before the field existed
 	// keep routing as they did before.
@@ -76,6 +81,8 @@ func (in channelInput) toModel(id int64) *model.Channel {
 		ProxyURL:               strings.TrimSpace(in.ProxyURL),
 		PriceRatio:             in.PriceRatio,
 		RPMLimit:               in.RPMLimit,
+		RetryCount:             max(in.RetryCount, 0),
+		RetryBackoffMS:         max(in.RetryBackoffMS, 0),
 		TestModel:              strings.TrimSpace(in.TestModel),
 		SupportedProtocols:     in.SupportedProtocols,
 		ConvertMessagesToChat:  in.ConvertMessagesToChat,
@@ -260,6 +267,27 @@ func validKeepalive(in channelInput) (string, bool) {
 	return "", true
 }
 
+const (
+	// A channel's own retry allowance multiplies with the global channel budget,
+	// so the ceiling stays low: the worst case is already far more upstream calls
+	// than one request should ever wait through.
+	maxChannelRetryCount     = 20
+	maxChannelRetryBackoffMS = 60000
+)
+
+// validChannelRetry keeps a channel's own retry policy inside what the relay
+// can honour. A negative count is a typo and an unbounded one would turn a
+// failing request into a client that waits through dozens of upstream calls.
+func validChannelRetry(in channelInput) (string, bool) {
+	if in.RetryCount < 0 || in.RetryCount > maxChannelRetryCount {
+		return fmt.Sprintf("retry_count must be between 0 and %d", maxChannelRetryCount), false
+	}
+	if in.RetryBackoffMS < 0 || in.RetryBackoffMS > maxChannelRetryBackoffMS {
+		return fmt.Sprintf("retry_backoff_ms must be between 0 and %d", maxChannelRetryBackoffMS), false
+	}
+	return "", true
+}
+
 func validProtocolConversion(in channelInput) (string, bool) {
 	if (!in.ConvertMessagesToChat && !in.ConvertResponsesToChat) || len(in.SupportedProtocols) == 0 {
 		return "", true
@@ -294,6 +322,10 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if message, ok := validProtocolConversion(in); !ok {
+		fail(w, http.StatusBadRequest, message)
+		return
+	}
+	if message, ok := validChannelRetry(in); !ok {
 		fail(w, http.StatusBadRequest, message)
 		return
 	}
@@ -339,6 +371,10 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if message, ok := validProtocolConversion(in); !ok {
+		fail(w, http.StatusBadRequest, message)
+		return
+	}
+	if message, ok := validChannelRetry(in); !ok {
 		fail(w, http.StatusBadRequest, message)
 		return
 	}

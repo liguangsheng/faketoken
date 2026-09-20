@@ -53,11 +53,11 @@ type Relay struct {
 	// blocked holds the keyword list a request body is refused for. Same
 	// treatment as capture: pushed from the console, read per request.
 	blocked blockedStore
-	// retryBudget is the max attempt count, updated from the console without
-	// a restart and read on every relayed request.
+	// retryBudget is the max number of channels one request may visit, updated
+	// from the console without a restart and read on every relayed request.
 	retryBudget atomic.Int64
-	// retryBackoff is the base delay between retries (as nanoseconds), same
-	// treatment as retryBudget.
+	// retryBackoff is the base delay before moving to another channel (as
+	// nanoseconds), same treatment as retryBudget.
 	retryBackoff atomic.Int64
 	// liveSeq mints the key that ties a call's in-flight announcements to the
 	// row that finally settles it. Process-local and restart-cheap: a console
@@ -484,7 +484,10 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 	candidates []model.Candidate, started time.Time) {
 
 	ctx := r.Context()
-	budget := min(rl.retryBudgetValue(), len(candidates))
+	// How many channels one request may visit. A channel's own retry_count is
+	// spent on top of this, so the worst case is channels × (1 + retry_count)
+	// upstream calls.
+	channelBudget := min(rl.retryBudgetValue(), len(candidates))
 
 	var (
 		lastStatus  int
@@ -506,8 +509,9 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 		}
 	}
 
+	visited := 0
 	for _, cand := range append(healthy, cooling...) {
-		if attempts >= budget {
+		if visited >= channelBudget {
 			break
 		}
 
@@ -533,45 +537,74 @@ func (rl *Relay) dispatch(w http.ResponseWriter, r *http.Request, p *principal,
 			continue
 		}
 
-		if attempts > 0 && !rl.pauseBeforeRetry(ctx, attempts) {
-			// The caller hung up while we were backing off.
-			return
-		}
-		attempts++
-		entry.Retries = int32(attempts - 1)
-		// Re-announced per attempt: a console watching this call should name the
-		// upstream it is actually waiting on, and a retry moves it elsewhere.
-		rl.routeLive(captured.liveKey, entry, ch)
+		visited++
 
-		outcome := rl.attempt(w, r, ch, entry, info, protocolFromPath(r.URL.Path), body)
-		switch outcome.kind {
-		case outcomeDone:
-			if outcome.streamFailed {
-				// The client already has the upstream's 2xx and its bytes, so
-				// this cannot be retried — but the channel just failed, and
-				// leaving the breaker to think otherwise would keep sending
-				// traffic to an upstream that is refusing it.
-				rl.breaker.fail(ch.ID, outcome.retryAfter)
-				slog.Warn("upstream reported an error inside a successful response",
+		// The channel's own retry allowance is spent before the request moves
+		// on: an upstream that answers on the second try is cheaper than
+		// another provider with another rate and another model vocabulary.
+		//
+		// ponytail: the RPM limiter counted this channel once, above, so its own
+		// retries can push the real request rate past rpm_limit. Re-check allow()
+		// per attempt if that ever matters.
+		base, ceiling := rl.retryBackoffValue(), maxRetryPause
+
+	retrying:
+		for attempt := 0; ; attempt++ {
+			if attempt > 0 {
+				// Its own pacing spaces its own retries; the global one spaces the
+				// move to the next channel.
+				base, ceiling = rl.retryBackoffValue(), maxChannelRetryPause
+				if own := time.Duration(ch.RetryBackoffMS) * time.Millisecond; own > 0 {
+					base = own
+				}
+			}
+			if attempts > 0 && !pauseBeforeRetry(ctx, attempts, base, ceiling) {
+				// The caller hung up while we were backing off.
+				return
+			}
+			attempts++
+			entry.Retries = int32(attempts - 1)
+			// Re-announced per attempt: a console watching this call should name
+			// the upstream it is actually waiting on, and a retry moves it
+			// elsewhere.
+			rl.routeLive(captured.liveKey, entry, ch)
+
+			outcome := rl.attempt(w, r, ch, entry, info, protocolFromPath(r.URL.Path), body)
+			switch outcome.kind {
+			case outcomeDone:
+				if outcome.streamFailed {
+					// The client already has the upstream's 2xx and its bytes, so
+					// this cannot be retried — but the channel just failed, and
+					// leaving the breaker to think otherwise would keep sending
+					// traffic to an upstream that is refusing it.
+					rl.breaker.fail(ch.ID, outcome.retryAfter)
+					slog.Warn("upstream reported an error inside a successful response",
+						"channel", ch.Name, "channel_id", ch.ID, "model", info.Model,
+						"status", outcome.status, "error", outcome.message)
+				} else {
+					rl.breaker.succeed(ch.ID)
+				}
+				rl.settle(p, entry, captured, ch, outcome, started)
+				return
+			case outcomeAborted:
+				// The client hung up or the stream broke after headers were sent;
+				// retrying would corrupt the response.
+				rl.settle(p, entry, captured, ch, outcome, started)
+				return
+			case outcomeRetry:
+				lastStatus, lastMessage = outcome.status, outcome.message
+				lastOutcome = outcome
+				rl.noteFailure(ctx, ch, outcome)
+				slog.Warn("relay attempt failed",
 					"channel", ch.Name, "channel_id", ch.ID, "model", info.Model,
 					"status", outcome.status, "error", outcome.message)
-			} else {
-				rl.breaker.succeed(ch.ID)
+				// Either the channel's own allowance is spent, or the upstream
+				// refused the request itself and would refuse it again verbatim.
+				// Both mean this channel is done and the request moves on.
+				if attempt >= int(ch.RetryCount) || !retryableOnSameChannel(outcome) {
+					break retrying
+				}
 			}
-			rl.settle(p, entry, captured, ch, outcome, started)
-			return
-		case outcomeAborted:
-			// The client hung up or the stream broke after headers were sent;
-			// retrying would corrupt the response.
-			rl.settle(p, entry, captured, ch, outcome, started)
-			return
-		case outcomeRetry:
-			lastStatus, lastMessage = outcome.status, outcome.message
-			lastOutcome = outcome
-			rl.noteFailure(ctx, ch, outcome)
-			slog.Warn("relay attempt failed",
-				"channel", ch.Name, "channel_id", ch.ID, "model", info.Model,
-				"status", outcome.status, "error", outcome.message)
 		}
 	}
 
@@ -945,20 +978,38 @@ func streamFailureMessage(failure provider.StreamError) string {
 
 // ------------------------------------------------------------- bookkeeping
 
-// maxRetryPause bounds the local backoff. Each attempt targets a different
-// channel, so waiting long here only delays a request that another upstream
-// could already be serving; the real cooldown lives in the breaker.
+// maxRetryPause bounds the wait before the request moves to another channel.
+// Each attempt then targets a different channel, so waiting long here only
+// delays a request that another upstream could already be serving; the real
+// cooldown lives in the breaker.
 const maxRetryPause = 2 * time.Second
 
+// maxChannelRetryPause bounds the wait between two attempts at the same
+// channel. Roomier than the global cap on purpose: waiting is the point here —
+// the same upstream is being given time to recover — and the number is the
+// operator's own.
+const maxChannelRetryPause = 30 * time.Second
+
+// retryableOnSameChannel reports whether repeating the call against the same
+// upstream could plausibly answer differently. A refusal the request itself
+// caused (a 4xx other than a rate limit) would come back verbatim, so the
+// channel's retry allowance is not spent on it: the request moves on instead.
+func retryableOnSameChannel(out attemptOutcome) bool {
+	return out.status == 0 ||
+		out.status == http.StatusTooManyRequests ||
+		out.status >= http.StatusInternalServerError
+}
+
 // pauseBeforeRetry spaces out attempts so a struggling provider is not hit by a
-// tight retry loop. It reports false when the caller disconnected while waiting.
-func (rl *Relay) pauseBeforeRetry(ctx context.Context, attempt int) bool {
-	delay := rl.retryBackoffValue() * time.Duration(attempt)
+// tight retry loop. base scales with the attempt number and the wait is capped
+// at ceiling. It reports false when the caller disconnected while waiting.
+func pauseBeforeRetry(ctx context.Context, attempt int, base, ceiling time.Duration) bool {
+	delay := base * time.Duration(attempt)
 	if delay <= 0 {
 		return ctx.Err() == nil
 	}
-	if delay > maxRetryPause {
-		delay = maxRetryPause
+	if delay > ceiling {
+		delay = ceiling
 	}
 
 	timer := time.NewTimer(delay)
