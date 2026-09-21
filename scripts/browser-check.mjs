@@ -1227,6 +1227,59 @@ async function main() {
         row.querySelector('[aria-haspopup="menu"]').click()
       })()
     `
+    const rowSwitch = (name) => `
+      (() => {
+        const row = [...document.querySelectorAll('.table tbody tr')].find((r) => r.textContent.includes(${JSON.stringify(name)}))
+        row.querySelector('.switch').click()
+      })()
+    `
+    const isParked = (name) => `
+      [...document.querySelectorAll('.table tbody tr.row-disabled')].some((r) => r.textContent.includes(${JSON.stringify(name)}))
+    `
+
+    // A parked row is dimmed, and dimming a cell traps whatever it contains:
+    // the menu used to render faded, painted under the rows below it, which
+    // then took the clicks meant for it.
+    await evaluate(rowSwitch(chName))
+    await sleep(1500)
+    drain()
+    record('the switch parks the row', await evaluate(isParked(chName)))
+
+    await evaluate(rowMenu(chName))
+    await sleep(300)
+    const parkedMenu = await evaluate(`
+      (() => {
+        const menu = document.querySelector('.dropdown__menu')
+        const items = [...menu.querySelectorAll('.dropdown__item')]
+        const box = menu.getBoundingClientRect()
+        return {
+          opacity: getComputedStyle(menu).opacity,
+          count: items.length,
+          onScreen: box.top >= 0 && box.bottom <= innerHeight,
+          // Hit-testing, not class names: a menu can carry every right class
+          // and still sit under something that swallows the pointer.
+          reachable: items.every((item) => {
+            const r = item.getBoundingClientRect()
+            return item.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2))
+          }),
+        }
+      })()
+    `)
+    record(
+      "a parked row's menu stays opaque, on screen and clickable",
+      parkedMenu.opacity === '1' && parkedMenu.reachable && parkedMenu.onScreen && parkedMenu.count === 9,
+      `opacity ${parkedMenu.opacity}, ${parkedMenu.count} items, reachable ${parkedMenu.reachable}, on screen ${parkedMenu.onScreen}`,
+    )
+
+    await evaluate(`document.body.click()`)
+    await sleep(200)
+    record('clicking away closes the menu', await evaluate(`!document.querySelector('.dropdown__menu')`))
+
+    await evaluate(rowSwitch(chName))
+    await sleep(1500)
+    drain()
+    record('the switch brings it back', await evaluate(`!(${isParked(chName)})`))
+
     await evaluate(rowMenu(chName))
     await sleep(300)
     await evaluate(`[...document.querySelectorAll('.dropdown__item')].find((i) => i.textContent.includes('归档渠道')).click()`)
