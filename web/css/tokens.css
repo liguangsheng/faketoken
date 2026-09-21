@@ -1,0 +1,69 @@
+/* ===========================================================================
+   Design tokens.
+
+   Every colour in this console resolves through a variable here — there are no hard-coded hex values below this file, which
+   is what makes the dark theme a single attribute flip on <html>.
+   =========================================================================== */
+
+:root {
+  --app-brand: #4f46e5;
+  --app-brand-soft: rgba(79, 70, 229, 0.1);
+  --app-bg: #f5f6f8;
+  --app-surface: #ffffff;
+  --app-surface-sunken: #fafbfc;
+  --app-border: #e8eaef;
+  --app-border-strong: #d8dbe3;
+  --app-text: #1a1d26;
+  --app-text-muted: #6b7280;
+  --app-text-faint: #9ca3af;
+  --app-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --app-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 6px 16px -6px rgba(16, 24, 40, 0.08);
+  --app-shadow-lg: 0 12px 32px -8px rgba(16, 24, 40, 0.16);
+  --app-success: #16a34a;
+  --app-warning: #d97706;
+  --app-danger: #dc2626;
+  --app-success-soft: rgba(22, 163, 74, 0.12);
+  --app-warning-soft: rgba(217, 119, 6, 0.12);
+  --app-danger-soft: rgba(220, 38, 38, 0.12);
+  /* Secondary data colour (cost lines, rank bars); brand stays for primary. */
+  --app-accent: #0ea5e9;
+
+  --app-header-h: 56px;
+  --app-sider-w: 224px;
+  --app-radius: 8px;
+  --app-radius-lg: 12px;
+  --app-control-h: 34px;
+
+  --app-font:
+    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --app-font-mono:
+    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  --app-brand: #8b87f5;
+  --app-brand-soft: rgba(139, 135, 245, 0.16);
+  --app-bg: #0c0e13;
+  --app-surface: #14171f;
+  --app-surface-sunken: #101319;
+  --app-border: #242833;
+  --app-border-strong: #333846;
+  --app-text: #e6e8ee;
+  --app-text-muted: #98a0b0;
+  --app-text-faint: #6b7385;
+  --app-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --app-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px -6px rgba(0, 0, 0, 0.5);
+  --app-shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.6);
+  --app-success: #4ade80;
+  --app-warning: #fbbf24;
+  --app-danger: #f87171;
+  --app-success-soft: rgba(74, 222, 128, 0.16);
+  --app-warning-soft: rgba(251, 191, 36, 0.16);
+  --app-danger-soft: rgba(248, 113, 113, 0.16);
+  --app-accent: #38bdf8;
+
+  color-scheme: dark;
+}

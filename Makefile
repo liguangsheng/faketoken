@@ -1,4 +1,4 @@
-.PHONY: help dev build web run test test-db test-db-down test-integration lint fmt db-up db-down up down logs backup backups search clean
+.PHONY: help build run test test-db test-db-down test-integration lint fmt db-up db-down up down logs backup backups search clean
 
 BIN := bin/server
 
@@ -9,21 +9,15 @@ help: ## Show this help
 build: ## Compile the server binary
 	go build -trimpath -o $(BIN) ./cmd/server
 
-web: ## Build the React console into web/dist
-	cd web && npm install && npm run build
-
-run: build ## Run the server locally (reads .env)
+run: build ## Run the server locally (reads .env); the console needs no build
 	set -a; [ -f .env ] && . ./.env; set +a; ./$(BIN)
-
-dev: ## Run the Vite dev server against a local backend
-	cd web && npm install && npm run dev
 
 test: ## Run the Go test suite
 	go test ./... -count=1
 
 lint: ## Vet and format-check
 	go vet ./...
-	@test -z "$$(gofmt -l ./cmd ./internal)" || (gofmt -l ./cmd ./internal; exit 1)
+	@[ -z "$$(gofmt -l ./cmd ./internal)" ] || (gofmt -l ./cmd ./internal; exit 1)
 
 fmt: ## Format Go sources
 	gofmt -w ./cmd ./internal
@@ -63,10 +57,11 @@ backup: ## Take an on-demand dump now (the service also dumps nightly)
 # Quoted so a keyword with spaces survives; for one containing quotes or $,
 # call scripts/search-logs.sh directly.
 search: ## Search the captured request/response bodies, export to .search/ (KEYWORD=...)
-	@./scripts/search-logs.sh $(ARGS) -- "$(if $(KEYWORD),$(KEYWORD),$(error set KEYWORD=<关键字>))"
+	@[ -n "$(KEYWORD)" ] || { echo "set KEYWORD=<关键字>" >&2; exit 2; }
+	@./scripts/search-logs.sh $(ARGS) -- "$(KEYWORD)"
 
 backups: ## List the dumps currently retained
 	@ls -lh $${BACKUP_DIR:-./.backup}/*.dump 2>/dev/null || echo "no dumps yet"
 
-clean: ## Remove build artefacts and web/node_modules
-	rm -rf bin web/dist web/node_modules
+clean: ## Remove build artefacts
+	rm -rf bin

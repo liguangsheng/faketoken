@@ -8,10 +8,9 @@ import "net/http"
 // otherwise answer this path with index.html, the file not existing on disk.
 //
 // The claim comes from configuration (ARA_CLAIM, defaulting to the value baked
-// into the binary) rather than from WEB_DIR, because that directory is a build
-// artefact — a deployment that has not run `make web`, or one pointed at a
-// WEB_DIR someone else manages, would silently stop answering and lose the
-// verification.
+// into the binary) rather than from WEB_DIR, because that directory is
+// deployment-owned — one pointed at a WEB_DIR someone else manages would
+// silently stop answering and lose the verification.
 func (s *Server) handleARAClaim(w http.ResponseWriter, r *http.Request) {
 	// Serving an empty body would look like a valid response carrying the
 	// wrong claim; 404 says plainly that this deployment has none configured.

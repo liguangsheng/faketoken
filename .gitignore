@@ -2,13 +2,6 @@
 /.env
 *.log
 
-# frontend
-/web/node_modules/
-/web/dist/
-
-# typescript incremental build cache
-/web/tsconfig.tsbuildinfo
-
 # database dumps
 /.backup/
 /.search/

@@ -7,10 +7,10 @@ services:
   postgres:
     image: postgres:18-alpine
     container_name: faketoken-postgres
-    # `always` rather than `unless-stopped`: the difference only shows up across a
-    # reboot. unless-stopped remembers a manual `compose stop` and leaves the
-    # container down on the next daemon start, so a stack that was stopped before
-    # shutdown never comes back on its own. `always` starts it regardless.
+    # `always` rather than `unless-stopped`: the difference only shows up
+    # across a reboot. unless-stopped remembers a manual `compose stop` and
+    # leaves the container down on the next daemon start, so a stack stopped
+    # before shutdown never comes back on its own. `always` starts it anyway.
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-llmproxy}
@@ -23,7 +23,9 @@ services:
       # future pg_upgrade --link runs stay inside a single mount point.
       - pgdata:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-llmproxy} -d ${POSTGRES_DB:-llmproxy}"]
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-llmproxy} -d ${POSTGRES_DB:-llmproxy}
       interval: 5s
       timeout: 5s
       retries: 20
@@ -60,7 +62,9 @@ services:
     tmpfs:
       - /var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-llmproxy} -d faketoken_test"]
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-llmproxy} -d faketoken_test
       interval: 2s
       timeout: 5s
       retries: 30
@@ -74,7 +78,11 @@ services:
         condition: service_healthy
     environment:
       LISTEN: ":3200"
-      DATABASE_URL: postgres://${POSTGRES_USER:-llmproxy}:${POSTGRES_PASSWORD:-llmproxy}@postgres:5432/${POSTGRES_DB:-llmproxy}?sslmode=disable
+      # Escaped line breaks: a double-quoted scalar folds them away, so the
+      # value is still one unbroken URL.
+      DATABASE_URL: "postgres://${POSTGRES_USER:-llmproxy}:\
+        ${POSTGRES_PASSWORD:-llmproxy}@postgres:5432/\
+        ${POSTGRES_DB:-llmproxy}?sslmode=disable"
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
       INIT_ADMIN_USER: ${INIT_ADMIN_USER:-admin}
@@ -86,7 +94,8 @@ services:
       BILLING_FALLBACK_INPUT_PRICE: ${BILLING_FALLBACK_INPUT_PRICE:-0}
       BILLING_FALLBACK_OUTPUT_PRICE: ${BILLING_FALLBACK_OUTPUT_PRICE:-0}
       BILLING_FALLBACK_CACHED_PRICE: ${BILLING_FALLBACK_CACHED_PRICE:-0}
-      BILLING_FALLBACK_PER_REQUEST_PRICE: ${BILLING_FALLBACK_PER_REQUEST_PRICE:-0}
+      BILLING_FALLBACK_PER_REQUEST_PRICE:
+        ${BILLING_FALLBACK_PER_REQUEST_PRICE:-0}
       MODELS_DEV_URL: ${MODELS_DEV_URL:-https://models.dev/api.json}
       WEB_DIR: /app/web
       # The daily keepalive windows are read in this zone, not UTC. Without it

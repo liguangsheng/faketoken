@@ -1,0 +1,2282 @@
+/* ===========================================================================
+   Reusable pieces: cards, controls, tables, feedback.
+   =========================================================================== */
+
+/* ---- card --------------------------------------------------------------- */
+
+.card {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  box-shadow: var(--app-shadow-sm);
+}
+
+.card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 50px;
+  padding: 0 20px;
+  border-block-end: 1px solid var(--app-border);
+}
+
+.card__title {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.card__extra {
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+.card__body {
+  padding: 20px;
+}
+
+.card__body--tight {
+  padding: 6px 20px;
+}
+
+/* ---- buttons ------------------------------------------------------------ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--app-control-h);
+  padding-inline: 14px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+  color: var(--app-text);
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--app-brand);
+  color: var(--app-brand);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--app-brand);
+  border-color: var(--app-brand);
+  color: #fff;
+}
+
+.btn--primary:hover:not(:disabled) {
+  color: #fff;
+  opacity: 0.88;
+}
+
+.btn--danger {
+  border-color: var(--app-danger);
+  color: var(--app-danger);
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: var(--app-danger);
+  border-color: var(--app-danger);
+  color: #fff;
+}
+
+.btn--text {
+  height: 30px;
+  padding-inline: 8px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.btn--text:hover:not(:disabled) {
+  background: var(--app-surface-sunken);
+  border-color: transparent;
+}
+
+.btn--icon {
+  width: var(--app-control-h);
+  padding-inline: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
+.btn--icon:hover:not(:disabled) {
+  background: var(--app-surface-sunken);
+  border-color: transparent;
+  color: var(--app-text);
+}
+
+.btn--link {
+  height: auto;
+  padding: 0 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--app-brand);
+  font-size: 13px;
+}
+
+.btn--link:hover:not(:disabled) {
+  border-color: transparent;
+  opacity: 0.8;
+}
+
+.btn--link.btn--danger {
+  color: var(--app-danger);
+}
+
+.btn--link.btn--danger:hover:not(:disabled) {
+  background: transparent;
+  color: var(--app-danger);
+}
+
+.btn--block {
+  width: 100%;
+}
+
+.btn--lg {
+  height: 40px;
+  font-size: 15px;
+}
+
+/* A button that is waiting on the network says so, and stops taking clicks.
+   Two classes deep so it outranks the colour variants above without
+   !important; it takes no pointer events, so their :hover rules never apply. */
+.btn.btn--busy {
+  position: relative;
+  color: transparent;
+  pointer-events: none;
+}
+
+.btn--busy::after {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentcolor;
+  border-block-start-color: transparent;
+  border-radius: 50%;
+  color: var(--app-text);
+  animation: spin 0.6s linear infinite;
+}
+
+.btn--primary.btn--busy::after {
+  color: #fff;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* ---- form controls ------------------------------------------------------ */
+
+.field {
+  margin-block-end: 16px;
+}
+
+.field__label {
+  display: block;
+  margin-block-end: 6px;
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
+
+.field__hint {
+  margin-block-start: 6px;
+  font-size: 12px;
+  color: var(--app-text-faint);
+}
+
+.field__error {
+  margin-block-start: 6px;
+  font-size: 12px;
+  color: var(--app-danger);
+  min-height: 0;
+}
+
+.input {
+  width: 100%;
+  height: var(--app-control-h);
+  padding-inline: 11px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+  color: var(--app-text);
+  font: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+textarea.input {
+  height: auto;
+  padding-block: 7px;
+  resize: vertical;
+}
+
+.input::placeholder {
+  color: var(--app-text-faint);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--app-brand);
+  box-shadow: 0 0 0 2px var(--app-brand-soft);
+}
+
+.input:disabled {
+  background: var(--app-surface-sunken);
+  color: var(--app-text-muted);
+  cursor: not-allowed;
+}
+
+.input--invalid {
+  border-color: var(--app-danger);
+}
+
+.input--invalid:focus {
+  border-color: var(--app-danger);
+  box-shadow: 0 0 0 2px var(--app-danger-soft);
+}
+
+.input-group {
+  display: flex;
+}
+
+.input-group .input {
+  border-start-end-radius: 0;
+  border-end-end-radius: 0;
+}
+
+.input-group .btn {
+  border-start-start-radius: 0;
+  border-end-start-radius: 0;
+  margin-inline-start: -1px;
+}
+
+/* A prefixed input: the icon sits inside the box, not beside it. */
+.input-affix {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-affix__icon {
+  position: absolute;
+  inset-inline-start: 11px;
+  display: grid;
+  place-items: center;
+  color: var(--app-text-faint);
+  pointer-events: none;
+}
+
+.input-affix .input {
+  padding-inline-start: 34px;
+}
+
+.input-affix__action {
+  position: absolute;
+  inset-inline-end: 4px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text-faint);
+  cursor: pointer;
+}
+
+.input-affix__action:hover {
+  background: var(--app-surface-sunken);
+  color: var(--app-text);
+}
+
+.input-affix:has(.input-affix__action) .input {
+  padding-inline-end: 36px;
+}
+
+/* A native select, styled to match the text inputs. The arrow is drawn here
+   because appearance:none removes the platform one. */
+.select {
+  appearance: none;
+  padding-inline-end: 30px;
+  background-image: linear-gradient(45deg, transparent 50%, currentcolor 50%),
+    linear-gradient(135deg, currentcolor 50%, transparent 50%);
+  background-position: calc(100% - 15px) center, calc(100% - 10px) center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+.checkbox {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--app-brand);
+  cursor: pointer;
+}
+
+.checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+
+.checkbox-group__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* ---- filter bar --------------------------------------------------------- */
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-block-end: 12px;
+}
+
+.filter-bar .input-affix {
+  width: 220px;
+}
+
+.filter-bar .select {
+  width: 140px;
+}
+
+/* Pushes the bulk action away from the filters: it acts on a selection, not
+   on what the boxes to its left narrow. */
+.filter-bar__spacer {
+  flex: 1;
+}
+
+/* ---- pager -------------------------------------------------------------- */
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-block-start: 12px;
+}
+
+.pager__total {
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
+
+.pager__spacer {
+  flex: 1;
+}
+
+.pager__pages {
+  display: flex;
+  gap: 2px;
+}
+
+.pager__page {
+  display: grid;
+  place-items: center;
+  min-width: 30px;
+  height: 30px;
+  padding-inline: 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pager__page:hover:not(:disabled):not(.pager__page--active) {
+  background: var(--app-surface-sunken);
+}
+
+.pager__page--active {
+  border-color: var(--app-brand);
+  color: var(--app-brand);
+  font-weight: 600;
+}
+
+.pager__page:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pager__gap {
+  display: grid;
+  place-items: center;
+  min-width: 24px;
+  height: 30px;
+  color: var(--app-text-faint);
+}
+
+.pager__size {
+  width: auto;
+  height: 30px;
+  font-size: 13px;
+}
+
+/* ---- chips -------------------------------------------------------------- */
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* A filter chip. Checked state carries the brand colour rather than a border
+   change, so the selected one is findable in a row of twenty. */
+.chip {
+  padding: 3px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: var(--app-surface);
+  color: var(--app-text-muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chip:hover {
+  border-color: var(--app-border-strong);
+  color: var(--app-text);
+}
+
+.chip--active {
+  border-color: transparent;
+  background: var(--app-brand-soft);
+  color: var(--app-brand);
+  font-weight: 500;
+}
+
+/* A tag that acts as a button (click to fill in a missing price). */
+.tag--clickable {
+  cursor: pointer;
+}
+
+.tag--clickable:hover {
+  filter: brightness(1.08);
+}
+
+/* ---- model cards -------------------------------------------------------- */
+
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.model-card {
+  padding: 12px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow-sm);
+}
+
+/* A model the current policy refuses is shown, but visibly inert. */
+.model-card--blocked {
+  opacity: 0.55;
+}
+
+.model-card__head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.model-card__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.model-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0 10px;
+}
+
+.model-card__prices {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.price-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.vendor-section {
+  margin-block-end: 24px;
+}
+
+.vendor-section__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-block-end: 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* ---- price plan diff ---------------------------------------------------- */
+
+.plan-diff {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.price-was {
+  color: var(--app-text-faint);
+  text-decoration: line-through;
+  margin-inline-end: 6px;
+}
+
+/* ---- tabs --------------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  border-block-end: 1px solid var(--app-border);
+}
+
+.tabs__item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border: none;
+  border-block-end: 2px solid transparent;
+  margin-block-end: -1px;
+  background: transparent;
+  color: var(--app-text-muted);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tabs__item:hover {
+  color: var(--app-text);
+}
+
+.tabs__item--active {
+  border-block-end-color: var(--app-brand);
+  color: var(--app-brand);
+  font-weight: 500;
+}
+
+/* An unsaved-changes marker; the tab strip is the one place every tab is
+   visible at once, so this is where a change elsewhere gets noticed. */
+.tabs__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--app-warning);
+}
+
+/* ---- settings ----------------------------------------------------------- */
+
+.settings-page {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-page .tabs {
+  margin-block-end: -12px;
+  border-block-end: none;
+}
+
+.settings-page .card {
+  border-start-start-radius: 0;
+  border-start-end-radius: 0;
+}
+
+.settings-form {
+  display: grid;
+  gap: 18px;
+}
+
+.settings-section__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-text);
+}
+
+.settings-form > .settings-section__title:not(:first-child) {
+  margin-block-start: 6px;
+  padding-block-start: 18px;
+  border-block-start: 1px solid var(--app-border);
+}
+
+/* Label in a fixed column, control and help beside it. Fixed rather than
+   fluid so the longest help sentence cannot decide how wide a row is. */
+.settings-row {
+  display: grid;
+  grid-template-columns: 176px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.settings-row__label {
+  padding-block-start: 7px;
+  font-size: 13px;
+  color: var(--app-text);
+}
+
+.settings-row__body {
+  display: grid;
+  gap: 6px;
+  max-width: 520px;
+}
+
+.settings-row__control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-row__help {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--app-text-faint);
+}
+
+.settings-control {
+  width: 220px;
+}
+
+@media (max-width: 767px) {
+  .settings-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .settings-row__label {
+    padding-block-start: 0;
+  }
+
+  .settings-control {
+    width: 100%;
+  }
+}
+
+.settings-savebar {
+  position: sticky;
+  inset-block-end: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow-lg);
+}
+
+/* ---- blocklist rule groups ---------------------------------------------- */
+
+.settings-rules {
+  display: grid;
+  gap: 12px;
+  margin-block-start: 18px;
+  padding-block-start: 18px;
+  border-block-start: 1px solid var(--app-border);
+}
+
+.settings-rules__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.settings-rules__list {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-problems {
+  margin: 6px 0 0;
+  padding-inline-start: 18px;
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
+
+.settings-problems li + li {
+  margin-block-start: 4px;
+}
+
+.rule-group {
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+}
+
+.rule-group__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-inline-end: 8px;
+}
+
+/* The disclosure is the whole row, so a click anywhere on the summary opens
+   the group; the two controls on the right stop their own clicks. */
+.rule-group__head {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: var(--app-text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.rule-group__head:hover {
+  background: var(--app-surface-sunken);
+}
+
+.rule-group__chevron {
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--app-text-faint);
+  transition: transform 0.15s ease;
+}
+
+.rule-group--open .rule-group__chevron {
+  transform: rotate(90deg);
+}
+
+.rule-group__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rule-group__controls {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.rule-group__body {
+  padding: 4px 12px 12px;
+  border-block-start: 1px solid var(--app-border);
+}
+
+/* Two columns: keywords and replies are read against each other. */
+.settings-rule-form__cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 0 20px;
+  padding-block-start: 12px;
+}
+
+.settings-reply {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.settings-reply .input {
+  flex: 1;
+}
+
+/* ---- progress ----------------------------------------------------------- */
+
+.progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--app-surface-sunken);
+  overflow: hidden;
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--app-brand);
+}
+
+.progress--danger > span {
+  background: var(--app-danger);
+}
+
+/* ---- removable chips ---------------------------------------------------- */
+
+.chip--removable {
+  padding-inline-end: 4px;
+}
+
+.chip__remove {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-inline-start: 2px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.chip__remove:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='dark'] .chip__remove:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ---- secret box --------------------------------------------------------- */
+
+/* A freshly created key: selectable, breaks anywhere, and the whole box is
+   a copy target so nobody has to aim at a small icon. */
+.secret-box {
+  margin-block: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface-sunken);
+  word-break: break-all;
+  cursor: pointer;
+  user-select: all;
+}
+
+.secret-box:hover {
+  border-color: var(--app-brand);
+}
+
+/* ---- inline editable number --------------------------------------------- */
+
+/* A value read from the table that can also be changed there: a tag until
+   clicked, then a box the width of the cell. */
+.inline-number {
+  width: 100%;
+  height: 24px;
+  padding-inline: 6px;
+  font-size: 12px;
+}
+
+/* ---- expandable rows ---------------------------------------------------- */
+
+.cell-expand {
+  width: 40px;
+  text-align: center;
+}
+
+.expand-toggle {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text-faint);
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.expand-toggle:hover {
+  background: var(--app-surface-sunken);
+  color: var(--app-text);
+}
+
+.expand-toggle--open {
+  transform: rotate(90deg);
+}
+
+.table tr.row-expanded > td {
+  border-block-end: none;
+}
+
+.table tr.row-detail > td {
+  padding: 12px;
+  background: var(--app-surface-sunken);
+  border-block-start: none;
+}
+
+.table tbody tr.row-detail:hover > td {
+  background: var(--app-surface-sunken);
+}
+
+/* A disabled channel reads as parked, not broken. */
+.table tr.row-disabled > td {
+  opacity: 0.6;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.detail-card {
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+}
+
+.detail-card__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-block-end: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.detail-card__body {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.detail-card .code-block {
+  max-height: 120px;
+}
+
+/* ---- description list --------------------------------------------------- */
+
+.desc {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.desc > dt,
+.desc > dd {
+  margin: 0;
+  padding: 8px 12px;
+  border-block-start: 1px solid var(--app-border);
+}
+
+.desc > dt:first-of-type,
+.desc > dd:first-of-type {
+  border-block-start: none;
+}
+
+.desc > dt {
+  background: var(--app-surface-sunken);
+  color: var(--app-text-muted);
+  white-space: nowrap;
+}
+
+/* ---- drawer ------------------------------------------------------------- */
+
+/* A wide dialog for a long form; on a phone it takes the whole width so its
+   left edge never hangs off screen. */
+.modal--drawer {
+  max-width: 760px;
+}
+
+@media (max-width: 767px) {
+  .modal--drawer {
+    max-width: 100%;
+    margin-block-start: 0;
+    border-radius: 0;
+  }
+}
+
+.form-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0 16px;
+}
+
+.form-divider {
+  margin: 4px 0 14px;
+  padding-block-end: 6px;
+  border-block-end: 1px solid var(--app-border);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.form-divider:not(:first-child) {
+  margin-block-start: 8px;
+}
+
+/* Advanced fields fold away: a new channel needs three fields, not seventeen. */
+.disclosure {
+  margin-block-end: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+}
+
+.disclosure__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: var(--app-text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.disclosure__head:hover {
+  background: var(--app-surface-sunken);
+}
+
+.disclosure__body {
+  padding: 12px;
+  border-block-start: 1px solid var(--app-border);
+}
+
+/* ---- picker list -------------------------------------------------------- */
+
+.picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 380px;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  overflow: auto;
+}
+
+.picker-list__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* ---- log table ---------------------------------------------------------- */
+
+.log-table tbody tr[tabindex] {
+  cursor: pointer;
+}
+
+.log-table tbody tr[tabindex]:focus-visible {
+  outline: 2px solid var(--app-brand);
+  outline-offset: -2px;
+}
+
+/* A running call: dimmed slightly, with a pulse on its left edge. */
+.log-row--running > td {
+  background: var(--app-brand-soft);
+}
+
+.log-row--running > td:first-child {
+  box-shadow: inset 3px 0 0 var(--app-brand);
+}
+
+/* A row that just arrived live: flashes, then settles. */
+.log-row--enter > td {
+  animation: log-row-enter 0.9s ease-out;
+}
+
+@keyframes log-row-enter {
+  0% {
+    background: var(--app-brand-soft);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.text-warning {
+  color: var(--app-warning);
+}
+
+/* Total above, first-byte below, with a vertical bar beside them that
+   fills with the fraction of the wait spent before anything came back. */
+.duration-cell {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.duration-bar {
+  flex: none;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--app-border-strong);
+}
+
+.duration-bar--running {
+  background: linear-gradient(to top, var(--app-brand), var(--app-brand-soft));
+  animation: duration-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes duration-pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ---- phone cards -------------------------------------------------------- */
+
+.log-table--phone th {
+  display: none;
+}
+
+.log-table--phone td {
+  padding: 8px;
+}
+
+.log-card {
+  padding: 10px 12px 10px 14px;
+  border-radius: var(--app-radius);
+  border-inline-start: 3px solid var(--app-border-strong);
+  background: var(--app-surface);
+}
+
+.log-card--ok {
+  border-inline-start-color: var(--app-success);
+}
+
+.log-card--warn {
+  border-inline-start-color: var(--app-warning);
+}
+
+.log-card--err {
+  border-inline-start-color: var(--app-danger);
+}
+
+.log-card--live {
+  border-inline-start-color: var(--app-brand);
+  background: var(--app-brand-soft);
+}
+
+.log-card__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.log-card__model {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.log-card__cost {
+  flex: none;
+  font-size: 13px;
+}
+
+.log-card__mapped {
+  margin-block-start: 2px;
+  font-size: 12px;
+}
+
+.log-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-block: 6px;
+}
+
+.log-card__meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 10px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+.log-card__meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.log-card__meta-item--end {
+  justify-content: flex-end;
+}
+
+.log-card__meta-item--wide {
+  grid-column: 1 / -1;
+}
+
+.log-card__meta-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-card__error {
+  margin-block-start: 6px;
+  font-size: 12px;
+  color: var(--app-danger);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---- live toggle & rate chips ------------------------------------------- */
+
+.live-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--app-text-faint);
+}
+
+.live-dot--live {
+  background: var(--app-brand);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+.live-dot--connecting {
+  background: var(--app-warning);
+}
+
+.live-dot--offline {
+  background: var(--app-danger);
+}
+
+@keyframes live-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.rate-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding-inline: 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: var(--app-surface-sunken);
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+.rate-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--app-text-faint);
+}
+
+.rate-chip--live .rate-chip__dot {
+  background: var(--app-success);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+.rate-chip__label {
+  letter-spacing: 0.04em;
+}
+
+.rate-chip__value {
+  min-width: 2.5ch;
+  color: var(--app-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
+.rate-chip__value--bump {
+  animation: rate-bump 0.46s ease-out;
+}
+
+@keyframes rate-bump {
+  30% {
+    transform: translateY(-2px) scale(1.08);
+  }
+}
+
+/* ---- conversation view -------------------------------------------------- */
+
+.chat-log {
+  display: grid;
+  gap: 10px;
+}
+
+.chat-turn {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.chat-turn__role {
+  padding-block-start: 6px;
+  font-family: var(--app-font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--app-text-faint);
+}
+
+.chat-turn--user .chat-turn__role {
+  color: var(--app-brand);
+}
+
+.chat-turn--assistant .chat-turn__role {
+  color: var(--app-success);
+}
+
+.chat-turn--tool .chat-turn__role {
+  color: var(--app-warning);
+}
+
+.chat-turn__parts {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chat-part {
+  padding: 8px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface-sunken);
+}
+
+.chat-part--reasoning {
+  border-style: dashed;
+  opacity: 0.85;
+}
+
+.chat-part--tool_call,
+.chat-part--tool_result {
+  border-color: var(--app-warning-soft);
+  background: var(--app-warning-soft);
+}
+
+.chat-part__label {
+  margin-block-end: 4px;
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+
+.chat-part__text {
+  margin: 0;
+  font-family: var(--app-font);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-part--tool_call .chat-part__text,
+.chat-part--tool_result .chat-part__text {
+  font-family: var(--app-font-mono);
+  font-size: 12px;
+}
+
+.modal--wide {
+  max-width: min(860px, 100vw);
+}
+
+/* ---- playground --------------------------------------------------------- */
+
+.metric-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin-block-end: 12px;
+  padding-block-end: 12px;
+  border-block-end: 1px solid var(--app-border);
+}
+
+.metric-strip__item {
+  display: grid;
+  gap: 2px;
+}
+
+.metric-strip__label {
+  font-size: 11px;
+  color: var(--app-text-faint);
+  letter-spacing: 0.04em;
+}
+
+.metric-strip__value {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The streamed answer. Wraps, scrolls, keeps the text selectable, and holds
+   its height so the card does not grow with every chunk. */
+.playground-output {
+  min-height: 240px;
+  max-height: 60vh;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface-sunken);
+  font-family: var(--app-font);
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+  user-select: text;
+}
+
+.playground-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-inline-start: 2px;
+  vertical-align: -0.15em;
+  background: var(--app-brand);
+  animation: caret-blink 1s steps(2) infinite;
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ---- code block --------------------------------------------------------- */
+
+.code-block-wrap {
+  position: relative;
+}
+
+.code-block__copy {
+  position: absolute;
+  inset-inline-end: 8px;
+  inset-block-start: 8px;
+  background: var(--app-surface);
+}
+
+/* Preformatted text: generated codes, curl examples, captured HTTP messages.
+   Long lines wrap and break anywhere, because a captured body is often one
+   multi-megabyte line of JSON — unwrapped, it is a 20,000px-wide block that
+   escapes whatever holds it. min-width: 0 lets it shrink inside a grid or
+   flex parent, without which overflow: auto never gets a chance to apply. */
+.code-block {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface-sunken);
+  color: var(--app-text);
+  font-family: var(--app-font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow: auto;
+}
+
+/* ---- switch ------------------------------------------------------------- */
+
+.switch {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--app-border-strong);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  inset-block-start: 2px;
+  inset-inline-start: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+
+.switch[aria-checked='true'] {
+  background: var(--app-brand);
+}
+
+.switch[aria-checked='true']::after {
+  transform: translateX(16px);
+}
+
+.switch:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ---- segmented ---------------------------------------------------------- */
+
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--app-radius);
+  background: var(--app-surface-sunken);
+  border: 1px solid var(--app-border);
+}
+
+.segmented--block {
+  display: flex;
+  width: 100%;
+}
+
+.segmented__item {
+  flex: 1;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text-muted);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.segmented__item:hover {
+  color: var(--app-text);
+}
+
+.segmented__item--active {
+  background: var(--app-surface);
+  color: var(--app-text);
+  font-weight: 500;
+  box-shadow: var(--app-shadow-sm);
+}
+
+[data-theme='dark'] .segmented__item--active {
+  background: #262c39;
+}
+
+/* ---- tag ---------------------------------------------------------------- */
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface-sunken);
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.tag--brand {
+  border-color: transparent;
+  background: var(--app-brand-soft);
+  color: var(--app-brand);
+}
+
+.tag--success {
+  border-color: transparent;
+  background: var(--app-success-soft);
+  color: var(--app-success);
+}
+
+.tag--warning {
+  border-color: transparent;
+  background: var(--app-warning-soft);
+  color: var(--app-warning);
+}
+
+.tag--danger {
+  border-color: transparent;
+  background: var(--app-danger-soft);
+  color: var(--app-danger);
+}
+
+/* ---- alert -------------------------------------------------------------- */
+
+.alert {
+  display: flex;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface-sunken);
+  margin-block-end: 12px;
+}
+
+.alert--info {
+  border-color: transparent;
+  background: var(--app-brand-soft);
+}
+
+.alert--warning {
+  border-color: transparent;
+  background: var(--app-warning-soft);
+}
+
+.alert__icon {
+  flex: none;
+  margin-block-start: 2px;
+  color: var(--app-brand);
+}
+
+.alert--warning .alert__icon {
+  color: var(--app-warning);
+}
+
+.alert__title {
+  font-weight: 600;
+}
+
+.alert__description {
+  margin-block-start: 2px;
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
+
+/* ---- table -------------------------------------------------------------- */
+
+.table-wrap {
+  overflow-x: auto;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table th {
+  padding: 10px 12px;
+  background: var(--app-surface-sunken);
+  color: var(--app-text-muted);
+  font-weight: 500;
+  text-align: start;
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 8px 12px;
+  border-block-start: 1px solid var(--app-border);
+  vertical-align: middle;
+}
+
+.table tbody tr:hover td {
+  background: var(--app-surface-sunken);
+}
+
+.table__actions {
+  display: flex;
+  gap: 2px;
+}
+
+/* A sortable header. The button fills the cell so the whole header is the
+   target, while still being a real button for the keyboard. */
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: -10px -12px;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.th-sort:hover {
+  color: var(--app-text);
+}
+
+.th-sort--active {
+  color: var(--app-brand);
+}
+
+.cell-select {
+  width: 38px;
+  text-align: center;
+}
+
+.cell-right {
+  text-align: end;
+}
+
+/* A value with its quieter qualifier underneath, in one cell. */
+.cell-stack {
+  display: grid;
+  line-height: 1.35;
+}
+
+.cell-stack__sub {
+  font-size: 11px;
+  color: var(--app-text-faint);
+}
+
+/* A cell whose content is a copyable code: the button appears on hover so a
+   dense table is not a wall of icons. */
+.code-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.code-cell__copy {
+  flex: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.code-cell:hover .code-cell__copy,
+.code-cell__copy:focus-visible {
+  opacity: 1;
+}
+
+/* Columns the geometry hides at narrow widths. */
+@media (max-width: 991px) {
+  .table .col-lg {
+    display: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .table .col-md,
+  .table .col-lg {
+    display: none;
+  }
+}
+
+/* ---- stat card ---------------------------------------------------------- */
+
+.stat-card {
+  padding: 16px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  box-shadow: var(--app-shadow-sm);
+}
+
+.stat-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stat-card__label {
+  flex: 1;
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+.stat-card__icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--app-brand-soft);
+  color: var(--app-brand);
+}
+
+/* The default tone; named so the class is always present and a future change
+   of the base colour has one place to happen. */
+.stat-card__icon--brand {
+  background: var(--app-brand-soft);
+  color: var(--app-brand);
+}
+
+.stat-card__icon--success {
+  background: var(--app-success-soft);
+  color: var(--app-success);
+}
+
+.stat-card__icon--warning {
+  background: var(--app-warning-soft);
+  color: var(--app-warning);
+}
+
+.stat-card__icon--danger {
+  background: var(--app-danger-soft);
+  color: var(--app-danger);
+}
+
+.stat-card__icon--neutral {
+  background: var(--app-surface-sunken);
+  color: var(--app-text-muted);
+}
+
+.stat-card__value {
+  margin-block-start: 8px;
+  font-size: 26px;
+  font-weight: 650;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stat-card__hint {
+  margin-block-start: 4px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+/* ---- rank rows ---------------------------------------------------------- */
+
+.rank-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  padding-block: 8px;
+}
+
+.rank-row + .rank-row {
+  border-block-start: 1px solid var(--app-border);
+}
+
+.rank-row__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.rank-row__value {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rank-row__bar {
+  grid-column: 1 / -1;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--app-surface-sunken);
+  overflow: hidden;
+}
+
+.rank-row__bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--app-brand);
+}
+
+.rank-row__meta {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--app-text-faint);
+}
+
+/* ---- chart -------------------------------------------------------------- */
+
+.chart {
+  position: relative;
+}
+
+.chart__svg {
+  display: block;
+  width: 100%;
+  height: 300px;
+  overflow: visible;
+}
+
+.chart__grid {
+  stroke: var(--app-border);
+  stroke-width: 1;
+}
+
+.chart__axis-text {
+  fill: var(--app-text-faint);
+  font-size: 12px;
+}
+
+.chart__area {
+  fill: var(--app-brand);
+  opacity: 0.16;
+}
+
+.chart__line-requests {
+  fill: none;
+  stroke: var(--app-brand);
+  stroke-width: 2;
+}
+
+.chart__line-cost {
+  fill: none;
+  stroke: var(--app-accent);
+  stroke-width: 2;
+}
+
+.chart__line-errors {
+  fill: none;
+  stroke: var(--app-danger);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+.chart__hover-line {
+  stroke: var(--app-border-strong);
+  stroke-width: 1;
+}
+
+.chart__legend {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  padding-block-start: 8px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+.chart__legend-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-inline-end: 6px;
+  border-radius: 999px;
+}
+
+.chart__tooltip {
+  position: absolute;
+  z-index: 5;
+  min-width: 152px;
+  padding: 8px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.chart__tooltip-label {
+  margin-block-end: 6px;
+  color: var(--app-text-muted);
+}
+
+.chart__tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* ---- empty state / skeleton --------------------------------------------- */
+
+.empty {
+  padding: 32px 20px;
+  text-align: center;
+}
+
+.empty--compact {
+  padding: 20px;
+}
+
+.empty__title {
+  font-weight: 600;
+}
+
+.empty__description {
+  margin-block-start: 4px;
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
+
+.empty__action {
+  margin-block-start: 14px;
+}
+
+.skeleton {
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    var(--app-surface-sunken) 25%,
+    var(--app-border) 37%,
+    var(--app-surface-sunken) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton 1.4s ease infinite;
+}
+
+@keyframes skeleton {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+.skeleton__line {
+  height: 14px;
+  margin-block-end: 10px;
+}
+
+/* ---- toast -------------------------------------------------------------- */
+
+.toast-host {
+  position: fixed;
+  inset-block-start: 68px;
+  inset-inline: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(92vw, 480px);
+  padding: 9px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow);
+  font-size: 13px;
+  animation: toast-in 0.18s ease-out;
+}
+
+.toast__icon {
+  flex: none;
+}
+
+.toast--success .toast__icon {
+  color: var(--app-success);
+}
+
+.toast--error .toast__icon {
+  color: var(--app-danger);
+}
+
+.toast--warning .toast__icon {
+  color: var(--app-warning);
+}
+
+.toast--info .toast__icon {
+  color: var(--app-brand);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* ---- modal -------------------------------------------------------------- */
+
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: start center;
+  padding: 24px 16px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.modal {
+  width: 100%;
+  max-width: 520px;
+  margin-block-start: 6vh;
+  border-radius: var(--app-radius-lg);
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow-lg);
+  animation: modal-in 0.16s ease-out;
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+.modal__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 20px;
+  border-block-end: 1px solid var(--app-border);
+}
+
+.modal__title {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.modal__body {
+  padding: 20px;
+}
+
+.modal__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-block-start: 1px solid var(--app-border);
+}
+
+/* ---- dropdown ----------------------------------------------------------- */
+
+.dropdown {
+  position: relative;
+}
+
+.dropdown__menu {
+  position: absolute;
+  inset-inline-end: 0;
+  inset-block-start: calc(100% + 6px);
+  z-index: 30;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow-lg);
+}
+
+.dropdown__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.dropdown__item:hover {
+  background: var(--app-surface-sunken);
+}
+
+.dropdown__item--active {
+  color: var(--app-brand);
+}
+
+.dropdown__item--danger {
+  color: var(--app-danger);
+}
+
+.dropdown__header {
+  padding: 8px 10px;
+  border-block-end: 1px solid var(--app-border);
+  margin-block-end: 4px;
+}
+
+.dropdown__divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--app-border);
+}
+
+/* ---- misc --------------------------------------------------------------- */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.row--wrap {
+  flex-wrap: wrap;
+}
+
+.stack {
+  display: grid;
+  gap: 6px;
+}
+
+/* A row of a vertical stack must never widen the stack. Grid items default
+   to min-width: auto, which lets one wide child push everything past the
+   container's edge. */
+.stack > * {
+  min-width: 0;
+}
+
+.mt-12 {
+  margin-block-start: 12px;
+}
+
+.sunken-box {
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface-sunken);
+}
