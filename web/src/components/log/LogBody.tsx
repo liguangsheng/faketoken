@@ -3,6 +3,7 @@ import {
   Alert,
   App,
   Button,
+  Image,
   Segmented,
   Skeleton,
   Space,
@@ -249,7 +250,8 @@ function ChatPart({ part }: { part: ConversationPart }) {
   const [expanded, setExpanded] = useState(false);
   const long = part.text.length > PART_CLAMP;
   const shown = long && !expanded ? part.text.slice(0, PART_CLAMP) : part.text;
-  const label = PART_LABEL[part.kind];
+  // A rendered image speaks for itself; the label is for placeholders.
+  const label = part.src ? "" : PART_LABEL[part.kind];
 
   return (
     <div className={`chat-part chat-part--${part.kind}`}>
@@ -259,7 +261,20 @@ function ChatPart({ part }: { part: ConversationPart }) {
           {part.name && <span className="mono"> {part.name}</span>}
         </div>
       )}
-      <pre className="chat-part__text">{shown}</pre>
+      {/* Click opens antd's viewer at full size: a data: URL cannot be
+          opened in a new tab, browsers block top-level data: navigation.
+          Wrapped rather than given rootClassName, which antd also puts on
+          the viewer's root. */}
+      {part.src && (
+        <div className="chat-part__image">
+          <Image
+            src={part.src}
+            alt="图片"
+            preview={{ rootClassName: "chat-image-preview" }}
+          />
+        </div>
+      )}
+      {shown && <pre className="chat-part__text">{shown}</pre>}
       {long && (
         <Button
           type="link"

@@ -1244,6 +1244,38 @@ body {
   font-style: italic;
 }
 
+.chat-part__image {
+  margin-block-end: 6px;
+}
+
+.chat-part__image .ant-image {
+  border-radius: 8px;
+  max-width: 100%;
+  /* Rounds antd's hover mask along with the image. */
+  overflow: hidden;
+  /* inline-block sits on the baseline, leaving a descender gap below. */
+  vertical-align: top;
+}
+
+/* Generated images are often transparent: the checkerboard shows where, and
+   keeps dark line art visible on the dark theme. */
+.chat-part__image .ant-image-img,
+.chat-image-preview .ant-image-preview-img {
+  background-color: var(--app-surface);
+  background-image: repeating-conic-gradient(var(--app-border) 0 25%, transparent 0 50%);
+  background-size: 16px 16px;
+}
+
+/* Capped so a 1536px render does not push the transcript off screen; the
+   viewer shows it full size. antd stretches the img to 100%, undone here. */
+.chat-part__image .ant-image-img {
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  max-height: 480px;
+  max-width: 100%;
+  width: auto;
+}
+
 .chat-part--tool_call,
 .chat-part--tool_result {
   background: var(--app-surface);
