@@ -49,7 +49,7 @@ type Config struct {
 	// disables the import, which is what a deployment with no egress wants.
 	ModelsDevURL string
 
-	// Frontend: the console's files, served straight from source.
+	// Frontend
 	WebDir string
 
 	// ARAClaim is the line served at /.well-known/ara-claim.txt to prove
@@ -83,7 +83,7 @@ func Load() (*Config, error) {
 		RetryBackoff:      envDuration("RETRY_BACKOFF", 200*time.Millisecond),
 		AllowRegister:     envBool("ALLOW_REGISTER", true),
 		InitQuota:         int64(envInt("INIT_QUOTA_MICRO_USD", 1_000_000)), // $1.00
-		WebDir:            env("WEB_DIR", "web"),
+		WebDir:            env("WEB_DIR", "web/dist"),
 		ARAClaim:          env("ARA_CLAIM", defaultARAClaim),
 
 		// Fail closed: an unpriced model is a misconfiguration, and relaying it

@@ -1,6 +1,6 @@
 # LLM API 中转站
 
-Go + Postgres 实现的多用户 LLM API 网关，控制台是零依赖的 HTML/CSS/JS。核心目标是**尽可能透传**：除了凭证、目标地址和（可选的）模型名，请求与响应的每一个字节都原样转发。
+Go + React + Postgres 实现的多用户 LLM API 网关。核心目标是**尽可能透传**：除了凭证、目标地址和（可选的）模型名，请求与响应的每一个字节都原样转发。
 
 ## 功能
 
@@ -45,7 +45,10 @@ docker compose up -d --build
 
 ```bash
 make db-up        # 只起 Postgres（映射到宿主机 5433）
-make run          # 编译并运行后端，读取 .env。控制台直接从 web/ 提供源码，改完刷新即可
+make web          # 构建前端到 web/dist
+make run          # 编译并运行后端，读取 .env
+
+make dev          # 另开终端跑 Vite，热更新，自动代理 /api 与 /v1 到 :3200
 ```
 
 ### 测试
@@ -280,7 +283,7 @@ GROUP BY model ORDER BY 3 DESC;
 | `BILLING_FALLBACK_CACHED_PRICE` | `0` | 兜底缓存输入价，留 0 表示与输入同价 |
 | `BILLING_FALLBACK_PER_REQUEST_PRICE` | `0` | 兜底按次计费（美元 / 次） |
 | `MODELS_DEV_URL` | `https://models.dev/api.json` | 价格目录地址，留空则关闭「拉取最新价格」 |
-| `WEB_DIR` | `web` | 控制台目录，直接提供源码，无需构建 |
+| `WEB_DIR` | `web/dist` | 前端静态文件目录 |
 | `TZ` | `Asia/Singapore` | 渠道保活的「每天 X 点」和备份的 `BACKUP_AT` 按该时区解释 |
 
 ## 安全说明
@@ -308,7 +311,7 @@ internal/redact       日志正文脱敏与截断
 internal/billing      价格表与费用计算
 internal/modelsdev    models.dev 目录的拉取与解析
 internal/api          HTTP 路由与管理接口
-web/                  控制台：零依赖 HTML/CSS/ES Modules，driver → core/ui → pages → shell
+web/                  React + TypeScript + antd 控制台
 internal/keepalive    渠道保活的每日开窗调度
 scripts/              运维脚本：夜间备份、集成测试实例、正文检索
 ```

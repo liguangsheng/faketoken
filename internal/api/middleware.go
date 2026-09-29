@@ -96,8 +96,8 @@ func requestLogger(next http.Handler) http.Handler {
 	})
 }
 
-// withCORS lets third-party SDKs and browser clients hitting /v1 talk to the
-// API from another origin.
+// withCORS lets the Vite dev server (and third-party SDKs hitting /v1) talk to
+// the API from another origin.
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")

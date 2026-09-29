@@ -159,8 +159,8 @@ func (s *Server) Handler() http.Handler {
 	// preflight; see handlePlaygroundRelay for why it is administrator-only.
 	mux.HandleFunc("POST /api/admin/playground/relay", s.requireAdmin(s.handlePlaygroundRelay))
 
-	// ---- console
-	mux.Handle("/", s.consoleHandler())
+	// ---- single page app
+	mux.Handle("/", s.spaHandler())
 
 	return recoverPanic(requestLogger(withCORS(mux)))
 }
@@ -185,14 +185,14 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"version": version})
 }
 
-// consoleHandler serves the console's files, falling back to index.html so
+// spaHandler serves the built React console and falls back to index.html so
 // client-side routes survive a page refresh.
-func (s *Server) consoleHandler() http.Handler {
+func (s *Server) spaHandler() http.Handler {
 	dir := s.cfg.WebDir
 	if _, err := os.Stat(filepath.Join(dir, "index.html")); err != nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			respond(w, http.StatusNotFound, map[string]string{
-				"message": "web console not found; point WEB_DIR at the web directory",
+				"message": "web console not built; run `make web` or set WEB_DIR",
 			})
 		})
 	}
@@ -209,21 +209,27 @@ func (s *Server) consoleHandler() http.Handler {
 			return
 		}
 
-		// Every file keeps its name across deploys — the console ships its
-		// sources, not a hashed bundle — so nothing may be cached without
-		// revalidating, or a browser keeps running yesterday's JavaScript
-		// against today's HTML with nothing on screen to say so. no-cache is
-		// not "do not store": the copy is kept and revalidated, so an unchanged
-		// file still costs only a 304.
-		w.Header().Set("Cache-Control", "no-cache")
-
 		clean := strings.TrimPrefix(filepath.Clean(r.URL.Path), "/")
 		if clean == "" || clean == "." {
 			clean = "index.html"
 		}
-		if _, err := fs.Stat(root, clean); err != nil {
+		// index.html is the one file whose name never changes, and it is what
+		// names the hashed bundles. Letting a browser cache it without
+		// revalidating pins that browser to an old build no matter how many
+		// times the server is redeployed — the console keeps loading the
+		// previous JavaScript until someone force-reloads by hand.
+		//
+		// no-cache does not mean "do not store": the copy is kept and
+		// revalidated, so an unchanged file still costs one 304.
+		if _, err := fs.Stat(root, clean); err != nil || clean == "index.html" {
+			w.Header().Set("Cache-Control", "no-cache")
 			http.ServeFileFS(w, r, root, "index.html")
 			return
+		}
+		// Safe to cache forever: the build puts a content hash in the name, so
+		// a changed file is a different URL.
+		if strings.HasPrefix(clean, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 		fileServer.ServeHTTP(w, r)
 	})

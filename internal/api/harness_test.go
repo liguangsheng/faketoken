@@ -246,7 +246,7 @@ func newHarnessWithCatalogue(t *testing.T, feed *fakeFeed) *harness {
 		AllowRegister:     true,
 		InitQuota:         billing.ParseUSD(1),
 		// A real console directory, because "no web dir" takes a different
-		// branch in the console handler and would hide how unrouted /api paths
+		// branch in the SPA handler and would hide how unrouted /api paths
 		// behave in an actual deployment.
 		WebDir:         webDirForTest(t),
 		UnpricedPolicy: string(billing.PolicyReject),
@@ -304,25 +304,21 @@ func newHarnessWithCatalogue(t *testing.T, feed *fakeFeed) *harness {
 	return h
 }
 
-// webDirForTest builds a minimal console directory in the real layout — an
-// index, a module under js/, a static file beside them — so the fallback and
-// the caching tests run the same branches they do in production.
+// webDirForTest builds a minimal console directory so the SPA fallback runs the
+// same branch it does in production.
 func webDirForTest(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	files := map[string]string{
-		"index.html":  "<!doctype html><title>test console</title>",
-		"favicon.svg": "<svg xmlns='http://www.w3.org/2000/svg'/>",
-		"js/main.js":  "console.log(1)",
+	if err := os.WriteFile(filepath.Join(dir, "index.html"),
+		[]byte("<!doctype html><title>test console</title>"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	for name, body := range files {
-		path := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.Mkdir(filepath.Join(dir, "assets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "assets", "app-abc123.js"),
+		[]byte("console.log(1)"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	return dir
 }

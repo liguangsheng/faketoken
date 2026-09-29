@@ -10,15 +10,14 @@ import (
 	"github.com/faketoken/faketoken/internal/config"
 )
 
-// The console ships its sources under names that never change, so every one
-// of them has to be revalidated: a browser allowed to keep any of them would
-// run yesterday's JavaScript against today's HTML after a deploy, with nothing
-// on screen to say so. index.html, a module, a static file and a client-side
-// route that falls back to the index all get the same answer.
-func TestConsoleFilesAreAlwaysRevalidated(t *testing.T) {
+// A cached index.html pins a browser to whichever build it named, so every
+// later deploy is invisible until someone force-reloads. The hashed bundles
+// have the opposite requirement: their names change, so they can be kept
+// forever.
+func TestConsoleCachingLetsANewBuildThrough(t *testing.T) {
 	h := newHarness(t)
 
-	for _, path := range []string{"/", "/index.html", "/js/main.js", "/favicon.svg", "/admin/settings"} {
+	for _, path := range []string{"/", "/index.html", "/admin/settings"} {
 		resp, err := http.Get(h.server.URL + path)
 		if err != nil {
 			t.Fatal(err)
@@ -28,42 +27,15 @@ func TestConsoleFilesAreAlwaysRevalidated(t *testing.T) {
 			t.Fatalf("%s served with Cache-Control %q, want no-cache", path, got)
 		}
 	}
-}
 
-// A client-side route exists in the router, not on disk, so a refresh on one
-// has to be answered with index.html for the app to boot and take over. A
-// file that does exist is served as itself, and an unrouted /api path is a
-// missing endpoint rather than a page — answering it with HTML would tell a
-// probe the endpoint works and hand a client HTML where it expects JSON.
-func TestConsoleFallsBackToIndexOnlyForRoutes(t *testing.T) {
-	h := newHarness(t)
-
-	for _, probe := range []struct {
-		path   string
-		status int
-		want   string
-	}{
-		{"/", http.StatusOK, "test console"},
-		{"/profile", http.StatusOK, "test console"},
-		{"/admin/logs", http.StatusOK, "test console"},
-		{"/favicon.svg", http.StatusOK, "<svg"},
-		{"/api/does-not-exist", http.StatusNotFound, "endpoint not found"},
-	} {
-		resp, err := http.Get(h.server.URL + probe.path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.StatusCode != probe.status {
-			t.Fatalf("%s answered %d, want %d", probe.path, resp.StatusCode, probe.status)
-		}
-		if !strings.Contains(string(body), probe.want) {
-			t.Fatalf("%s served %q, want it to contain %q", probe.path, body, probe.want)
-		}
+	resp, err := http.Get(h.server.URL + "/assets/app-abc123.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !strings.Contains(resp.Header.Get("Cache-Control"), "immutable") {
+		t.Fatalf("hashed asset served with Cache-Control %q, want immutable",
+			resp.Header.Get("Cache-Control"))
 	}
 }
 

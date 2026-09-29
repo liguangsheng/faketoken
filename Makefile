@@ -1,4 +1,4 @@
-.PHONY: help build run test test-db test-db-down test-integration lint fmt db-up db-down up down logs backup backups search clean
+.PHONY: help dev build web run test test-db test-db-down test-integration lint fmt db-up db-down up down logs backup backups search clean
 
 BIN := bin/server
 
@@ -9,8 +9,14 @@ help: ## Show this help
 build: ## Compile the server binary
 	go build -trimpath -o $(BIN) ./cmd/server
 
-run: build ## Run the server locally (reads .env); the console needs no build
+web: ## Build the React console into web/dist
+	cd web && npm install && npm run build
+
+run: build ## Run the server locally (reads .env)
 	set -a; [ -f .env ] && . ./.env; set +a; ./$(BIN)
+
+dev: ## Run the Vite dev server against a local backend
+	cd web && npm install && npm run dev
 
 test: ## Run the Go test suite
 	go test ./... -count=1
@@ -63,5 +69,5 @@ search: ## Search the captured request/response bodies, export to .search/ (KEYW
 backups: ## List the dumps currently retained
 	@ls -lh $${BACKUP_DIR:-./.backup}/*.dump 2>/dev/null || echo "no dumps yet"
 
-clean: ## Remove build artefacts
-	rm -rf bin
+clean: ## Remove build artefacts and web/node_modules
+	rm -rf bin web/dist web/node_modules

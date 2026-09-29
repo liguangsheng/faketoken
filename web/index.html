@@ -11,15 +11,9 @@
     <meta name="referrer" content="same-origin" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>控制台</title>
-
-    <link rel="stylesheet" href="/css/tokens.css" />
-    <link rel="stylesheet" href="/css/base.css" />
-    <link rel="stylesheet" href="/css/layout.css" />
-    <link rel="stylesheet" href="/css/components.css" />
-
     <script>
       // Resolve the theme before the first paint so dark-mode users never see
-      // a white flash while the modules load.
+      // a white flash while the bundle boots.
       ;(function () {
         try {
           var stored = localStorage.getItem('faketoken-theme') || 'system'
@@ -35,37 +29,7 @@
     </script>
   </head>
   <body>
-    <div id="app"></div>
-
-    <!--
-      A module that throws at the top level stops every module after it, and
-      the failure is silent on screen. This puts a readable message in the
-      page instead of a white rectangle, and names the file that failed.
-    -->
-    <script>
-      window.addEventListener('error', function (event) {
-        if (window.__consoleBooted) return
-        var app = document.getElementById('app')
-        if (!app || app.childElementCount > 0) return
-        app.innerHTML = ''
-        var box = document.createElement('div')
-        box.className = 'fatal'
-        var title = document.createElement('h1')
-        title.textContent = '控制台加载失败'
-        var hint = document.createElement('p')
-        hint.className = 'text-muted'
-        hint.textContent = '页面脚本没有执行完。刷新重试；若持续失败，请把下面的信息交给管理员。'
-        var detail = document.createElement('pre')
-        detail.className = 'fatal__detail'
-        detail.textContent =
-          String((event && event.message) || '未知错误') +
-          '\n' +
-          String((event && event.filename) || '')
-        box.append(title, hint, detail)
-        app.append(box)
-      })
-    </script>
-
-    <script type="module" src="/js/main.js"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
