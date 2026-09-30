@@ -1024,3 +1024,128 @@ func TestDisabledChannelDropsOutOfPrefixRouting(t *testing.T) {
 		t.Fatalf("a disabled channel still served a prefix route: HTTP %d", resp.StatusCode)
 	}
 }
+
+// pinnedRequest is relayRequest with the channel pin set.
+func (h *harness) pinnedRequest(key, pin, body string) *http.Response {
+	h.t.Helper()
+	req, err := http.NewRequest(http.MethodPost, h.server.URL+"/v1/chat/completions", strings.NewReader(body))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("X-Faketoken-Channel", pin)
+	resp, err := h.server.Client().Do(req)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return resp
+}
+
+// A test aimed at one channel has to reach it, including a channel the ranking
+// would never pick: a prefix channel always loses to an exact match, and this
+// one also sits outside the key's group.
+func TestAdminPinReachesTheNamedChannel(t *testing.T) {
+	h := newHarness(t)
+
+	ranked := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "from-ranked", 1, 1)
+	})
+	pinned := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "from-pinned", 1, 1)
+	})
+	h.createChannel(channelInput{
+		Name: "ranked", BaseURL: ranked.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"}, Priority: 100,
+	})
+	pinnedID := h.createChannel(channelInput{
+		Name: "pinned", BaseURL: pinned.URL, APIKey: "k",
+		ModelPrefixes: []string{"gpt-4"}, Groups: []string{"vip"},
+	})
+	key := h.createKey()
+
+	resp := h.pinnedRequest(key, fmt.Sprint(pinnedID), `{"model":"gpt-4o"}`)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(raw), "from-pinned") {
+		t.Fatalf("pin did not reach its channel: HTTP %d %s", resp.StatusCode, raw)
+	}
+	if ranked.requests.Load() != 0 {
+		t.Fatalf("the ranked channel was tried despite the pin: %d calls", ranked.requests.Load())
+	}
+	if got := pinned.headers().Get("X-Faketoken-Channel"); got != "" {
+		t.Fatalf("the pin leaked upstream: %q", got)
+	}
+}
+
+// A pin that cannot be honoured is refused, never rerouted: answering from
+// another channel would pass that channel's result off as the tested one's.
+func TestAdminPinRefusesAChannelThatCannotServe(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1, 1)
+	})
+	h.createChannel(channelInput{
+		Name: "serves", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	otherID := h.createChannel(channelInput{
+		Name: "other-model", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"claude-sonnet-4"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	for _, probe := range []struct {
+		pin    string
+		status int
+	}{
+		{fmt.Sprint(otherID), http.StatusNotFound},
+		{"99999", http.StatusNotFound},
+		{"not-a-number", http.StatusBadRequest},
+	} {
+		resp := h.pinnedRequest(key, probe.pin, `{"model":"gpt-4o"}`)
+		resp.Body.Close()
+		if resp.StatusCode != probe.status {
+			t.Errorf("pin %q: HTTP %d, want %d", probe.pin, resp.StatusCode, probe.status)
+		}
+	}
+	if up.requests.Load() != 0 {
+		t.Fatalf("a refused pin still reached an upstream: %d calls", up.requests.Load())
+	}
+}
+
+// Pinning bypasses groups, so it belongs to administrators; anyone else's pin
+// is refused outright rather than ignored.
+func TestRegularUserCannotPinAChannel(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1, 1)
+	})
+	id := h.createChannel(channelInput{
+		Name: "a", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+
+	// Funded, so the refusal comes from the pin and not from the balance check
+	// that runs before it.
+	h.do(http.MethodPost, "/api/admin/users", h.admin, map[string]any{
+		"username": "plain", "password": "password123", "quota_usd": 10,
+	}, nil)
+	session := h.login("plain", "password123")
+	var created struct {
+		Key string `json:"key"`
+	}
+	h.do(http.MethodPost, "/api/tokens", session,
+		tokenInput{Name: "plain", UnlimitedQuota: true}, &created)
+
+	resp := h.pinnedRequest(created.Key, fmt.Sprint(id), `{"model":"gpt-4o"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("a regular user's pin: HTTP %d, want 403", resp.StatusCode)
+	}
+	if up.requests.Load() != 0 {
+		t.Fatalf("a regular user's pin reached the upstream: %d calls", up.requests.Load())
+	}
+}

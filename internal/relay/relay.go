@@ -37,6 +37,11 @@ import (
 // what makes transparent retries across channels possible.
 const maxRequestBody = 100 << 20 // 100 MiB
 
+// pinChannelHeader names the one channel an administrator's request must go
+// to, for testing that channel rather than whichever one the ranking picks.
+// Kept on this side: see stripped.
+const pinChannelHeader = "X-Faketoken-Channel"
+
 type Relay struct {
 	st      *store.Store
 	pricer  *billing.Pricer
@@ -487,15 +492,24 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidates, err := rl.st.Candidates(ctx, p.group(), info.Model, c.protocol)
-	if err != nil {
-		rl.reject(c, http.StatusInternalServerError, "server_error", "", err.Error(), "")
-		return
-	}
-	if len(candidates) == 0 {
-		rl.reject(c, http.StatusNotFound, "invalid_request_error", "model_not_found",
-			fmt.Sprintf("no channel in group %q currently serves the model %q", p.group(), info.Model), "")
-		return
+	var candidates []model.Candidate
+	if pin := r.Header.Get(pinChannelHeader); pin != "" {
+		pinned, ok := rl.pinnedCandidate(c, pin)
+		if !ok {
+			return
+		}
+		candidates = []model.Candidate{pinned}
+	} else {
+		candidates, err = rl.st.Candidates(ctx, p.group(), info.Model, c.protocol)
+		if err != nil {
+			rl.reject(c, http.StatusInternalServerError, "server_error", "", err.Error(), "")
+			return
+		}
+		if len(candidates) == 0 {
+			rl.reject(c, http.StatusNotFound, "invalid_request_error", "model_not_found",
+				fmt.Sprintf("no channel in group %q currently serves the model %q", p.group(), info.Model), "")
+			return
+		}
 	}
 
 	// The model is routable, so this request would really spend the operator's
@@ -531,6 +545,38 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rl.dispatch(c, order(candidates))
+}
+
+// pinnedCandidate resolves an administrator's channel pin, or answers the
+// caller itself and returns false.
+//
+// The pin replaces the ranking instead of filtering it: a prefix channel never
+// ranks against an exact match, and the channel may sit outside the key's
+// group. Anyone else's pin is refused rather than ignored, so a test never
+// quietly lands on some other channel.
+func (rl *Relay) pinnedCandidate(c *call, pin string) (model.Candidate, bool) {
+	if !c.p.user.IsAdmin() {
+		rl.reject(c, http.StatusForbidden, "permission_error", "",
+			"only an administrator's key may pin a channel", "")
+		return model.Candidate{}, false
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(pin), 10, 64)
+	if err != nil || id <= 0 {
+		rl.reject(c, http.StatusBadRequest, "invalid_request_error", "",
+			pinChannelHeader+" must be a channel id", "")
+		return model.Candidate{}, false
+	}
+	pinned, err := rl.st.PinnedCandidate(c.r.Context(), id, c.info.Model, c.protocol)
+	if errors.Is(err, store.ErrNotFound) {
+		rl.reject(c, http.StatusNotFound, "invalid_request_error", "model_not_found",
+			fmt.Sprintf("channel #%d is disabled or does not serve the model %q", id, c.info.Model), "")
+		return model.Candidate{}, false
+	}
+	if err != nil {
+		rl.reject(c, http.StatusInternalServerError, "server_error", "", err.Error(), "")
+		return model.Candidate{}, false
+	}
+	return *pinned, true
 }
 
 // dispatch walks the ordered candidate list until one upstream answers.
@@ -1289,6 +1335,8 @@ var stripped = map[string]struct{}{
 	"X-Forwarded-For":  {},
 	"X-Forwarded-Host": {},
 	"X-Real-Ip":        {},
+	// This gateway's own routing instruction; the upstream has no use for it.
+	pinChannelHeader: {},
 }
 
 func copyRequestHeaders(dst, src http.Header) {

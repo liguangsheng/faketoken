@@ -57,6 +57,28 @@ func (s *Store) queryCandidates(ctx context.Context, sql, group, requestModel, p
 	return out, rows.Err()
 }
 
+// PinnedCandidate asks whether one channel would serve the model on its own,
+// by exact name or prefix, in any of its groups. It is Candidates without the
+// ranking: a pinned test must reach a prefix channel even though an exact
+// match elsewhere would always outrank it. ErrNotFound when it would not.
+func (s *Store) PinnedCandidate(ctx context.Context, channelID int64, requestModel, protocol string) (*model.Candidate, error) {
+	var c model.Candidate
+	err := s.pool.QueryRow(ctx, `SELECT channel_id, priority, weight, rpm_limit FROM (
+			SELECT channel_id, priority, weight, rpm_limit, supported_protocols
+			FROM abilities WHERE channel_id = $1 AND model = $2 AND enabled = TRUE
+			UNION ALL
+			SELECT channel_id, priority, weight, rpm_limit, supported_protocols
+			FROM ability_prefixes WHERE channel_id = $1 AND starts_with($2, prefix) AND enabled = TRUE
+		) served
+		WHERE $3 = '' OR supported_protocols = '{}' OR $3 = ANY(supported_protocols)
+		LIMIT 1`, channelID, requestModel, protocol).
+		Scan(&c.ChannelID, &c.Priority, &c.Weight, &c.RPMLimit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return &c, nil
+}
+
 // GroupModels lists every model reachable by a user group, for GET /v1/models.
 func (s *Store) GroupModels(ctx context.Context, group string) ([]string, error) {
 	rows, err := s.pool.Query(ctx,
