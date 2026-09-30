@@ -10,6 +10,8 @@
  * confidently wrong transcript.
  */
 
+import { imageDataURL, imagesFromData } from './images'
+
 export type PartKind = 'text' | 'reasoning' | 'tool_call' | 'tool_result' | 'image' | 'other'
 
 export interface ConversationPart {
@@ -72,37 +74,6 @@ const normaliseRole = (role: unknown): string => {
 
 const nonEmpty = (parts: ConversationPart[]): ConversationPart[] =>
   parts.filter((part) => part.text.trim() !== '' || part.name || part.src)
-
-// The Images API returns bare base64 and does not say which format it chose,
-// so the type is read off the leading bytes: "iVBORw0KGgo" is PNG's magic.
-const IMAGE_SIGNATURES: Array<[string, string]> = [
-  ['iVBORw0KGgo', 'image/png'],
-  ['/9j/', 'image/jpeg'],
-  ['UklGR', 'image/webp'],
-]
-
-const imageDataURL = (base64: string): string => {
-  const type = IMAGE_SIGNATURES.find(([prefix]) => base64.startsWith(prefix))?.[1] ?? 'image/png'
-  return `data:${type};base64,${base64}`
-}
-
-/**
- * Images API results: `data: [{ b64_json | url, revised_prompt }]`. The inline
- * bytes win over the URL, which often points at a host only the upstream can
- * reach (a LAN address). Embeddings and model lists share the `data` key but
- * carry neither field, so they yield nothing.
- */
-const partsFromImageData = (value: unknown): ConversationPart[] => {
-  if (!Array.isArray(value)) return []
-  return value.flatMap((raw) => {
-    if (!isDict(raw)) return []
-    let src = ''
-    if (typeof raw.b64_json === 'string' && raw.b64_json) src = imageDataURL(raw.b64_json)
-    else if (typeof raw.url === 'string' && /^https?:\/\//i.test(raw.url)) src = raw.url
-    if (!src) return []
-    return [{ kind: 'image' as const, text: asText(raw.revised_prompt), src }]
-  })
-}
 
 // ------------------------------------------------------------------ content
 
@@ -464,7 +435,9 @@ const turnsFromBufferedResponse = (root: Dict): ConversationTurn[] => {
     if (parts.length) return [{ role: 'assistant', parts }]
   }
   // Images API
-  const images = partsFromImageData(root.data)
+  const images = imagesFromData(root.data).map(
+    ({ src, revisedPrompt }): ConversationPart => ({ kind: 'image', text: revisedPrompt, src }),
+  )
   if (images.length) return [{ role: 'assistant', parts: images }]
   // An upstream error is the most useful thing to show when nothing else fits.
   if (isDict(root.error) || typeof root.error === 'string') {

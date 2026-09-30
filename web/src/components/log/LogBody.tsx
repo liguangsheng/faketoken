@@ -266,11 +266,11 @@ function ChatPart({ part }: { part: ConversationPart }) {
           Wrapped rather than given rootClassName, which antd also puts on
           the viewer's root. */}
       {part.src && (
-        <div className="chat-part__image">
+        <div className="chat-part__image checkerboard">
           <Image
             src={part.src}
             alt="图片"
-            preview={{ rootClassName: "chat-image-preview" }}
+            preview={{ rootClassName: "checkerboard" }}
           />
         </div>
       )}

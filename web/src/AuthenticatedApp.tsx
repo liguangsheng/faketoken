@@ -4,6 +4,7 @@ import { Skeleton } from 'antd'
 
 import { useAuth } from './auth/AuthContext'
 import { SettingsProvider, useSettings } from './settings/SettingsContext'
+import { ImageJobsProvider } from './imageJobs/ImageJobsContext'
 import ErrorBoundary from './components/ErrorBoundary'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
@@ -15,6 +16,7 @@ import NotFound from './pages/NotFound'
 // Split out of the authenticated chunk too: the playground is rarely the entry
 // point and the admin section is dead weight for regular users.
 const Playground = lazy(() => import('./pages/Playground'))
+const ImagePlayground = lazy(() => import('./pages/ImagePlayground'))
 const Plaza = lazy(() => import('./pages/Plaza'))
 const Channels = lazy(() => import('./pages/admin/Channels'))
 const Users = lazy(() => import('./pages/admin/Users'))
@@ -34,7 +36,11 @@ const Invites = lazy(() => import('./pages/admin/Invites'))
 export default function AuthenticatedApp() {
   return (
     <SettingsProvider>
-      <Console />
+      {/* Above the routes: an image job takes a minute and must outlive the
+          page that started it. */}
+      <ImageJobsProvider>
+        <Console />
+      </ImageJobsProvider>
     </SettingsProvider>
   )
 }
@@ -72,9 +78,16 @@ function Console() {
             <Route path="/tokens" element={<Tokens />} />
             <Route path="/models" element={<Plaza />} />
             <Route path="/logs" element={<Logs />} />
-            <Route path="/playground" element={<Playground />} />
+            {/* The old addresses, so a bookmark still lands. */}
+            <Route path="/playground" element={<Navigate to="/admin/playground" replace />} />
+            <Route
+              path="/playground/images"
+              element={<Navigate to="/admin/playground/images" replace />}
+            />
             <Route path="/profile" element={<Profile />} />
             <Route path="/admin/channels" element={adminOnly(<Channels />)} />
+            <Route path="/admin/playground" element={adminOnly(<Playground />)} />
+            <Route path="/admin/playground/images" element={adminOnly(<ImagePlayground />)} />
             <Route path="/admin/users" element={adminOnly(<Users />)} />
             <Route path="/admin/groups" element={adminOnly(<Groups />)} />
             <Route path="/admin/prices" element={adminOnly(<Prices />)} />

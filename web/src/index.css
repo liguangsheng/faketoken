@@ -637,6 +637,105 @@ body {
 }
 
 /* ===========================================================================
+   Images: the shared checkerboard, then the image playground
+   =========================================================================== */
+
+/* Generated images are often transparent: the checkerboard shows where, and
+   keeps dark line art visible on the dark theme. Goes on the element wrapping
+   an antd Image and on its preview root, so the full-size view gets it too. */
+.checkerboard .ant-image-img,
+.checkerboard .ant-image-preview-img {
+  background-color: var(--app-surface);
+  background-image: repeating-conic-gradient(var(--app-border) 0 25%, transparent 0 50%);
+  background-size: 16px 16px;
+}
+
+.image-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.image-job {
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.image-job__head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.image-job__prompt {
+  white-space: pre-wrap;
+}
+
+.image-job__params {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.image-job__pending {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  padding: 12px 0;
+}
+
+/* Thumbnails, uniform across a history of many jobs; the viewer shows the
+   full size. auto-fill keeps a lone image from stretching across the card. */
+.image-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+.image-tile {
+  background: var(--app-surface-sunken);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.image-tile__frame {
+  align-items: center;
+  display: flex;
+  height: 200px;
+  justify-content: center;
+}
+
+.image-tile__frame .ant-image {
+  max-width: 100%;
+}
+
+/* antd stretches the img to 100%, which would paint the checkerboard across
+   the letterbox too; sized to the picture instead. */
+.image-tile__frame .ant-image-img {
+  border-radius: 6px;
+  max-height: 200px;
+  max-width: 100%;
+  width: auto;
+}
+
+.image-tile__meta {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+/* ===========================================================================
    Tables & misc antd overrides
    =========================================================================== */
 
@@ -1255,15 +1354,6 @@ body {
   overflow: hidden;
   /* inline-block sits on the baseline, leaving a descender gap below. */
   vertical-align: top;
-}
-
-/* Generated images are often transparent: the checkerboard shows where, and
-   keeps dark line art visible on the dark theme. */
-.chat-part__image .ant-image-img,
-.chat-image-preview .ant-image-preview-img {
-  background-color: var(--app-surface);
-  background-image: repeating-conic-gradient(var(--app-border) 0 25%, transparent 0 50%);
-  background-size: 16px 16px;
 }
 
 /* Capped so a 1536px render does not push the transcript off screen; the

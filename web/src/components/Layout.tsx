@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   Avatar,
+  Badge,
   Breadcrumb,
   Button,
   Drawer,
@@ -29,7 +30,9 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { useMediaQuery } from '../hooks/useMediaQuery'
+import { IMAGE_PAGE, useImageJobs } from '../imageJobs/ImageJobsContext'
 import { NAV_SECTIONS, navLookup } from '../nav'
+import type { NavItem } from '../nav'
 import { useThemeMode } from '../theme/ThemeProvider'
 import type { ThemeMode } from '../theme/ThemeProvider'
 import { formatMoney, formatUSD, toUSD } from '../utils/format'
@@ -66,6 +69,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
   const location = useLocation()
   const isMobile = useMediaQuery('(max-width: 991px)')
+  const { running: runningImageJobs } = useImageJobs()
 
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_KEY) === '1',
@@ -116,6 +120,16 @@ export default function Layout({ children }: { children: ReactNode }) {
   )
 
   const menuItems = useMemo<MenuProps['items']>(() => {
+    // A render left running on another page stays in sight on its entry.
+    const label = (item: NavItem) => (
+      <Link to={item.key}>
+        {item.label}
+        {item.key === IMAGE_PAGE && runningImageJobs > 0 && (
+          <Badge count={runningImageJobs} size="small" style={{ marginInlineStart: 6 }} />
+        )}
+      </Link>
+    )
+
     const visible = sections
       .map((section) => ({
         ...section,
@@ -130,7 +144,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         ...section.items.map((item) => ({
           key: item.key,
           icon: item.icon,
-          label: <Link to={item.key}>{item.label}</Link>,
+          label: label(item),
         })),
       ])
     }
@@ -144,10 +158,10 @@ export default function Layout({ children }: { children: ReactNode }) {
         icon: item.icon,
         // A real link, so middle-click / Cmd+click opens a page in a new tab —
         // indispensable when reading logs against another screen.
-        label: <Link to={item.key}>{item.label}</Link>,
+        label: label(item),
       })),
     }))
-  }, [collapsed, isMobile, sections])
+  }, [collapsed, isMobile, sections, runningImageJobs])
 
   const navMenu = (
     <Menu

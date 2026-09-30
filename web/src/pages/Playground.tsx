@@ -7,7 +7,6 @@ import {
   Button,
   Card,
   Col,
-  Dropdown,
   Input,
   Row,
   Select,
@@ -18,17 +17,17 @@ import {
 } from 'antd'
 import {
   ClearOutlined,
-  CloseOutlined,
   CopyOutlined,
-  DownOutlined,
   SendOutlined,
   StopOutlined,
 } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 
-import { api, session } from '../api/client'
+import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import EmptyState from '../components/EmptyState'
+import ApiKeyField, { useSavedKeys } from '../components/playground/ApiKeyField'
+import { callTarget, normalizeHost } from '../components/playground/target'
 import PageHeader from '../components/PageHeader'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { useMediaQuery } from '../hooks/useMediaQuery'
@@ -38,10 +37,6 @@ import { formatDuration, formatNumber } from '../utils/format'
 const HOST_STORAGE = 'faketoken-playground-host'
 const PROTOCOL_STORAGE = 'faketoken-playground-protocol'
 const PROXY_STORAGE = 'faketoken-playground-proxy'
-const PROXY_PATH = '/api/admin/playground/relay'
-const KEYS_STORAGE = 'faketoken-playground-keys'
-const REMEMBER_STORAGE = 'faketoken-playground-remember'
-const MAX_REMEMBERED = 5
 
 interface Usage {
   prompt_tokens?: number
@@ -57,43 +52,7 @@ interface Metrics {
   aborted: boolean
 }
 
-const readKeys = (): string[] => {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(KEYS_STORAGE) ?? '[]')
-    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : []
-  } catch {
-    return []
-  }
-}
-
-const maskKey = (key: string) =>
-  key.length > 12 ? `${key.slice(0, 7)}…${key.slice(-4)}` : key
-
 type ModelsState = 'loading' | 'ready' | 'error' | 'need-key'
-
-/** Addresses a browser reaches over plain HTTP rather than TLS. */
-const LOCAL_HOST = /^(localhost|127\.|0\.0\.0\.0|\[?::1\]?|192\.168\.|10\.)/i
-
-/**
- * Turns what was typed into the prefix a request hangs off: `''` for this site,
- * `null` when it cannot be read as an address. A bare `host:port` gets a scheme,
- * and a trailing `/v1` is dropped so a base URL copied from a provider — or from
- * this console's own quick-import field — can be pasted as-is.
- */
-const normalizeHost = (raw: string): string | null => {
-  const input = raw.trim()
-  if (!input) return ''
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(input)
-    ? input
-    : `${LOCAL_HOST.test(input) ? 'http' : 'https'}://${input}`
-  try {
-    const url = new URL(withScheme)
-    if (!/^https?:$/.test(url.protocol) || !url.hostname) return null
-    return `${url.origin}${url.pathname.replace(/\/+$/, '').replace(/\/v1$/i, '')}`
-  } catch {
-    return null
-  }
-}
 
 type Dict = Record<string, unknown>
 
@@ -260,45 +219,6 @@ const PROTOCOLS: Record<Protocol, ProtocolSpec> = {
 
 const PROTOCOL_ORDER: Protocol[] = ['chat_completions', 'messages', 'responses']
 
-interface CallInit {
-  method: 'GET' | 'POST'
-  headers: Record<string, string>
-  body?: string
-  signal?: AbortSignal
-}
-
-/**
- * One call to the target: straight from the browser, or handed to this server
- * to make on the page's behalf.
- *
- * The direct call is preceded by a CORS preflight, which a gateway that leaves
- * OPTIONS unhandled on its relay routes rejects — the request itself would have
- * succeeded, but the browser never sends it. Going through the server turns it
- * into a same-origin call, where no preflight applies. The reply is streamed
- * back verbatim, so both paths are read the same way.
- */
-const callTarget = (base: string, path: string, viaProxy: boolean, init: CallInit) => {
-  const url = `${base}${path}`
-  if (!viaProxy) {
-    return fetch(url, {
-      method: init.method,
-      headers: init.headers,
-      body: init.body,
-      signal: init.signal,
-    })
-  }
-  const token = session.get()
-  return fetch(PROXY_PATH, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ method: init.method, url, headers: init.headers, body: init.body ?? '' }),
-    signal: init.signal,
-  })
-}
-
 const readProtocol = (): Protocol => {
   const stored = localStorage.getItem(PROTOCOL_STORAGE)
   return stored && stored in PROTOCOLS ? (stored as Protocol) : 'chat_completions'
@@ -310,7 +230,7 @@ const IS_MAC = /mac/i.test(navigator.platform)
 const FOLLOW_SLACK = 48
 
 export default function Playground() {
-  const { message, modal } = App.useApp()
+  const { message } = App.useApp()
   const { isAdmin } = useAuth()
   const [models, setModels] = useState<string[]>([])
   const [modelsState, setModelsState] = useState<ModelsState>('loading')
@@ -320,15 +240,7 @@ export default function Playground() {
   const [viaServer, setViaServer] = useState(
     () => localStorage.getItem(PROXY_STORAGE) === '1',
   )
-  const [savedKeys, setSavedKeys] = useState<string[]>(readKeys)
-  const [remember, setRemember] = useState(
-    () => localStorage.getItem(REMEMBER_STORAGE) !== '0',
-  )
-  // Restored eagerly so the page is usable the moment it opens.
-  const [apiKey, setApiKey] = useState(() => {
-    const keys = readKeys()
-    return localStorage.getItem(REMEMBER_STORAGE) !== '0' ? (keys[0] ?? '') : ''
-  })
+  const keys = useSavedKeys()
   const [system, setSystem] = useState('')
   const [prompt, setPrompt] = useState('用一句话介绍你自己。')
   const [stream, setStream] = useState(true)
@@ -350,7 +262,7 @@ export default function Playground() {
   const hostBase = useMemo(() => normalizeHost(host), [host])
   // The model list trails the typing instead of firing a request per keystroke.
   const debouncedHost = useDebouncedValue(host)
-  const debouncedKey = useDebouncedValue(apiKey)
+  const debouncedKey = useDebouncedValue(keys.apiKey)
   const modelBase = useMemo(() => normalizeHost(debouncedHost), [debouncedHost])
   // The local list comes from the session, so a key being typed must not
   // reload it; only another host's list is read with the key.
@@ -428,47 +340,6 @@ export default function Playground() {
     el.scrollTop = el.scrollHeight
   }, [output, running])
 
-  const rememberKey = useCallback((key: string) => {
-    setSavedKeys((current) => {
-      const next = [key, ...current.filter((item) => item !== key)].slice(0, MAX_REMEMBERED)
-      localStorage.setItem(KEYS_STORAGE, JSON.stringify(next))
-      return next
-    })
-  }, [])
-
-  const forgetKeys = () => {
-    localStorage.removeItem(KEYS_STORAGE)
-    setSavedKeys([])
-    message.success('已清除本机保存的密钥')
-  }
-
-  const forgetOneKey = (key: string) => {
-    setSavedKeys((current) => {
-      const next = current.filter((item) => item !== key)
-      localStorage.setItem(KEYS_STORAGE, JSON.stringify(next))
-      return next
-    })
-  }
-
-  // Asked for explicitly: the saved keys cannot be recovered from here, and
-  // the same confirmation guards the "remember" switch being turned off.
-  const confirmForgetKeys = (onConfirmed?: () => void) => {
-    if (savedKeys.length === 0) {
-      onConfirmed?.()
-      return
-    }
-    modal.confirm({
-      title: `清除本机保存的 ${savedKeys.length} 个密钥？`,
-      content: '只影响这台浏览器上的记忆，密钥本身不会被删除，但需要重新粘贴才能继续调试。',
-      okText: '清除',
-      okButtonProps: { danger: true },
-      onOk: () => {
-        forgetKeys()
-        onConfirmed?.()
-      },
-    })
-  }
-
   const modelOptions = useMemo(
     () => models.map((item) => ({ value: item, label: item })),
     [models],
@@ -486,7 +357,7 @@ export default function Playground() {
       return
     }
     const proxied = Boolean(hostBase) && proxyEnabled
-    const key = apiKey.trim()
+    const key = keys.apiKey.trim()
     if (!key) {
       message.warning('请先填入 API 密钥（在「API 密钥」页面创建时复制）')
       document.getElementById('pg-key')?.focus()
@@ -545,7 +416,7 @@ export default function Playground() {
         return
       }
 
-      if (remember) rememberKey(key)
+      keys.keep(key)
 
       if (!stream) {
         // No first-byte metric here: the whole body arrives at once, so the
@@ -644,25 +515,6 @@ export default function Playground() {
       ? (metrics.usage.completion_tokens / (generationMs / 1000)).toFixed(1)
       : null
 
-  const savedKeyItems = savedKeys.map((key) => ({
-    key,
-    label: (
-      <Space size={8}>
-        <span className="mono">{maskKey(key)}</span>
-        <Button
-          type="text"
-          size="small"
-          icon={<CloseOutlined style={{ fontSize: 10 }} />}
-          aria-label={`删除已保存的密钥 ${maskKey(key)}`}
-          onClick={(event) => {
-            event.stopPropagation()
-            forgetOneKey(key)
-          }}
-        />
-      </Space>
-    ),
-  }))
-
   return (
     <>
       <PageHeader
@@ -728,78 +580,20 @@ export default function Playground() {
                 )}
               </div>
 
-              <div>
-                <label className="field-label" htmlFor="pg-key">
-                  API 密钥
-                </label>
-                <Space.Compact style={{ marginTop: 6, width: '100%' }}>
-                  <Input.Password
-                    id="pg-key"
-                    placeholder="sk-..."
-                    value={apiKey}
-                    onChange={(event) => setApiKey(event.target.value)}
-                  />
-                  {savedKeys.length > 0 && (
-                    <Dropdown
-                      menu={{
-                        items: [
-                          ...savedKeyItems,
-                          { type: 'divider' as const },
-                          { key: '__clear', label: '清除已保存的密钥', danger: true },
-                        ],
-                        onClick: ({ key }) =>
-                          key === '__clear' ? confirmForgetKeys() : setApiKey(key),
-                      }}
-                    >
-                      <Button icon={<DownOutlined />} aria-label="选择已保存的密钥" />
-                    </Dropdown>
-                  )}
-                </Space.Compact>
-                <Typography.Text
-                  type="secondary"
-                  style={{ display: 'block', fontSize: 12, marginTop: 6 }}
-                >
-                  {hostBase ? (
+              <ApiKeyField
+                keys={keys}
+                id="pg-key"
+                siteTokens={hostBase === ''}
+                hint={
+                  hostBase ? (
                     '请填那个服务签发的密钥，本站的密钥它不认。'
                   ) : (
                     <>
                       还没有密钥？<Link to="/tokens">去创建</Link>
                     </>
-                  )}
-                </Typography.Text>
-                <label
-                  style={{
-                    alignItems: 'center',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    gap: 8,
-                    marginTop: 8,
-                  }}
-                >
-                  <Switch
-                    size="small"
-                    checked={remember}
-                    aria-label="在本浏览器记住密钥"
-                    onChange={(checked) => {
-                      if (checked) {
-                        setRemember(true)
-                        localStorage.setItem(REMEMBER_STORAGE, '1')
-                        return
-                      }
-                      // Turning remembering off also wipes what was remembered;
-                      // that is destructive, so it gets the same confirmation
-                      // as the explicit "clear" entry.
-                      confirmForgetKeys(() => {
-                        setRemember(false)
-                        localStorage.setItem(REMEMBER_STORAGE, '0')
-                      })
-                    }}
-                  />
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    在本浏览器记住密钥（明文存于 localStorage）
-                  </Typography.Text>
-                </label>
-              </div>
+                  )
+                }
+              />
 
               <div>
                 <label className="field-label" htmlFor="pg-protocol">
