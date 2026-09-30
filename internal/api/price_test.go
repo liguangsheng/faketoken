@@ -528,3 +528,46 @@ func fullSizeCatalogue() map[string]feedModel {
 	}
 	return out
 }
+
+// The plaza lists what the caller can call. Under the reject policy an unpriced
+// model would only ever answer 403, so it is not listed at all; under the free
+// policy the same model relays, and it appears marked as missing a price.
+func TestPlazaListsOnlyCallableModels(t *testing.T) {
+	h, up, _ := unpricedHarness(t)
+	h.createChannel(channelInput{
+		Name: "priced", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+
+	plaza := func() map[string]string {
+		var out struct {
+			Data []struct {
+				Model       string `json:"model"`
+				PriceStatus string `json:"price_status"`
+			} `json:"data"`
+		}
+		resp := h.do(http.MethodGet, "/api/me/plaza", h.admin, nil, &out)
+		resp.Body.Close()
+		listed := map[string]string{}
+		for _, entry := range out.Data {
+			listed[entry.Model] = entry.PriceStatus
+		}
+		return listed
+	}
+
+	listed := plaza()
+	if listed["gpt-4o"] != "exact" {
+		t.Fatalf("priced model missing from the plaza: %v", listed)
+	}
+	if _, found := listed["deepseek-v3"]; found {
+		t.Fatalf("an unpriced model is listed under the reject policy: %v", listed)
+	}
+
+	settings := billing.Settings{UnpricedPolicy: billing.PolicyFree}
+	if resp := h.do(http.MethodPut, "/api/admin/billing/settings", h.admin, settings, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("update billing settings: HTTP %d", resp.StatusCode)
+	}
+	if got := plaza()["deepseek-v3"]; got != "missing" {
+		t.Fatalf("under the free policy the unpriced model should be listed as missing, got %q", got)
+	}
+}

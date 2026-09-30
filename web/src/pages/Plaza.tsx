@@ -3,7 +3,7 @@ import type { KeyboardEvent } from 'react'
 import { App, Button, Card, Col, Input, Row, Tag, Tooltip, Typography } from 'antd'
 import { CopyOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 
-import { api, type PlazaModel, type UnpricedPolicy } from '../api/client'
+import { api, type PlazaModel } from '../api/client'
 import EmptyState from '../components/EmptyState'
 import PageHeader from '../components/PageHeader'
 import { formatPrice } from '../utils/format'
@@ -44,7 +44,6 @@ interface Entry extends PlazaModel {
   cached: number
   perRequest: number
   free: boolean
-  blocked: boolean
 }
 
 export default function Plaza() {
@@ -52,7 +51,6 @@ export default function Plaza() {
   const [models, setModels] = useState<PlazaModel[]>([])
   const [group, setGroup] = useState('')
   const [rate, setRate] = useState(1)
-  const [policy, setPolicy] = useState<UnpricedPolicy>('reject')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [keyword, setKeyword] = useState('')
@@ -65,7 +63,6 @@ export default function Plaza() {
       setModels(result.data ?? [])
       setGroup(result.group)
       setRate(result.group_rate > 0 ? result.group_rate : 1)
-      setPolicy(result.unpriced_policy)
       setError(null)
     } catch (err) {
       const text = err instanceof Error ? err.message : '加载失败'
@@ -84,24 +81,20 @@ export default function Plaza() {
 
   const entries = useMemo<Entry[]>(
     () =>
-      models.map((m) => {
-        const missing = m.price_status === 'missing'
-        return {
-          ...m,
-          vendor: vendorOf(m.model),
-          input: m.input_price * rate,
-          output: m.output_price * rate,
-          cached: m.cached_price * rate,
-          perRequest: m.per_request_price * rate,
-          // A missing price only bills nothing when the operator relays it;
-          // under the reject policy the model cannot be called at all.
-          free: missing
-            ? policy !== 'reject'
-            : m.input_price + m.output_price + m.cached_price + m.per_request_price === 0,
-          blocked: missing && policy === 'reject',
-        }
-      }),
-    [models, rate, policy],
+      models.map((m) => ({
+        ...m,
+        vendor: vendorOf(m.model),
+        input: m.input_price * rate,
+        output: m.output_price * rate,
+        cached: m.cached_price * rate,
+        perRequest: m.per_request_price * rate,
+        // The server lists an unpriced model only when it relays for free; one
+        // the relay would refuse never reaches this page.
+        free:
+          m.price_status === 'missing' ||
+          m.input_price + m.output_price + m.cached_price + m.per_request_price === 0,
+      })),
+    [models, rate],
   )
 
   // Keyword first, vendor second: the chips count what the keyword left, so a
@@ -295,7 +288,7 @@ export default function Plaza() {
 
 function ModelCard({ entry, onCopy }: { entry: Entry; onCopy: (text: string) => void }) {
   return (
-    <Card size="small" style={entry.blocked ? { opacity: 0.55 } : undefined}>
+    <Card size="small">
       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         <Typography.Text
           strong
@@ -318,12 +311,7 @@ function ModelCard({ entry, onCopy }: { entry: Entry; onCopy: (text: string) => 
 
       <div style={{ margin: '8px 0 10px' }}>
         <Tag color={entry.vendor.color}>{entry.vendor.label}</Tag>
-        {entry.blocked && (
-          <Tooltip title="该模型未配置价格，当前计费策略会拒绝调用">
-            <Tag color="red">暂不可用</Tag>
-          </Tooltip>
-        )}
-        {!entry.blocked && entry.free && <Tag color="green">免费</Tag>}
+        {entry.free && <Tag color="green">免费</Tag>}
         {entry.price_status === 'fallback' && (
           <Tooltip title="该模型未单独配价，按站点兜底价计费">
             <Tag color="gold">兜底价</Tag>
@@ -332,31 +320,20 @@ function ModelCard({ entry, onCopy }: { entry: Entry; onCopy: (text: string) => 
       </div>
 
       <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-        <PriceRow label="输入 / 1M" value={entry.blocked ? null : formatPrice(entry.input)} />
-        <PriceRow label="输出 / 1M" value={entry.blocked ? null : formatPrice(entry.output)} />
+        <PriceRow label="输入 / 1M" value={formatPrice(entry.input)} />
+        <PriceRow label="输出 / 1M" value={formatPrice(entry.output)} />
         {entry.cached > 0 && <PriceRow label="缓存输入 / 1M" value={formatPrice(entry.cached)} />}
         {entry.perRequest > 0 && <PriceRow label="每次请求" value={formatPrice(entry.perRequest)} />}
       </div>
-
-      {/* Touch screens never see the tooltip, so the reason lives on the card. */}
-      {entry.blocked && (
-        <div className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>
-          未配置价格，按当前计费策略暂不可调用
-        </div>
-      )}
     </Card>
   )
 }
 
-function PriceRow({ label, value }: { label: string; value: string | null }) {
+function PriceRow({ label, value }: { label: string; value: string }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
       <span className="text-muted">{label}</span>
-      {value === null ? (
-        <span className="text-muted">-</span>
-      ) : (
-        <span className="mono">{value}</span>
-      )}
+      <span className="mono">{value}</span>
     </div>
   )
 }

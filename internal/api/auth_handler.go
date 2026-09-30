@@ -217,12 +217,17 @@ type plazaModel struct {
 	CachedPrice     float64 `json:"cached_price"`
 	PerRequestPrice float64 `json:"per_request_price"`
 	// PriceStatus says where the numbers came from: "exact" is a configured
-	// entry, "fallback" the operator's default rate, "missing" no price at all.
+	// entry, "fallback" the operator's default rate, "missing" no price at all
+	// (listed only when the policy relays such a model for free).
 	PriceStatus string `json:"price_status"`
 }
 
 // handleModelPlaza backs the console's model plaza: every model the caller's
-// group can reach, priced the way the caller would actually be billed.
+// group can actually call, priced the way the caller would be billed.
+//
+// A model the relay would refuse for want of a price is left out rather than
+// shown disabled: to the caller it does not exist. The operator finds those on
+// the unpriced report instead.
 func (s *Server) handleModelPlaza(w http.ResponseWriter, r *http.Request) {
 	me := userFrom(r.Context())
 	models, err := s.store.GroupModels(r.Context(), me.Group)
@@ -233,6 +238,9 @@ func (s *Server) handleModelPlaza(w http.ResponseWriter, r *http.Request) {
 
 	entries := make([]plazaModel, 0, len(models))
 	for _, name := range models {
+		if s.pricer.Blocked(name) {
+			continue
+		}
 		entry := plazaModel{Model: name}
 		price, status := s.pricer.Resolve(name)
 		entry.PriceStatus = status.String()
@@ -249,8 +257,8 @@ func (s *Server) handleModelPlaza(w http.ResponseWriter, r *http.Request) {
 		"data":       entries,
 		"group":      me.Group,
 		"group_rate": s.pricer.GroupRate(me.Group),
-		// The policy tells the console what "missing" means for the caller:
-		// under reject the model is unusable, otherwise it relays for free.
+		// Under reject no "missing" entry is listed; under free one means the
+		// model relays without charge.
 		"unpriced_policy": s.pricer.Settings().UnpricedPolicy,
 	})
 }
