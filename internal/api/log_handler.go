@@ -17,12 +17,16 @@ import (
 // The stored text names the group that matched and the keyword it matched on,
 // which is for the operator. Showing it to the caller would turn their own log
 // page into a probe: send a guess, read back which word tripped, repeat.
-func redactBlocked(logs []*model.RequestLog) {
-	for _, entry := range logs {
-		if strings.HasPrefix(entry.Error, relay.BlockedLogPrefix) {
-			entry.Error = relay.BlockedLogRedacted
-		}
+// forOwner trims a row to what the account that made the call is shown. The
+// block policy's note is redacted, and the routing internals stay with the
+// operator: the upstream model a name was mapped to, and the address the call
+// arrived from.
+func forOwner(entry *model.RequestLog) {
+	if strings.HasPrefix(entry.Error, relay.BlockedLogPrefix) {
+		entry.Error = relay.BlockedLogRedacted
 	}
+	entry.UpstreamModel = ""
+	entry.ClientIP = ""
 }
 
 func logFilter(r *http.Request) store.LogFilter {
@@ -50,13 +54,16 @@ func (s *Server) handleListLogs(w http.ResponseWriter, r *http.Request) {
 	// Withheld from the search as well as from the response: matching on the
 	// text would confirm it just as well as reading it.
 	f.HideErrorPrefix = relay.BlockedLogPrefix
+	f.HideOperatorColumns = true
 
 	logs, total, err := s.store.ListLogs(r.Context(), f)
 	if err != nil {
 		failErr(w, err)
 		return
 	}
-	redactBlocked(logs)
+	for _, entry := range logs {
+		forOwner(entry)
+	}
 	ok(w, page[*model.RequestLog]{Data: logs, Total: total})
 }
 

@@ -32,10 +32,11 @@ export default function LogMeta({ detail, admin }: { detail: RequestLog; admin?:
       <Descriptions.Item label="请求模型">
         <span className="mono">{detail.model}</span>
       </Descriptions.Item>
-      {(!admin ||
-        (detail.upstream_model && detail.upstream_model !== detail.model)) && (
+      {/* Only an administrator's rows carry the forwarded name. Boolean, not
+          the string itself: an empty "" would render as a blank item. */}
+      {Boolean(detail.upstream_model) && detail.upstream_model !== detail.model && (
         <Descriptions.Item label="上游模型">
-          <span className="mono">{detail.upstream_model || detail.model}</span>
+          <span className="mono">{detail.upstream_model}</span>
         </Descriptions.Item>
       )}
       <Descriptions.Item label="渠道">
@@ -75,15 +76,17 @@ export default function LogMeta({ detail, admin }: { detail: RequestLog; admin?:
           <span className="text-muted">未识别</span>
         )}
       </Descriptions.Item>
-      <Descriptions.Item label="来源 IP">
-        {detail.client_ip ? (
-          <Tooltip title="来自 X-Forwarded-For；直连本服务的调用方可以自行设置该头，仅供参考">
-            <span className="mono">{detail.client_ip}</span>
-          </Tooltip>
-        ) : (
-          <span className="text-muted">-</span>
-        )}
-      </Descriptions.Item>
+      {admin && (
+        <Descriptions.Item label="来源 IP">
+          {detail.client_ip ? (
+            <Tooltip title="来自 X-Forwarded-For；直连本服务的调用方可以自行设置该头，仅供参考">
+              <span className="mono">{detail.client_ip}</span>
+            </Tooltip>
+          ) : (
+            <span className="text-muted">-</span>
+          )}
+        </Descriptions.Item>
+      )}
       <Descriptions.Item label="Token 用量">
         输入 {formatNumber(detail.prompt_tokens)} · 输出{" "}
         {formatNumber(detail.completion_tokens)} · 合计{" "}

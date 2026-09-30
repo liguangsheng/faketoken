@@ -140,6 +140,12 @@ const COLUMN_GEOMETRY = {
   clientIP: { width: 130, responsive: ["xl"] },
 } satisfies TableGeometry;
 
+// An account's own view has no source address (the server withholds it), so
+// its scroll width must not reserve that column either.
+const OWNER_GEOMETRY: TableGeometry = Object.fromEntries(
+  Object.entries(COLUMN_GEOMETRY).filter(([name]) => name !== "clientIP"),
+);
+
 export default function LogTable({
   admin,
   fetcher,
@@ -150,7 +156,7 @@ export default function LogTable({
   const { message } = App.useApp();
   // A Drawer is not clamped to the viewport the way a Modal is.
   const narrow = useMediaQuery("(max-width: 768px)");
-  const scrollX = useTableScrollX(COLUMN_GEOMETRY);
+  const scrollX = useTableScrollX(admin ? COLUMN_GEOMETRY : OWNER_GEOMETRY);
   const [rows, setRows] = useState<RequestLog[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -1029,6 +1035,7 @@ export default function LogTable({
               // which is exactly the thing you are looking for when a model
               // behaves unlike its name; side by side on one line, the pair also
               // truncated exactly where it mattered on the busy admin table.
+              // Only the administrator's rows carry the forwarded name.
               ...COLUMN_GEOMETRY.model,
               title: "模型",
               dataIndex: "model",
@@ -1047,13 +1054,9 @@ export default function LogTable({
                       cannot be compared against its neighbours at a glance. */}
                     <div className="cell-stack" style={{ minWidth: 0 }}>
                       <span className="mono cell-stack__clip">{value}</span>
-                      {mapped ? (
+                      {mapped && (
                         <span className="mono text-muted cell-stack__sub cell-stack__clip">
                           → {row.upstream_model}
-                        </span>
-                      ) : admin ? null : (
-                        <span className="text-muted cell-stack__sub">
-                          未映射
                         </span>
                       )}
                     </div>
@@ -1077,20 +1080,24 @@ export default function LogTable({
                   <span className="text-muted">未指定</span>
                 ),
             },
-            {
-              ...COLUMN_GEOMETRY.clientIP,
-              title: "来源 IP",
-              dataIndex: "client_ip",
-              ellipsis: true,
-              render: (value: string) =>
-                value ? (
-                  <Tooltip title={value}>
-                    <span className="mono">{value}</span>
-                  </Tooltip>
-                ) : (
-                  <span className="text-muted">-</span>
-                ),
-            },
+            ...(admin
+              ? [
+                  {
+                    ...COLUMN_GEOMETRY.clientIP,
+                    title: "来源 IP",
+                    dataIndex: "client_ip",
+                    ellipsis: true,
+                    render: (value: string) =>
+                      value ? (
+                        <Tooltip title={value}>
+                          <span className="mono">{value}</span>
+                        </Tooltip>
+                      ) : (
+                        <span className="text-muted">-</span>
+                      ),
+                  },
+                ]
+              : []),
             {
               ...COLUMN_GEOMETRY.status,
               title: "状态",

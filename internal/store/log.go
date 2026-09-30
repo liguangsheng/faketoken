@@ -55,10 +55,14 @@ type LogFilter struct {
 	// returns their own blocked call confirms the word, one guess at a time.
 	// Empty searches everything, which is what an administrator gets.
 	HideErrorPrefix string
-	Start           *time.Time
-	End             *time.Time
-	Offset          int
-	Limit           int
+	// HideOperatorColumns leaves LogOperatorColumns out of a keyword search,
+	// for an account reading its own calls: those columns are withheld from
+	// its rows, and a search on them would confirm a value just as well.
+	HideOperatorColumns bool
+	Start               *time.Time
+	End                 *time.Time
+	Offset              int
+	Limit               int
 }
 
 // LogKeywordColumns are the columns a keyword search covers. Named once
@@ -69,6 +73,10 @@ var LogKeywordColumns = []string{
 	"username", "token_name", "model", "upstream_model",
 	"channel_name", "endpoint", "client_ip", "error",
 }
+
+// LogOperatorColumns are routing internals only an administrator is shown:
+// which upstream model a name was mapped to, and where a call came from.
+var LogOperatorColumns = map[string]bool{"upstream_model": true, "client_ip": true}
 
 func (f LogFilter) build() (string, []any) {
 	conds := []string{"TRUE"}
@@ -105,6 +113,9 @@ func (f LogFilter) build() (string, []any) {
 		// containing % or _ would otherwise turn into a wildcard pattern.
 		matches := make([]string, 0, len(LogKeywordColumns)+1)
 		for _, column := range LogKeywordColumns {
+			if f.HideOperatorColumns && LogOperatorColumns[column] {
+				continue
+			}
 			hit := fmt.Sprintf("strpos(lower(%s), lower($%d)) > 0", column, needle)
 			if column == "error" && f.HideErrorPrefix != "" {
 				// strpos is 1-based, so "not at position 1" is "does not start

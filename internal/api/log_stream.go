@@ -30,8 +30,9 @@ type streamFilter struct {
 	username  string
 	keyword   string
 	onlyError bool
-	// redact strips the block policy's note, exactly as the list endpoint
-	// does. Set for a caller's own feed, clear for an administrator's.
+	// redact trims every entry to its owner's view (forOwner), in what is sent
+	// and in what a keyword may match, exactly as the list endpoint does. Set
+	// for a caller's own feed, clear for an administrator's.
 	redact bool
 	// live carries calls that have not finished yet. Only the administrator's
 	// global view draws them: on a single account's page the placeholder would
@@ -55,7 +56,7 @@ func (f streamFilter) matches(entry *model.RequestLog, blocked bool) bool {
 		return false
 	case f.onlyError && entry.StatusCode < 400 && entry.Error == "":
 		return false
-	case f.keyword != "" && !matchesKeyword(entry, f.keyword, blocked):
+	case f.keyword != "" && !matchesKeyword(entry, f.keyword, blocked, f.redact):
 		return false
 	}
 	return true
@@ -65,14 +66,15 @@ func (f streamFilter) matches(entry *model.RequestLog, blocked bool) bool {
 // a live entry is appended exactly when a reload would have listed it —
 // including the withheld error text, which store.LogFilter.HideErrorPrefix
 // excludes from the same search.
-func matchesKeyword(entry *model.RequestLog, keyword string, blockedFromCaller bool) bool {
+func matchesKeyword(entry *model.RequestLog, keyword string, blockedFromCaller, owner bool) bool {
 	if strconv.FormatInt(entry.ID, 10) == keyword {
 		return true
 	}
 	needle := strings.ToLower(keyword)
-	fields := []string{
-		entry.Username, entry.TokenName, entry.Model, entry.UpstreamModel,
-		entry.ChannelName, entry.Endpoint, entry.ClientIP,
+	fields := []string{entry.Username, entry.TokenName, entry.Model, entry.ChannelName, entry.Endpoint}
+	// The same columns store.LogOperatorColumns keeps out of the owner's search.
+	if !owner {
+		fields = append(fields, entry.UpstreamModel, entry.ClientIP)
 	}
 	if !blockedFromCaller {
 		fields = append(fields, entry.Error)
@@ -231,9 +233,9 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, filter strea
 				// while it was still running anyway.
 				continue
 			}
-			if blocked {
+			if filter.redact {
 				visible := *entry
-				visible.Error = relay.BlockedLogRedacted
+				forOwner(&visible)
 				entry = &visible
 			}
 			name := "log"

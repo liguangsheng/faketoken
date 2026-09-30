@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/faketoken/faketoken/internal/model"
 	"github.com/faketoken/faketoken/internal/store"
@@ -470,6 +471,72 @@ func TestReasoningEffortAndClientTypeAreLogged(t *testing.T) {
 	// injected.
 	if body := up.body(); !strings.Contains(body, `"reasoning_effort":"high"`) {
 		t.Fatalf("request body was altered: %s", body)
+	}
+}
+
+// An account reading its own calls sees what it asked for, not how the gateway
+// routed it: the mapped upstream model and the source address are withheld
+// from its rows, from its keyword search and from its live feed. The
+// administrator's view keeps both.
+func TestOwnLogsWithholdRoutingInternals(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1, 1)
+	})
+	h.createChannel(channelInput{
+		Name: "mapped", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+		ModelMapping: map[string]string{"gpt-4o": "secret-upstream-model"},
+	})
+	key := h.createKey()
+
+	events, closeStream := h.openStream(t, "/api/logs/stream", h.admin)
+	defer closeStream()
+
+	relayed := h.relayRequest(http.MethodPost, "/v1/chat/completions", key, `{"model":"gpt-4o"}`)
+	_, _ = io.Copy(io.Discard, relayed.Body)
+	relayed.Body.Close()
+
+	select {
+	case entry := <-events:
+		if entry == nil || entry.UpstreamModel != "" || entry.ClientIP != "" {
+			t.Fatalf("the owner's feed carried routing internals: %+v", entry)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no log event arrived")
+	}
+
+	var operator page[*model.RequestLog]
+	waitFor(t, func() bool {
+		r := h.do(http.MethodGet, "/api/admin/logs", h.admin, nil, &operator)
+		r.Body.Close()
+		return len(operator.Data) >= 1
+	}, waiting("the call to be logged"))
+	row := operator.Data[0]
+	if row.UpstreamModel != "secret-upstream-model" || row.ClientIP == "" {
+		t.Fatalf("the administrator lost the routing details: %+v", row)
+	}
+
+	var own page[*model.RequestLog]
+	r := h.do(http.MethodGet, "/api/logs", h.admin, nil, &own)
+	r.Body.Close()
+	if len(own.Data) != 1 || own.Data[0].UpstreamModel != "" || own.Data[0].ClientIP != "" {
+		t.Fatalf("the owner's rows carried routing internals: %+v", own.Data)
+	}
+
+	for _, keyword := range []string{"secret-upstream", row.ClientIP} {
+		var found page[*model.RequestLog]
+		r := h.do(http.MethodGet, "/api/logs?keyword="+url.QueryEscape(keyword), h.admin, nil, &found)
+		r.Body.Close()
+		if len(found.Data) != 0 {
+			t.Errorf("the owner's search matched on withheld %q", keyword)
+		}
+		r = h.do(http.MethodGet, "/api/admin/logs?keyword="+url.QueryEscape(keyword), h.admin, nil, &found)
+		r.Body.Close()
+		if len(found.Data) != 1 {
+			t.Errorf("the administrator's search on %q found %d rows", keyword, len(found.Data))
+		}
 	}
 }
 
