@@ -323,17 +323,18 @@ func (s *Store) TimeSeries(ctx context.Context, f LogFilter, interval string) ([
 	return out, rows.Err()
 }
 
-// TopBy aggregates spend grouped by "model", "channel_name" or "username".
+// TopBy aggregates spend grouped by "model", "upstream_model", "channel_name"
+// or "username". Rows with the column empty are skipped.
 func (s *Store) TopBy(ctx context.Context, f LogFilter, column string, limit int) ([]NamedStat, error) {
 	switch column {
-	case "model", "channel_name", "username":
+	case "model", "upstream_model", "channel_name", "username":
 	default:
 		return nil, fmt.Errorf("%w: unsupported group column %q", ErrInvalidInput, column)
 	}
 	where, args := f.build()
 	args = append(args, limit)
-	// column is one of the three names the switch above accepts; the rest is
-	// the clause built by f.build() and a placeholder index.
+	// column is one of the names the switch above accepts; the rest is the
+	// clause built by f.build() and a placeholder index.
 	query := fmt.Sprintf(`SELECT %s, count(*),
 		coalesce(sum(cost),0), coalesce(sum(total_tokens),0)
 		FROM request_logs WHERE %s AND %s <> ''

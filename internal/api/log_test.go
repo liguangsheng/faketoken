@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -469,5 +470,53 @@ func TestReasoningEffortAndClientTypeAreLogged(t *testing.T) {
 	// injected.
 	if body := up.body(); !strings.Contains(body, `"reasoning_effort":"high"`) {
 		t.Fatalf("request body was altered: %s", body)
+	}
+}
+
+// The operator's model ranking counts the model each call really went out as.
+// An account's own ranking keeps the names it asked for, since the mapping is
+// withheld from it.
+func TestStatsRankMappedModel(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1, 1)
+	})
+	h.createChannel(channelInput{
+		Name: "mapped", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+		ModelMapping: map[string]string{"gpt-4o": "secret-upstream-model"},
+	})
+	key := h.createKey()
+
+	// The second model has no channel: refused before routing, no upstream model.
+	for _, name := range []string{"gpt-4o", "no-such-model"} {
+		resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key,
+			fmt.Sprintf(`{"model":%q}`, name))
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	h.waitForLog(t, 2)
+
+	ranked := func(path string) []string {
+		var stats struct {
+			ByModel []store.NamedStat `json:"by_model"`
+		}
+		r := h.do(http.MethodGet, path, h.admin, nil, &stats)
+		r.Body.Close()
+		names := []string{}
+		for _, row := range stats.ByModel {
+			names = append(names, row.Name)
+		}
+		// Tied counts come back in no particular order.
+		slices.Sort(names)
+		return names
+	}
+
+	if got := ranked("/api/admin/stats"); !slices.Equal(got, []string{"secret-upstream-model"}) {
+		t.Errorf("operator ranking = %v, want the mapped model only", got)
+	}
+	if got := ranked("/api/stats"); !slices.Equal(got, []string{"gpt-4o", "no-such-model"}) {
+		t.Errorf("own ranking = %v, want the requested names", got)
 	}
 }

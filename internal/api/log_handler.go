@@ -181,7 +181,14 @@ func (s *Server) writeStats(w http.ResponseWriter, r *http.Request, f store.LogF
 		failErr(w, err)
 		return
 	}
-	byModel, err := s.store.TopBy(ctx, f, "model", 10)
+	// The operator ranks the model a call really went out as; an account sees
+	// only the names it asked for (see forOwner). A call refused before any
+	// channel has no upstream model and drops out, as from the channel ranking.
+	modelColumn := "model"
+	if admin {
+		modelColumn = "upstream_model"
+	}
+	byModel, err := s.store.TopBy(ctx, f, modelColumn, 10)
 	if err != nil {
 		failErr(w, err)
 		return
