@@ -16,6 +16,19 @@ export const TEST_PROTOCOLS = [
 
 export type TestProtocol = (typeof TEST_PROTOCOLS)[number]['value']
 
+/**
+ * The protocol a probe should default to for a model name. Before the request
+ * goes out the name is the only signal there is: gpt-* answers the Responses
+ * dialect, claude-* the Messages one, and everything else the OpenAI-compatible
+ * chat completions that every gateway speaks.
+ */
+export function protocolForModel(model: string): TestProtocol {
+  const name = model.toLowerCase()
+  if (name.includes('gpt')) return 'responses'
+  if (name.includes('claude')) return 'messages'
+  return 'chat_completions'
+}
+
 // Wide enough not to get in the way, bounded so the value still fits the int32
 // columns it lands in. The weight floor is 1 because selection treats weight as
 // a share of the draw, so a zero would take the channel out of rotation without

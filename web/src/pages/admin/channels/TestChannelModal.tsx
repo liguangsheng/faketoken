@@ -17,7 +17,7 @@ import {
 
 import { api, type Channel, type ChannelTestResult, type PromptTemplate } from '../../../api/client'
 import { formatDuration, formatNumber } from '../../../utils/format'
-import { TEST_PROTOCOLS, type TestProtocol } from './shared'
+import { protocolForModel, TEST_PROTOCOLS, type TestProtocol } from './shared'
 
 interface Props {
   /** The channel under test; null keeps the dialog closed. */
@@ -65,13 +65,15 @@ export default function TestChannelModal({ channel, onClose, onTested }: Props) 
       return
     }
     setResult(undefined)
-    setModel(
+    const initialModel =
       channel.test_model ||
-        channel.models[0] ||
-        Object.keys(channel.model_mapping ?? {})[0] ||
-        '',
-    )
-    setProtocol('responses')
+      channel.models[0] ||
+      Object.keys(channel.model_mapping ?? {})[0] ||
+      ''
+    setModel(initialModel)
+    // The protocol follows the model name: picking one and then having to
+    // remember which dialect it speaks is the part that gets probes wrong.
+    setProtocol(protocolForModel(initialModel))
     const picked = pick(templates)
     setTemplate(picked?.id ?? '')
     setPrompt(picked?.prompt ?? '')
@@ -181,7 +183,11 @@ export default function TestChannelModal({ channel, onClose, onTested }: Props) 
               style={{ width: '100%' }}
               value={model}
               placeholder="留空则用渠道配置的测试模型"
-              onChange={(value) => setModel(value ?? '')}
+              onChange={(value) => {
+                const next = value ?? ''
+                setModel(next)
+                setProtocol(protocolForModel(next))
+              }}
               filterOption={(input, option) =>
                 String(option?.value ?? '')
                   .toLowerCase()
