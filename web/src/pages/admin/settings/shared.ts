@@ -26,6 +26,7 @@ export const BODY_LIMIT_OPTIONS = [
   { value: 8 * MIB, label: '8 MiB' },
   { value: 16 * MIB, label: '16 MiB' },
   { value: 32 * MIB, label: '32 MiB' },
+  { value: 64 * MIB, label: '64 MiB' },
 ]
 
 // Mirrors the bounds in internal/relay/blocklist.go. The keyword budget is a
