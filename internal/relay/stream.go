@@ -35,7 +35,10 @@ type usageSniffer struct {
 	// event is the name of the SSE event the next data line belongs to. An
 	// upstream that labels the event `error` but sends an unlabelled payload is
 	// only recognisable by carrying the name across the two lines.
-	event       string
+	event string
+	// terminated records the end-of-stream marker. Once it has been seen the
+	// response is complete, whatever the upstream does with the connection next.
+	terminated  bool
 	capture     bytes.Buffer
 	captureOver bool
 }
@@ -109,7 +112,11 @@ func (s *usageSniffer) feedSSE(p []byte) {
 			continue
 		}
 		payload = bytes.TrimSpace(payload)
-		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		if len(payload) == 0 {
+			continue
+		}
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			s.terminated = true
 			continue
 		}
 		s.acc.Feed(payload)
@@ -186,6 +193,12 @@ func (s *usageSniffer) Body() []byte {
 	return s.buf.Bytes()
 }
 
+// Terminated reports whether the stream already carried its end-of-stream
+// marker. An upstream that keeps the connection open after it — the common case
+// for anything behind a shared gateway — never sends the EOF a relay would
+// otherwise wait for, and the caller has stopped reading anyway.
+func (s *usageSniffer) Terminated() bool { return s.terminated }
+
 // pump relays the upstream body to the client, flushing every chunk so that
 // SSE and other incremental formats reach the caller without added latency.
 // It reports time-to-first-byte and enforces an idle timeout by cancelling the
@@ -239,6 +252,15 @@ func pump(w http.ResponseWriter, body io.Reader, sniff *usageSniffer, flush bool
 			if flush {
 				// A failed Flush only means the writer does not support it.
 				_ = rc.Flush()
+			}
+			if sniff.Terminated() {
+				// [DONE] is the end of the response, so the upstream's FIN says
+				// nothing the caller still needs: a client stops reading at the
+				// marker and drops the connection within milliseconds, and an
+				// upstream behind a shared gateway often holds that connection
+				// open. Waiting for the winner of that race is how a finished
+				// call ends up logged as "stream interrupted: context canceled".
+				return written, ttfb, nil
 			}
 		}
 		if readErr != nil {

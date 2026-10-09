@@ -1,8 +1,14 @@
 package relay
 
 import (
+	"context"
+	"io"
+	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/faketoken/faketoken/internal/redact"
 )
@@ -129,5 +135,163 @@ func TestUsageSnifferAcceptsHealthyNonStreamBody(t *testing.T) {
 
 	if failure, failed := sniff.StreamError(); failed {
 		t.Fatalf("a healthy body was flagged as %+v", failure)
+	}
+}
+
+// A body that never says [DONE] is not finished: the relay still owes the caller
+// the rest of the stream, however long the upstream sits on it.
+func TestUsageSnifferDoesNotTerminateEarly(t *testing.T) {
+	sniff := newUsageSniffer("text/event-stream", redact.DefaultCaptureLimit)
+	_, _ = sniff.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+
+	if sniff.Terminated() {
+		t.Fatal("a stream with content but no terminator was called complete")
+	}
+}
+
+// [DONE] is the marker the caller stops reading on, so it is what ends the call
+// even when the upstream keeps the connection open afterwards.
+func TestUsageSnifferSeesTerminatorSplitAcrossWrites(t *testing.T) {
+	sniff := newUsageSniffer("text/event-stream", redact.DefaultCaptureLimit)
+	_, _ = sniff.Write([]byte("data: [DO"))
+	_, _ = sniff.Write([]byte("NE]\n\n"))
+
+	if !sniff.Terminated() {
+		t.Fatal("the terminator split across two writes went unnoticed")
+	}
+	// Usage accounting still works off the same events: nothing is skipped.
+	_, _ = sniff.Write([]byte("data: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n\n"))
+	usage, ok := sniff.Usage()
+	if !ok || usage.PromptTokens != 7 || usage.CompletionTokens != 3 {
+		t.Fatalf("usage = %+v, %v; want the usage that followed the terminator", usage, ok)
+	}
+}
+
+// A non-streamed body has no terminator, so nothing there may end early.
+func TestUsageSnifferNeverTerminatesWithoutSSE(t *testing.T) {
+	sniff := newUsageSniffer("application/json", redact.DefaultCaptureLimit)
+	_, _ = sniff.Write([]byte(`{"choices":[{"message":{"content":"data: [DONE]"}}]}`))
+
+	if sniff.Terminated() {
+		t.Fatal("a body that merely contains the marker was called terminated")
+	}
+}
+
+// stubBody hands out the bytes it holds and then blocks, which is an upstream
+// that answered in full and kept the connection open: nothing is coming, but no
+// EOF either.
+type stubBody struct {
+	data  []byte
+	pos   int
+	block chan struct{}
+	ctx   context.Context
+	once  sync.Once
+}
+
+func newStubBody(ctx context.Context, data string) *stubBody {
+	return &stubBody{data: []byte(data), block: make(chan struct{}), ctx: ctx}
+}
+
+func (b *stubBody) Read(p []byte) (int, error) {
+	if b.pos < len(b.data) {
+		n := copy(p, b.data[b.pos:])
+		b.pos += n
+		return n, nil
+	}
+	select {
+	case <-b.ctx.Done():
+		// What an http.Client hands back once the relay cancels the request:
+		// the read ends in the context error, not in io.EOF.
+		return 0, b.ctx.Err()
+	case <-b.block:
+		return 0, io.EOF
+	}
+}
+
+// release lets the blocked reader finish, so the goroutine parked in Read does
+// not outlive the test.
+func (b *stubBody) release() { b.once.Do(func() { close(b.block) }) }
+
+// The caller that prompted all of this: the client received the whole answer,
+// including [DONE], and hung up. The relay must have logged a clean call, not
+// waited for an upstream FIN that decided to take its time.
+func TestPumpEndsOnTheStreamTerminatorWithoutACancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	body := newStubBody(ctx, `data: {"choices":[{"delta":{"content":"hi"}}]}`+"\n\n"+
+		"data: [DONE]\n\n")
+	defer body.release()
+
+	sniff := newUsageSniffer("text/event-stream", redact.DefaultCaptureLimit)
+	rec := httptest.NewRecorder()
+
+	var cancelled atomic.Bool
+	// pump only ever sees this wrapper: it must not need a cancel to end a
+	// call the upstream already finished.
+	notifyCancel := func() {
+		cancelled.Store(true)
+	}
+
+	type result struct {
+		written int64
+		ttfb    time.Duration
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		written, ttfb, err := pump(rec, body, sniff, true, time.Hour, notifyCancel)
+		done <- result{written, ttfb, err}
+	}()
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("pump ended with %v, want the completed stream to end cleanly", got.err)
+		}
+		if got.written == 0 {
+			t.Fatal("nothing was relayed")
+		}
+		if got.ttfb == 0 {
+			t.Fatal("time to first byte was not measured")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pump is still waiting for an upstream that already said [DONE]")
+	}
+
+	if !strings.Contains(rec.Body.String(), "[DONE]") {
+		t.Fatalf("terminator was not relayed: %q", rec.Body.String())
+	}
+	if cancelled.Load() {
+		t.Fatal("the call needed a cancelled context to finish")
+	}
+}
+
+// The counter-case: content is still owed, so a stalled stream has to be cut
+// off by the idle timeout rather than by the terminator this test never sends.
+func TestPumpStillIdleTimesOutAStreamThatNeverEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	body := newStubBody(ctx, `data: {"choices":[{"delta":{"content":"hi"}}]}`+"\n\n")
+	defer body.release()
+
+	sniff := newUsageSniffer("text/event-stream", redact.DefaultCaptureLimit)
+	rec := httptest.NewRecorder()
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := pump(rec, body, sniff, true, 50*time.Millisecond, cancel)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a stream that only ever stalls must not be reported as complete")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the idle timeout never fired")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("the idle timeout has to cancel the upstream request")
 	}
 }

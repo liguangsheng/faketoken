@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -570,6 +571,74 @@ func TestRelayKeepsNonRateLimitStreamFailuresAsRelayed(t *testing.T) {
 	}
 	if !strings.Contains(entry.Error, "overloaded_error") {
 		t.Fatalf("the in-stream failure was not logged: %q", entry.Error)
+	}
+}
+
+// The caller that prompted all of this: an SDK stops reading the instant it
+// sees [DONE] and drops the connection, while the upstream — anything behind a
+// shared gateway tends to — holds its side open for another moment. The relay
+// has the whole answer in hand, so the row has to read as the success it was
+// instead of waiting for the winner of that race.
+func TestRelayStreamEndsCleanlyWhenTheCallerLeavesAtDone(t *testing.T) {
+	h := newHarness(t)
+
+	release := make(chan struct{})
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		for _, chunk := range []string{
+			`{"choices":[{"delta":{"content":"he"}}]}`,
+			`{"choices":[{"delta":{"content":"llo"}}]}`,
+			`{"choices":[{"delta":{}}],"usage":{"prompt_tokens":1000,"completion_tokens":500,"total_tokens":1500}}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", chunk)
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		// Nothing else is coming, but no end of body either.
+		<-release
+	})
+	defer close(release)
+
+	h.createChannel(channelInput{
+		Name: "held-open", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":true}}`)
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	var relayed strings.Builder
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("reading the stream: %v", err)
+		}
+		relayed.WriteString(line)
+		if strings.Contains(line, "[DONE]") {
+			break
+		}
+	}
+	if !strings.Contains(relayed.String(), "llo") {
+		t.Fatalf("stream content missing: %s", relayed.String())
+	}
+	// The caller is done: nothing after the marker is theirs to read.
+	resp.Body.Close()
+
+	entry := h.waitForLog(t, 1)
+	if entry.Error != "" {
+		t.Fatalf("a finished stream was logged as %q", entry.Error)
+	}
+	if entry.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want the relayed 200", entry.StatusCode)
+	}
+	if entry.CompletionTokens != 500 {
+		t.Fatalf("completion tokens = %d, want the usage the stream carried", entry.CompletionTokens)
 	}
 }
 
