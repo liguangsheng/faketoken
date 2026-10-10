@@ -56,6 +56,7 @@ import {
 import { useSettings } from "../../settings/SettingsContext";
 import EmptyState from "../EmptyState";
 import RateCard from "../RateCard";
+import Elapsed from "./Elapsed";
 import LogBody from "./LogBody";
 import LogMeta from "./LogMeta";
 import { useLiveRowAnimation } from "./useLiveRowAnimation";
@@ -481,16 +482,6 @@ export default function LogTable({
   const hasLive = liveRows.length > 0;
   const { liveCalls } = inflight;
 
-  // A running call's only moving part is how long it has been running, so the
-  // clock ticks for as long as one is on screen and stops when none is.
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!hasLive) return;
-    setNow(Date.now());
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [hasLive]);
-
   // Live rows sit above the newest settled row, and the page is trimmed back to
   // the size the operator chose: a burst of traffic pushes history down instead
   // of growing the table past its own pagination.
@@ -602,9 +593,6 @@ export default function LogTable({
       render: (_: unknown, row: LogRow) => {
         const live = isLive(row);
         const mapped = row.upstream_model && row.upstream_model !== row.model;
-        const elapsed = live
-          ? Math.max(0, now - new Date(row.created_at).getTime())
-          : 0;
         return (
           <div className={`log-card log-card--${cardTone(row)}`}>
             <div className="log-card__top">
@@ -659,9 +647,11 @@ export default function LogTable({
               <span className="log-card__meta-item">
                 <FieldTimeOutlined />
                 <span className="log-card__meta-text">
-                  {live
-                    ? formatDuration(elapsed)
-                    : formatDuration(row.duration_ms)}
+                  {live ? (
+                    <Elapsed since={row.created_at} />
+                  ) : (
+                    formatDuration(row.duration_ms)
+                  )}
                 </span>
               </span>
               {!live && (
@@ -1154,25 +1144,22 @@ export default function LogTable({
               align: "left",
               render: (value: number, row: LogRow) => {
                 if (isLive(row)) {
-                  const elapsed = Math.max(
-                    0,
-                    now - new Date(row.created_at).getTime(),
-                  );
                   return (
-                    <Tooltip title={`已运行 ${formatDuration(elapsed)}`}>
+                    <Tooltip
+                      title={
+                        <>
+                          已运行 <Elapsed since={row.created_at} />
+                        </>
+                      }
+                    >
                       <div className="duration-cell">
                         <span className="duration-bar duration-bar--running" aria-hidden />
                         <div className="cell-stack">
-                          <span
+                          <Elapsed
+                            since={row.created_at}
                             className="mono"
-                            style={
-                              elapsed >= SLOW_CALL_MS
-                                ? { color: "var(--app-warning)" }
-                                : undefined
-                            }
-                          >
-                            {formatDuration(elapsed)}
-                          </span>
+                            warnAfter={SLOW_CALL_MS}
+                          />
                           <span className="text-muted cell-stack__sub">…</span>
                         </div>
                       </div>

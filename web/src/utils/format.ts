@@ -79,10 +79,11 @@ export const formatBytes = (bytes: number) => {
   return `${Number.isInteger(value) ? value : value.toFixed(1)} ${units[unit]}`
 }
 
+/** "863 ms" · "12.5 s" — tenths are enough; hundredths are noise at these lengths. */
 export const formatDuration = (ms: number) => {
   if (ms <= 0) return '-'
   if (ms < 1000) return `${ms} ms`
-  return `${(ms / 1000).toFixed(2)} s`
+  return `${(ms / 1000).toFixed(1)} s`
 }
 
 export const STATUS = {
