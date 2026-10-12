@@ -25,14 +25,17 @@ import dayjs from 'dayjs'
 import { api, type Channel } from '../../../api/client'
 import { useMediaQuery } from '../../../hooks/useMediaQuery'
 import {
+  invalidStatusRule,
   parseList,
   parseEffortRules,
   parseHeaders,
   parseMapping,
+  parseStatusMapping,
   STATUS,
   stringifyEffortRules,
   stringifyHeaders,
   stringifyMapping,
+  stringifyStatusMapping,
 } from '../../../utils/format'
 import ModelPickerModal, { type ModelPickerState } from './ModelPickerModal'
 import {
@@ -125,6 +128,7 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
             model_prefixes: (channel.model_prefixes ?? []).join('\n'),
             model_mapping: stringifyMapping(channel.model_mapping),
             reasoning_effort_mapping: stringifyEffortRules(channel.reasoning_effort_mapping),
+            status_code_mapping: stringifyStatusMapping(channel.status_code_mapping),
             headers: stringifyHeaders(channel.headers),
             keepalive_at: parseClock(channel.keepalive_at),
           }
@@ -141,6 +145,7 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
             model_prefixes: '',
             model_mapping: '',
             reasoning_effort_mapping: '',
+            status_code_mapping: '',
             headers: '',
             timeout_secs: 0,
             proxy_url: '',
@@ -220,6 +225,7 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
       model_prefixes: parseList(values.model_prefixes ?? ''),
       model_mapping: parseMapping(values.model_mapping ?? ''),
       reasoning_effort_mapping: parseEffortRules(values.reasoning_effort_mapping ?? ''),
+      status_code_mapping: parseStatusMapping(values.status_code_mapping ?? ''),
       headers: parseHeaders(values.headers ?? ''),
       timeout_secs: Number(values.timeout_secs ?? 0),
       proxy_url: values.proxy_url ?? '',
@@ -596,6 +602,32 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
                         className="mono"
                         autoSize={{ minRows: 3, maxRows: 12 }}
                         placeholder={'*:max=xhigh\ngpt-5.1:max=high'}
+                      />
+                    </Form.Item>
+
+                    {/* Some clients give up on a 429 or wait it out for minutes;
+                        rewriting the code is how an operator steers them. */}
+                    <Form.Item
+                      name="status_code_mapping"
+                      label="状态码映射"
+                      tooltip="每行 上游状态码=返回给调用方的状态码，例如 429=503。两边都必须是 400–599 的错误码。只改调用方看到的状态码：重试、换渠道、熔断仍按上游原码判断；响应正文不变。日志记调用方收到的码，管理员可同时看到上游原码"
+                      rules={[
+                        {
+                          validator: (_, value?: string) => {
+                            const bad = invalidStatusRule(value ?? '')
+                            return bad === undefined
+                              ? Promise.resolve()
+                              : Promise.reject(
+                                  new Error(`「${bad}」无效：写成 429=503，两边都是 400–599 的错误码`),
+                                )
+                          },
+                        },
+                      ]}
+                    >
+                      <Input.TextArea
+                        className="mono"
+                        autoSize={{ minRows: 2, maxRows: 8 }}
+                        placeholder={'429=503'}
                       />
                     </Form.Item>
 

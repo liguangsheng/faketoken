@@ -48,10 +48,13 @@ type channelInput struct {
 	// keep routing as they did before.
 	SupportedProtocols     []string            `json:"supported_protocols"`
 	ReasoningEffortMapping model.EffortMapping `json:"reasoning_effort_mapping"`
-	AllowAttachments       *bool               `json:"allow_attachments"`
-	LockUserAgent          bool                `json:"lock_user_agent"`
-	LockedUserAgents       map[string]string   `json:"locked_user_agents"`
-	Note                   string              `json:"note"`
+	// StatusCodeMapping rewrites an upstream error code for the caller, e.g.
+	// {"429": 503}. Error codes only, on both sides.
+	StatusCodeMapping map[int]int       `json:"status_code_mapping"`
+	AllowAttachments  *bool             `json:"allow_attachments"`
+	LockUserAgent     bool              `json:"lock_user_agent"`
+	LockedUserAgents  map[string]string `json:"locked_user_agents"`
+	Note              string            `json:"note"`
 	// Keepalive configuration. The window's own state (open, progress, when it
 	// last opened) is owned by the scheduler and the relay bookkeeping, and is
 	// never accepted from a request: saving the form must not reset a counter.
@@ -84,6 +87,7 @@ func (in channelInput) toModel(id int64) *model.Channel {
 		TestModel:              strings.TrimSpace(in.TestModel),
 		SupportedProtocols:     in.SupportedProtocols,
 		ReasoningEffortMapping: model.NormaliseEffortMapping(in.ReasoningEffortMapping),
+		StatusCodeMapping:      cleanStatusMapping(in.StatusCodeMapping),
 		AllowAttachments:       in.AllowAttachments == nil || *in.AllowAttachments,
 		LockUserAgent:          in.LockUserAgent,
 		LockedUserAgents:       cleanUserAgentLocks(in.LockedUserAgents),
@@ -103,6 +107,32 @@ func (in channelInput) toModel(id int64) *model.Channel {
 	}
 	return ch
 }
+
+// cleanStatusMapping drops rules that map a code onto itself: they change
+// nothing, and kept around they read as if they did.
+func cleanStatusMapping(in map[int]int) map[int]int {
+	out := make(map[int]int, len(in))
+	for from, to := range in {
+		if from != to {
+			out[from] = to
+		}
+	}
+	return out
+}
+
+// validStatusMapping keeps both sides of every rule to error codes. A success
+// code on the left would never fire — only failures are rewritten — and one on
+// the right would tell the caller that a failed call worked.
+func validStatusMapping(in channelInput) (string, bool) {
+	for from, to := range in.StatusCodeMapping {
+		if !isErrorStatus(from) || !isErrorStatus(to) {
+			return fmt.Sprintf("状态码映射 %d=%d 无效：两边都必须是 400–599 的错误码", from, to), false
+		}
+	}
+	return "", true
+}
+
+func isErrorStatus(code int) bool { return code >= 400 && code <= 599 }
 
 func cleanUserAgentLocks(in map[string]string) map[string]string {
 	out := make(map[string]string, len(model.AllProtocols))
@@ -288,7 +318,7 @@ func (in channelInput) validate() (string, bool) {
 		return "unsupported authentication style: " + in.AuthStyle, false
 	}
 	for _, check := range []func(channelInput) (string, bool){
-		validKeepalive, validChannelRetry, validEffortMapping,
+		validKeepalive, validChannelRetry, validEffortMapping, validStatusMapping,
 	} {
 		if message, ok := check(in); !ok {
 			return message, false

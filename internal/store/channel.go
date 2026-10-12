@@ -27,11 +27,20 @@ func nameConflict(err error, name string) error {
 // the channel as universally routable.
 func normaliseProtocols(in []string) []string { return model.NormaliseList(in) }
 
+// statusMapping stores a missing mapping as {} rather than JSON null, which the
+// NOT NULL column would refuse.
+func statusMapping(in map[int]int) map[int]int {
+	if in == nil {
+		return map[int]int{}
+	}
+	return in
+}
+
 const channelColumns = `id, name, base_url, auth_style, api_key_enc, status, priority, weight,
 	channel_groups, models, model_mapping, headers, timeout_secs, proxy_url, price_ratio,
 	rpm_limit, retry_count, retry_backoff_ms, used_quota, request_count, error_count, last_error, last_error_at, tested_at,
 	models_synced_at, note, created_at, updated_at, model_prefixes, test_model, supported_protocols,
-	reasoning_effort_mapping,
+	reasoning_effort_mapping, status_code_mapping,
 	allow_attachments, lock_user_agent, locked_user_agents,
 	keepalive_enabled, keepalive_at, keepalive_target, keepalive_open, keepalive_success,
 	keepalive_opened_at, archived`
@@ -45,7 +54,7 @@ func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 		&c.UsedQuota, &c.RequestCount, &c.ErrorCount,
 		&c.LastError, &c.LastErrorAt, &c.TestedAt, &c.ModelsSyncedAt, &c.Note,
 		&c.CreatedAt, &c.UpdatedAt, &c.ModelPrefixes, &c.TestModel, &c.SupportedProtocols,
-		&c.ReasoningEffortMapping,
+		&c.ReasoningEffortMapping, &c.StatusCodeMapping,
 		&c.AllowAttachments, &c.LockUserAgent, &c.LockedUserAgents,
 		&c.KeepaliveEnabled, &c.KeepaliveAt, &c.KeepaliveTarget, &c.KeepaliveOpen,
 		&c.KeepaliveSuccess, &c.KeepaliveOpenedAt, &c.Archived)
@@ -81,6 +90,9 @@ func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 	if c.ReasoningEffortMapping == nil {
 		c.ReasoningEffortMapping = model.EffortMapping{}
 	}
+	if c.StatusCodeMapping == nil {
+		c.StatusCodeMapping = map[int]int{}
+	}
 	return &c, nil
 }
 
@@ -105,8 +117,9 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		 retry_count, retry_backoff_ms,
 		 model_prefixes, test_model, supported_protocols,
 		 reasoning_effort_mapping,
-		 allow_attachments, lock_user_agent, locked_user_agents, keepalive_enabled, keepalive_at, keepalive_target)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+		 allow_attachments, lock_user_agent, locked_user_agents, keepalive_enabled, keepalive_at, keepalive_target,
+		 status_code_mapping)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
 		RETURNING `+channelColumns,
 		c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, enc, c.Status, c.Priority, c.Weight,
 		c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL, c.PriceRatio,
@@ -114,7 +127,8 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		model.NormaliseEffortMapping(c.ReasoningEffortMapping),
 		c.AllowAttachments,
 		c.LockUserAgent, c.LockedUserAgents,
-		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget)
+		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget,
+		statusMapping(c.StatusCodeMapping))
 	created, err := s.scanChannel(row)
 	if err != nil {
 		return nil, nameConflict(err, c.Name)
@@ -144,7 +158,8 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		normaliseProtocols(c.SupportedProtocols),
 		model.NormaliseEffortMapping(c.ReasoningEffortMapping),
 		c.AllowAttachments, c.LockUserAgent, c.LockedUserAgents,
-		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget}
+		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget,
+		statusMapping(c.StatusCodeMapping)}
 	if c.APIKey != "" {
 		enc, err := s.cipher.Encrypt(c.APIKey)
 		if err != nil {
@@ -170,6 +185,7 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		reasoning_effort_mapping = $22,
 		allow_attachments = $23, lock_user_agent = $24, locked_user_agents = $25,
 		keepalive_enabled = $26, keepalive_at = $27, keepalive_target = $28,
+		status_code_mapping = $29,
 		-- The form carries status, so saving a channel as disabled abandons its
 		-- keepalive window here just as the listing toggle does. Progress is
 		-- otherwise left alone: saving the form must not reset the counter.

@@ -19,13 +19,14 @@ import (
 // page into a probe: send a guess, read back which word tripped, repeat.
 // forOwner trims a row to what the account that made the call is shown. The
 // block policy's note is redacted, and the routing internals stay with the
-// operator: the upstream model a name was mapped to, and the address the call
-// arrived from.
+// operator: the upstream model a name was mapped to, the status a channel rule
+// rewrote, and the address the call arrived from.
 func forOwner(entry *model.RequestLog) {
 	if strings.HasPrefix(entry.Error, relay.BlockedLogPrefix) {
 		entry.Error = relay.BlockedLogRedacted
 	}
 	entry.UpstreamModel = ""
+	entry.UpstreamStatus = 0
 	entry.ClientIP = ""
 }
 

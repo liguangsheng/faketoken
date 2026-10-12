@@ -1001,6 +1001,14 @@ export default function Channels() {
                       渠道重试 {row.retry_count ? `${row.retry_count} 次` : '关闭'} · 间隔{' '}
                       {row.retry_backoff_ms ? `${row.retry_backoff_ms}ms` : '全局默认'}
                     </span>
+                    {Object.keys(row.status_code_mapping ?? {}).length > 0 && (
+                      <span className="text-muted mono" style={{ fontSize: 12 }}>
+                        状态码{' '}
+                        {Object.entries(row.status_code_mapping)
+                          .map(([from, to]) => `${from}→${to}`)
+                          .join(' · ')}
+                      </span>
+                    )}
                     <span className="text-muted" style={{ fontSize: 12 }}>
                       鉴权 {AUTH_STYLES.find((item) => item.value === row.auth_style)?.label ?? row.auth_style}
                     </span>

@@ -13,7 +13,7 @@ const logColumns = `id, created_at, user_id, username, token_id, token_name, cha
 	channel_name, model, upstream_model, endpoint, method, status_code, stream,
 	prompt_tokens, completion_tokens, cached_tokens, total_tokens, cost,
 	duration_ms, ttfb_ms, retries, client_ip, error, cache_creation_tokens,
-	reasoning_effort, client_type`
+	reasoning_effort, client_type, upstream_status`
 
 // InsertLog persists one entry and fills in the values the database
 // generates, so the caller holds a complete row — the live log stream forwards
@@ -24,14 +24,15 @@ func (s *Store) InsertLog(ctx context.Context, l *model.RequestLog) error {
 		(user_id, username, token_id, token_name, channel_id, channel_name, model,
 		 upstream_model, endpoint, method, status_code, stream, prompt_tokens,
 		 completion_tokens, cached_tokens, total_tokens, cost, duration_ms, ttfb_ms,
-		 retries, client_ip, error, cache_creation_tokens, reasoning_effort, client_type)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+		 retries, client_ip, error, cache_creation_tokens, reasoning_effort, client_type,
+		 upstream_status)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
 		RETURNING id, created_at`,
 		l.UserID, l.Username, l.TokenID, l.TokenName, l.ChannelID, l.ChannelName, l.Model,
 		l.UpstreamModel, l.Endpoint, l.Method, l.StatusCode, l.Stream, l.PromptTokens,
 		l.CompletionTokens, l.CachedTokens, l.TotalTokens, l.Cost, l.DurationMS, l.TTFBMS,
 		l.Retries, l.ClientIP, truncate(l.Error, 2000), l.CacheCreationTokens,
-		truncate(l.ReasoningEffort, 64), truncate(l.ClientType, 64)).
+		truncate(l.ReasoningEffort, 64), truncate(l.ClientType, 64), l.UpstreamStatus).
 		Scan(&l.ID, &l.CreatedAt)
 }
 
@@ -173,7 +174,7 @@ func (s *Store) ListLogs(ctx context.Context, f LogFilter) ([]*model.RequestLog,
 			&l.Endpoint, &l.Method, &l.StatusCode, &l.Stream, &l.PromptTokens,
 			&l.CompletionTokens, &l.CachedTokens, &l.TotalTokens, &l.Cost,
 			&l.DurationMS, &l.TTFBMS, &l.Retries, &l.ClientIP, &l.Error,
-			&l.CacheCreationTokens, &l.ReasoningEffort, &l.ClientType); err != nil {
+			&l.CacheCreationTokens, &l.ReasoningEffort, &l.ClientType, &l.UpstreamStatus); err != nil {
 			return nil, 0, err
 		}
 		logs = append(logs, &l)

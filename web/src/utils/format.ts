@@ -230,6 +230,46 @@ export const parseMapping = (text: string): Record<string, string> => {
   return mapping
 }
 
+// "429=503" or "429:503". Both sides are three digits; the range is checked
+// separately so the error can say which rule is out of it.
+const STATUS_RULE = /^(\d{3})\s*[=:]\s*(\d{3})$/
+
+const isErrorStatus = (code: number) => code >= 400 && code <= 599
+
+/**
+ * Checks status-mapping text line by line. Returns the first bad line, or
+ * undefined when every line is a rule between two error codes. A typo must be
+ * reported, not dropped: a silently skipped rule just stops working.
+ */
+export const invalidStatusRule = (text: string) =>
+  text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .find((line) => {
+      const match = STATUS_RULE.exec(line)
+      return !match || !isErrorStatus(Number(match[1])) || !isErrorStatus(Number(match[2]))
+    })
+
+/** Parses "429=503" lines into the status rewrite map. Lines that do not parse are skipped. */
+export const parseStatusMapping = (text: string): Record<string, number> => {
+  const mapping: Record<string, number> = {}
+  text
+    .split('\n')
+    .map((line) => line.trim())
+    .forEach((line) => {
+      const match = STATUS_RULE.exec(line)
+      if (match) mapping[match[1]] = Number(match[2])
+    })
+  return mapping
+}
+
+/** Lowest code first: integer keys enumerate in ascending order on their own. */
+export const stringifyStatusMapping = (mapping: Record<string, number> | null | undefined) =>
+  Object.entries(mapping ?? {})
+    .map(([from, to]) => `${from}=${to}`)
+    .join('\n')
+
 export const stringifyMapping = (mapping: Record<string, string> | null | undefined) =>
   Object.entries(mapping ?? {})
     .map(([from, to]) => `${from}=${to}`)

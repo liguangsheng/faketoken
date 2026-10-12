@@ -163,6 +163,12 @@ type Channel struct {
 	// empty map forwards whatever the client sent. Use EffortMappingFor to
 	// resolve it for one model rather than reading it directly.
 	ReasoningEffortMapping EffortMapping `json:"reasoning_effort_mapping"`
+	// StatusCodeMapping rewrites the status the caller is answered with when
+	// this upstream fails: {429: 503} turns its rate limit into a plain
+	// "unavailable". Only what the caller sees changes — retries, the breaker
+	// and billing still read the upstream's own code. Use MappedStatus to
+	// resolve it.
+	StatusCodeMapping map[int]int `json:"status_code_mapping"`
 	// AllowAttachments controls whether multimodal conversation content such
 	// as images, documents, files and audio may be sent through this channel.
 	AllowAttachments bool `json:"allow_attachments"`
@@ -211,6 +217,19 @@ func (c *Channel) UpstreamModel(requested string) string {
 		}
 	}
 	return requested
+}
+
+// MappedStatus is the status the caller should see for an upstream error, or
+// 0 when no rule rewrites it. Success codes are never rewritten: the bytes
+// behind them are a real answer, and calling it an error would be a lie.
+func (c *Channel) MappedStatus(upstream int) int {
+	if upstream < 400 {
+		return 0
+	}
+	if to, ok := c.StatusCodeMapping[upstream]; ok && to != upstream {
+		return to
+	}
+	return 0
 }
 
 // EffortMapping is a channel's thinking-level vocabulary, keyed by which models
@@ -382,22 +401,26 @@ type ModelPrice struct {
 }
 
 type RequestLog struct {
-	ID               int64     `json:"id"`
-	CreatedAt        time.Time `json:"created_at"`
-	UserID           int64     `json:"user_id"`
-	Username         string    `json:"username"`
-	TokenID          int64     `json:"token_id"`
-	TokenName        string    `json:"token_name"`
-	ChannelID        int64     `json:"channel_id"`
-	ChannelName      string    `json:"channel_name"`
-	Model            string    `json:"model"`
-	UpstreamModel    string    `json:"upstream_model"`
-	Endpoint         string    `json:"endpoint"`
-	Method           string    `json:"method"`
-	StatusCode       int32     `json:"status_code"`
-	Stream           bool      `json:"stream"`
-	PromptTokens     int32     `json:"prompt_tokens"`
-	CompletionTokens int32     `json:"completion_tokens"`
+	ID            int64     `json:"id"`
+	CreatedAt     time.Time `json:"created_at"`
+	UserID        int64     `json:"user_id"`
+	Username      string    `json:"username"`
+	TokenID       int64     `json:"token_id"`
+	TokenName     string    `json:"token_name"`
+	ChannelID     int64     `json:"channel_id"`
+	ChannelName   string    `json:"channel_name"`
+	Model         string    `json:"model"`
+	UpstreamModel string    `json:"upstream_model"`
+	Endpoint      string    `json:"endpoint"`
+	Method        string    `json:"method"`
+	StatusCode    int32     `json:"status_code"`
+	// UpstreamStatus is what the upstream actually answered when a channel's
+	// status mapping rewrote it into StatusCode; 0 when no rule fired. Routing
+	// internals, like UpstreamModel: only an administrator is shown it.
+	UpstreamStatus   int32 `json:"upstream_status"`
+	Stream           bool  `json:"stream"`
+	PromptTokens     int32 `json:"prompt_tokens"`
+	CompletionTokens int32 `json:"completion_tokens"`
 	// CachedTokens are prompt tokens served from cache; CacheCreationTokens
 	// are the ones written into it. Both are already counted in PromptTokens.
 	CachedTokens        int32  `json:"cached_tokens"`

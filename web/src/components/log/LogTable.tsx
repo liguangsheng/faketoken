@@ -93,6 +93,13 @@ interface Props {
 // runs this long, so it colours the number instead of flagging an error.
 const SLOW_CALL_MS = 60_000;
 
+// "429→503" when a channel rule rewrote the upstream's code: the operator reads
+// both, the caller only ever saw the second. Owner rows carry 0 and show one.
+const statusText = (row: LogRow) =>
+  row.upstream_status > 0
+    ? `${row.upstream_status}→${row.status_code}`
+    : String(row.status_code);
+
 // A stable empty list, so the table memo does not recompute on every render
 // when nothing live is being drawn.
 const EMPTY_ROWS: LogRow[] = [];
@@ -615,7 +622,7 @@ export default function LogTable({
                 </Tag>
               ) : (
                 <Tag color={rowTone(row)} style={{ marginInlineEnd: 0 }}>
-                  {row.status_code}
+                  {statusText(row)}
                 </Tag>
               )}
               {row.stream && <Tag color="blue">流</Tag>}
@@ -1103,12 +1110,14 @@ export default function LogTable({
                   ) : (
                   <Tooltip
                     title={
-                      row.error && code < 400
-                        ? "上游返回 200，但响应体中带有错误"
-                        : undefined
+                      row.upstream_status > 0
+                        ? `上游返回 ${row.upstream_status}，按渠道状态码映射返回调用方 ${code}`
+                        : row.error && code < 400
+                          ? "上游返回 200，但响应体中带有错误"
+                          : undefined
                     }
                   >
-                    <Tag color={rowTone(row)}>{code}</Tag>
+                    <Tag color={rowTone(row)}>{statusText(row)}</Tag>
                   </Tooltip>
                   )}
                   {/* Streaming used to be its own column; it is one bit, so it

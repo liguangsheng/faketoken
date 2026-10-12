@@ -131,3 +131,36 @@ func TestNormaliseEffortMappingFoldsLevelsAndDropsBlanks(t *testing.T) {
 		t.Fatalf("normalised to %v, want %v", got, want)
 	}
 }
+
+// Only errors are rewritten, and a rule onto the same code counts as no rule:
+// MappedStatus answering 0 is what tells the relay to leave the row alone.
+func TestMappedStatus(t *testing.T) {
+	ch := &Channel{StatusCodeMapping: map[int]int{429: 503, 500: 500, 200: 503}}
+
+	for _, tc := range []struct{ upstream, want int }{
+		{429, 503}, // a rule
+		{500, 0},   // onto itself
+		{502, 0},   // no rule
+		{200, 0},   // a success is never rewritten, whatever is stored
+	} {
+		if got := ch.MappedStatus(tc.upstream); got != tc.want {
+			t.Errorf("MappedStatus(%d) = %d, want %d", tc.upstream, got, tc.want)
+		}
+	}
+
+	if got := (&Channel{}).MappedStatus(429); got != 0 {
+		t.Errorf("a channel without rules rewrote 429 to %d", got)
+	}
+}
+
+// The console and the JSONB column both carry the codes as object keys, which
+// JSON only allows as strings.
+func TestStatusCodeMappingReadsStringKeys(t *testing.T) {
+	var ch Channel
+	if err := json.Unmarshal([]byte(`{"status_code_mapping":{"429":503}}`), &ch); err != nil {
+		t.Fatal(err)
+	}
+	if ch.StatusCodeMapping[429] != 503 {
+		t.Fatalf("decoded %v, want 429=503", ch.StatusCodeMapping)
+	}
+}

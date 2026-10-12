@@ -56,6 +56,12 @@ export default function LogMeta({ detail, admin }: { detail: RequestLog; admin?:
       </Descriptions.Item>
       <Descriptions.Item label="状态码">
         <Tag color={rowTone(detail)}>{detail.status_code}</Tag>
+        {/* Only an administrator's rows carry it, and only when a rule fired. */}
+        {detail.upstream_status > 0 && (
+          <Tooltip title="渠道的状态码映射改写了上游返回的状态码">
+            <Tag>上游 {detail.upstream_status}</Tag>
+          </Tooltip>
+        )}
         {detail.stream ? <Tag color="blue">流式</Tag> : <Tag>非流式</Tag>}
       </Descriptions.Item>
       {(!admin || detail.reasoning_effort) && (

@@ -7,6 +7,7 @@ package relay
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -746,6 +747,14 @@ func (rl *Relay) dispatch(c *call, candidates []model.Candidate) {
 		lastStatus = http.StatusServiceUnavailable
 		lastMessage = "every candidate channel is unavailable"
 	}
+	// The status reported is the last upstream's, so its channel's rule is the
+	// one that applies. lastOutcome is only ever set together with lastStatus,
+	// and a rate-limit skip never sets it: our own limiter is not an upstream
+	// answer, and no channel rule rewrites it.
+	if lastOutcome.clientStatus != 0 {
+		entry.UpstreamStatus = int32(lastStatus)
+		lastStatus = lastOutcome.clientStatus
+	}
 	applyResponseDetails(captured, lastOutcome)
 	rl.reject(c, lastStatus, "upstream_error", "",
 		fmt.Sprintf("all %d attempt(s) failed: %s", max(attempts, 1), lastMessage), lastMessage)
@@ -763,6 +772,11 @@ type attemptOutcome struct {
 	kind    outcomeKind
 	status  int
 	message string
+	// clientStatus is what the caller is sent instead of status, when the
+	// channel's status mapping rewrote an upstream error; 0 when it did not.
+	// status stays the upstream's own: every routing and billing decision
+	// reads that one.
+	clientStatus int
 	// streamFailed marks a call the upstream answered 2xx and then failed
 	// inside the body — an SSE error event, or a JSON error object. The bytes
 	// are already on the wire, so the status cannot be changed for the caller;
@@ -906,6 +920,7 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 		return attemptOutcome{
 			kind:            outcomeRetry,
 			status:          resp.StatusCode,
+			clientStatus:    ch.MappedStatus(resp.StatusCode),
 			message:         upstream.ErrorMessage(snippet),
 			retryAfter:      parseRetryAfter(resp.Header),
 			responseHeaders: redact.Headers(resp.Header), responseBody: responseBody,
@@ -914,14 +929,16 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 	}
 
 	// From here the upstream owns the response: status, headers and bytes are
-	// forwarded verbatim, including non-retryable 4xx errors.
+	// forwarded verbatim, including non-retryable 4xx errors. The one exception
+	// is a status the channel maps: the body still is the upstream's.
+	clientStatus := ch.MappedStatus(resp.StatusCode)
 	copyResponseHeaders(w.Header(), resp.Header)
 	contentType := resp.Header.Get("Content-Type")
 	isStream := info.Stream || strings.Contains(strings.ToLower(contentType), "event-stream")
 	if isStream {
 		w.Header().Set("X-Accel-Buffering", "no")
 	}
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(cmp.Or(clientStatus, resp.StatusCode))
 
 	sniff := newUsageSniffer(contentType, rl.CaptureLimit())
 
@@ -931,7 +948,7 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 	captured, captureTruncated := sniff.Capture()
 	responseBody, responseTruncated := redact.Body(contentType, captured, captureTruncated, rl.CaptureLimit())
 	out := attemptOutcome{
-		kind: outcomeDone, status: resp.StatusCode,
+		kind: outcomeDone, status: resp.StatusCode, clientStatus: clientStatus,
 		headersSent: true,
 		usage:       usage, hasUsage: hasUsage,
 		// Time to first byte spans the whole upstream call: an upstream may sit
@@ -1163,6 +1180,12 @@ func (rl *Relay) settle(c *call, ch *model.Channel, out attemptOutcome) {
 	p, entry, captured := c.p, c.entry, c.captured
 
 	entry.StatusCode = int32(out.status)
+	if out.clientStatus != 0 {
+		// The row says what the caller was answered, like every other row;
+		// the upstream's own code stays beside it for the operator.
+		entry.StatusCode = int32(out.clientStatus)
+		entry.UpstreamStatus = int32(out.status)
+	}
 	entry.TTFBMS = int32(out.ttfb.Milliseconds())
 	entry.DurationMS = int32(time.Since(c.started).Milliseconds())
 	entry.Error = out.message

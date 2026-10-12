@@ -77,6 +77,11 @@ export interface Channel {
    * model the channel serves, "gpt-5*" a prefix, a bare name only itself.
    */
   reasoning_effort_mapping: Record<string, Record<string, string>>
+  /**
+   * Upstream error code -> the code the caller is sent, e.g. { "429": 503 }.
+   * Retries and failover still read the upstream's own code.
+   */
+  status_code_mapping: Record<string, number>
   allow_attachments: boolean
   lock_user_agent: boolean
   locked_user_agents: Record<string, string>
@@ -118,7 +123,13 @@ export interface RequestLog {
   upstream_model: string
   endpoint: string
   method: string
+  /** What the caller was answered. */
   status_code: number
+  /**
+   * What the upstream said, when a channel rule rewrote it into status_code;
+   * 0 when no rule fired. Administrator rows only.
+   */
+  upstream_status: number
   stream: boolean
   prompt_tokens: number
   completion_tokens: number
