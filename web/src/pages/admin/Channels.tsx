@@ -123,6 +123,10 @@ export default function Channels() {
   const [archivedPage, setArchivedPage] = useState(1)
   const [archivedLoading, setArchivedLoading] = useState(false)
   const [archivedOpen, setArchivedOpen] = useState(false)
+  // Rows are only drawn inside the panel, so they wait for its first opening;
+  // until then the header's count is all that is fetched. Sticky: folding the
+  // panel again keeps them, so reopening does not wait on the network.
+  const [archivedWanted, setArchivedWanted] = useState(false)
   const [archivingId, setArchivingId] = useState<number | null>(null)
 
   // What the edit drawer is open on; a fresh object per opening, null closes.
@@ -183,19 +187,20 @@ export default function Channels() {
   const loadArchived = useCallback(async () => {
     setArchivedLoading(true)
     try {
+      // Count only: page_size cannot go below 1, so one row comes back unused.
       const result = await api.admin.listChannels({
-        page: archivedPage,
-        page_size: ARCHIVED_PAGE_SIZE,
+        page: archivedWanted ? archivedPage : 1,
+        page_size: archivedWanted ? ARCHIVED_PAGE_SIZE : 1,
         archived: true,
       })
-      setArchivedRows(result.data ?? [])
+      if (archivedWanted) setArchivedRows(result.data ?? [])
       setArchivedTotal(result.total)
     } catch (error) {
       message.error(error instanceof Error ? error.message : '加载已归档渠道失败')
     } finally {
       setArchivedLoading(false)
     }
-  }, [archivedPage, message])
+  }, [archivedPage, archivedWanted, message])
 
   useEffect(() => {
     void loadArchived()
@@ -1124,7 +1129,11 @@ export default function Channels() {
           ghost
           style={{ marginTop: 8 }}
           activeKey={archivedOpen ? ['archived'] : []}
-          onChange={(keys) => setArchivedOpen(keys.length > 0)}
+          onChange={(keys) => {
+            const open = keys.length > 0
+            setArchivedOpen(open)
+            if (open) setArchivedWanted(true)
+          }}
           items={[
             {
               key: 'archived',
