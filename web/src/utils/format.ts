@@ -42,7 +42,8 @@ export const formatCompact = (value: number) => {
   const abs = Math.abs(value)
   if (abs < 1000) return String(Math.round(value))
   if (abs < 1_000_000) return `${(value / 1000).toFixed(abs < 10_000 ? 1 : 0)}k`
-  return `${(value / 1_000_000).toFixed(abs < 10_000_000 ? 1 : 0)}M`
+  if (abs < 1_000_000_000) return `${(value / 1_000_000).toFixed(abs < 10_000_000 ? 1 : 0)}M`
+  return `${(value / 1_000_000_000).toFixed(abs < 10_000_000_000 ? 1 : 0)}B`
 }
 
 export const formatPercent = (value: number, digits = 1) => `${(value * 100).toFixed(digits)}%`

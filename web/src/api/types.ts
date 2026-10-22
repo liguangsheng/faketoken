@@ -389,6 +389,16 @@ export interface Redemption {
   created_at: string
 }
 
+/** One calendar day of the usage heatmap, in the zone the request named. */
+export interface UsageDay {
+  /** YYYY-MM-DD */
+  day: string
+  requests: number
+  errors: number
+  cost: number
+  total_tokens: number
+}
+
 export interface Stats {
   summary: {
     requests: number

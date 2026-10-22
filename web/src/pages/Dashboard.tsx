@@ -18,6 +18,7 @@ import EmptyState from '../components/EmptyState'
 import PageHeader from '../components/PageHeader'
 import StatCard from '../components/StatCard'
 import type { ChartPoint } from '../components/UsageChart'
+import UsageHeatmap from '../components/UsageHeatmap'
 import {
   formatCompact,
   formatMoney,
@@ -45,6 +46,8 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Bumped by the refresh button; the heatmap ignores the range switch.
+  const [refreshes, setRefreshes] = useState(0)
   // Requests race: switching from a slow 90-day query to a fast one must not
   // let the stale answer land last and overwrite the fresh one.
   const requestSeq = useRef(0)
@@ -111,7 +114,14 @@ export default function Dashboard() {
               onChange={(value) => setDays(Number(value))}
               options={RANGES}
             />
-            <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
+            <Button
+              icon={<ReloadOutlined />}
+              loading={loading}
+              onClick={() => {
+                void load()
+                setRefreshes((n) => n + 1)
+              }}
+            >
               刷新
             </Button>
           </>
@@ -258,6 +268,8 @@ export default function Dashboard() {
             />
           )}
         </Card>
+
+        <UsageHeatmap admin={isAdmin} version={refreshes} />
 
         <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
           <Col xs={24} lg={isAdmin ? 8 : 24}>

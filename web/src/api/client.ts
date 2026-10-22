@@ -22,6 +22,7 @@ import type {
   RequestLogDetail,
   Redemption,
   Stats,
+  UsageDay,
 } from './types'
 
 export type * from './types'
@@ -154,6 +155,9 @@ export const api = {
   // No session-log calls here on purpose: those carry conversation bodies and
   // live on the administrator surface only.
   stats: (params: Record<string, unknown>) => request<Stats>('GET', `/api/stats${qs(params)}`),
+  /** The last year by day, in the zone given; days without traffic are omitted. */
+  heatmap: (tz: string) =>
+    request<{ days: UsageDay[] }>('GET', `/api/stats/heatmap${qs({ tz })}`),
 
   admin: {
     listUsers: (params: Record<string, unknown>) =>
@@ -333,5 +337,8 @@ export const api = {
       request<{ key: string }>('POST', `/api/admin/logs/inflight/${encodeURIComponent(key)}/cancel`),
     stats: (params: Record<string, unknown>) =>
       request<Stats>('GET', `/api/admin/stats${qs(params)}`),
+    /** Every account's traffic summed. */
+    heatmap: (tz: string) =>
+      request<{ days: UsageDay[] }>('GET', `/api/admin/stats/heatmap${qs({ tz })}`),
   },
 }

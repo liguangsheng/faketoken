@@ -78,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/logs", s.requireAuth(s.handleListLogs))
 	mux.HandleFunc("GET /api/logs/stream", s.requireAuth(s.handleStreamLogs))
 	mux.HandleFunc("GET /api/stats", s.requireAuth(s.handleStats))
+	mux.HandleFunc("GET /api/stats/heatmap", s.requireAuth(s.handleUsageHeatmap))
 
 	// ---- administrator surface
 	mux.HandleFunc("GET /api/admin/users", s.requireAdmin(s.handleListUsers))
@@ -154,6 +155,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/admin/logs/inflight/{key}/cancel", s.requireAdmin(s.handleCancelInflight))
 	mux.HandleFunc("DELETE /api/admin/logs", s.requireAdmin(s.handlePurgeLogs))
 	mux.HandleFunc("GET /api/admin/stats", s.requireAdmin(s.handleAdminStats))
+	mux.HandleFunc("GET /api/admin/stats/heatmap", s.requireAdmin(s.handleAdminUsageHeatmap))
 
 	// The test page's way past a gateway that refuses the browser's CORS
 	// preflight; see handlePlaygroundRelay for why it is administrator-only.

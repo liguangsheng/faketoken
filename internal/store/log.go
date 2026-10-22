@@ -19,15 +19,29 @@ const logColumns = `id, created_at, user_id, username, token_id, token_name, cha
 // generates, so the caller holds a complete row — the live log stream forwards
 // this struct straight to the console, where the id is the list key and the
 // timestamp is displayed.
+//
+// The usage_hourly rollup is bumped in the same statement, so the heatmap can
+// never drift from the log. The error test matches Summary's.
 func (s *Store) InsertLog(ctx context.Context, l *model.RequestLog) error {
-	return s.pool.QueryRow(ctx, `INSERT INTO request_logs
+	return s.pool.QueryRow(ctx, `WITH row AS (INSERT INTO request_logs
 		(user_id, username, token_id, token_name, channel_id, channel_name, model,
 		 upstream_model, endpoint, method, status_code, stream, prompt_tokens,
 		 completion_tokens, cached_tokens, total_tokens, cost, duration_ms, ttfb_ms,
 		 retries, client_ip, error, cache_creation_tokens, reasoning_effort, client_type,
 		 upstream_status, prompt_estimated)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
-		RETURNING id, created_at`,
+		RETURNING id, created_at, user_id, status_code, error, cost, total_tokens),
+	rollup AS (INSERT INTO usage_hourly AS u (user_id, hour, requests, errors, cost, total_tokens)
+		SELECT user_id, date_trunc('hour', created_at), 1,
+		       CASE WHEN status_code >= 400 OR error <> '' THEN 1 ELSE 0 END,
+		       cost, total_tokens
+		FROM row
+		ON CONFLICT (user_id, hour) DO UPDATE SET
+			requests = u.requests + 1,
+			errors = u.errors + EXCLUDED.errors,
+			cost = u.cost + EXCLUDED.cost,
+			total_tokens = u.total_tokens + EXCLUDED.total_tokens)
+	SELECT id, created_at FROM row`,
 		l.UserID, l.Username, l.TokenID, l.TokenName, l.ChannelID, l.ChannelName, l.Model,
 		l.UpstreamModel, l.Endpoint, l.Method, l.StatusCode, l.Stream, l.PromptTokens,
 		l.CompletionTokens, l.CachedTokens, l.TotalTokens, l.Cost, l.DurationMS, l.TTFBMS,
@@ -367,6 +381,44 @@ func (s *Store) TopBy(ctx context.Context, f LogFilter, column string, limit int
 			return nil, err
 		}
 		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+// ------------------------------------------------------------------ heatmap
+
+// UsageDay is one calendar day of the heatmap.
+type UsageDay struct {
+	Day         string `json:"day"` // 2026-10-22, in the viewer's zone
+	Requests    int64  `json:"requests"`
+	Errors      int64  `json:"errors"`
+	Cost        int64  `json:"cost"`
+	TotalTokens int64  `json:"total_tokens"`
+}
+
+// UsageDays folds the hourly rollup into days in loc, from start onwards.
+// userID 0 sums every account. Days without traffic are omitted.
+func (s *Store) UsageDays(ctx context.Context, userID int64, start time.Time,
+	loc *time.Location) ([]UsageDay, error) {
+
+	rows, err := s.pool.Query(ctx, `SELECT
+		to_char((hour AT TIME ZONE $3::text)::date, 'YYYY-MM-DD') AS day,
+		sum(requests), sum(errors), sum(cost), sum(total_tokens)
+		FROM usage_hourly
+		WHERE hour >= $1 AND ($2::bigint = 0 OR user_id = $2)
+		GROUP BY day ORDER BY day`, start, userID, loc.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []UsageDay{}
+	for rows.Next() {
+		var d UsageDay
+		if err := rows.Scan(&d.Day, &d.Requests, &d.Errors, &d.Cost, &d.TotalTokens); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
 	}
 	return out, rows.Err()
 }

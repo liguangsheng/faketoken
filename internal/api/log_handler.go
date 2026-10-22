@@ -164,6 +164,41 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	s.writeStats(w, r, f, true)
 }
 
+// heatmapWeeks is how far back the heatmap reaches: a year, rounded up to
+// whole weeks so the first column is never cut short.
+const heatmapWeeks = 53
+
+func (s *Server) handleUsageHeatmap(w http.ResponseWriter, r *http.Request) {
+	s.writeHeatmap(w, r, userFrom(r.Context()).ID)
+}
+
+// handleAdminUsageHeatmap covers every account unless user_id narrows it.
+func (s *Server) handleAdminUsageHeatmap(w http.ResponseWriter, r *http.Request) {
+	s.writeHeatmap(w, r, queryInt64(r, "user_id"))
+}
+
+// writeHeatmap answers in the caller's zone (?tz=Asia/Shanghai): a day is
+// only a day in some zone, and the server's need not be the viewer's.
+func (s *Server) writeHeatmap(w http.ResponseWriter, r *http.Request, userID int64) {
+	loc, err := time.LoadLocation(r.URL.Query().Get("tz"))
+	if err != nil {
+		fail(w, http.StatusBadRequest, "invalid tz")
+		return
+	}
+
+	// Midnight in loc, a full heatmap span ago.
+	now := time.Now().In(loc)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc).
+		AddDate(0, 0, -heatmapWeeks*7)
+
+	days, err := s.store.UsageDays(r.Context(), userID, start, loc)
+	if err != nil {
+		failErr(w, err)
+		return
+	}
+	ok(w, map[string]any{"days": days})
+}
+
 func statsFilter(r *http.Request) store.LogFilter {
 	f := store.LogFilter{
 		Start: queryTime(r, "start"),

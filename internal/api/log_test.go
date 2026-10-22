@@ -587,3 +587,68 @@ func TestStatsRankMappedModel(t *testing.T) {
 		t.Errorf("own ranking = %v, want the requested names", got)
 	}
 }
+
+// The heatmap reads its own rollup: a log purge must not empty it, and a day
+// is the viewer's day, not UTC's.
+func TestUsageHeatmapSurvivesLogPurge(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 10, 5)
+	})
+	h.createChannel(channelInput{
+		Name: "c", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	for range 2 {
+		resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key, `{"model":"gpt-4o"}`)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	h.waitForLog(t, 2)
+
+	purge := h.do(http.MethodDelete, "/api/admin/logs?days=0", h.admin, nil, nil)
+	purge.Body.Close()
+	if purge.StatusCode != http.StatusOK {
+		t.Fatalf("purge: HTTP %d", purge.StatusCode)
+	}
+
+	heatmap := func(path string) []store.UsageDay {
+		var out struct {
+			Days []store.UsageDay `json:"days"`
+		}
+		resp := h.do(http.MethodGet, path, h.admin, nil, &out)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: HTTP %d", path, resp.StatusCode)
+		}
+		return out.Days
+	}
+
+	// +14:00 is a calendar day ahead of UTC for ten hours of every day, so
+	// UTC bucketing would show the wrong date for part of each run.
+	const zone = "Pacific/Kiritimati"
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		t.Skip(err)
+	}
+	today := time.Now().In(loc).Format(time.DateOnly)
+
+	for _, path := range []string{"/api/stats/heatmap?tz=" + zone, "/api/admin/stats/heatmap?tz=" + zone} {
+		days := heatmap(path)
+		if len(days) != 1 {
+			t.Fatalf("%s: %d days, want 1: %+v", path, len(days), days)
+		}
+		d := days[0]
+		if d.Day != today || d.Requests != 2 || d.TotalTokens != 30 || d.Errors != 0 {
+			t.Fatalf("%s: %+v, want %s with 2 requests and 30 tokens", path, d, today)
+		}
+	}
+
+	bad := h.do(http.MethodGet, "/api/stats/heatmap?tz=Not/AZone", h.admin, nil, nil)
+	bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad tz: HTTP %d, want 400", bad.StatusCode)
+	}
+}

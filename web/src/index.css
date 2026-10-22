@@ -25,6 +25,13 @@
   --app-danger-soft: rgba(220, 38, 38, 0.12);
   /* Secondary data colour (cost lines, rank bars); brand stays for primary. */
   --app-accent: #0ea5e9;
+  /* Heatmap ramp, light to dark in the brand hue. Step 1 still clears 2:1
+     against the card surface, so the faintest day reads as a mark. */
+  --app-heat-0: #eef0f3;
+  --app-heat-1: #9ba6fb;
+  --app-heat-2: #6f73f0;
+  --app-heat-3: #4f46e5;
+  --app-heat-4: #332b9e;
   --app-header-h: 56px;
 
   color-scheme: light;
@@ -51,6 +58,12 @@
   --app-warning-soft: rgba(251, 191, 36, 0.16);
   --app-danger-soft: rgba(248, 113, 113, 0.16);
   --app-accent: #38bdf8;
+  /* Reversed on dark: more usage is lighter, further from the surface. */
+  --app-heat-0: #1d212b;
+  --app-heat-1: #4840c4;
+  --app-heat-2: #6763ea;
+  --app-heat-3: #8b87f5;
+  --app-heat-4: #bcbafb;
 
   color-scheme: dark;
 }
@@ -487,6 +500,117 @@ body {
   font-size: 12px;
   margin-top: 6px;
   min-height: 18px;
+}
+
+/* ===========================================================================
+   Usage heatmap
+   =========================================================================== */
+
+.heatmap {
+  position: relative;
+}
+
+/* Scrolls sideways on a narrow screen instead of shrinking cells to dots. */
+.heatmap__scroll {
+  border-radius: 6px;
+  overflow-x: auto;
+  padding: 2px;
+}
+
+.heatmap__scroll:focus-visible {
+  outline: 2px solid var(--app-brand);
+  outline-offset: 2px;
+}
+
+.heatmap__grid {
+  display: grid;
+  gap: 3px;
+  grid-template-rows: auto repeat(7, auto);
+  max-width: 980px;
+  min-width: 640px;
+}
+
+.heatmap__month,
+.heatmap__weekday {
+  color: var(--app-text-faint);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.heatmap__month {
+  grid-row: 1;
+  padding-bottom: 4px;
+}
+
+.heatmap__weekday {
+  align-self: center;
+  grid-column: 1;
+  padding-inline-end: 4px;
+}
+
+.heatmap__cell {
+  aspect-ratio: 1;
+  background: var(--app-heat-0);
+  border-radius: 2px;
+  display: block;
+}
+
+.heatmap__cell[data-level='1'] { background: var(--app-heat-1); }
+.heatmap__cell[data-level='2'] { background: var(--app-heat-2); }
+.heatmap__cell[data-level='3'] { background: var(--app-heat-3); }
+.heatmap__cell[data-level='4'] { background: var(--app-heat-4); }
+
+.heatmap__cell.is-active {
+  outline: 2px solid var(--app-text);
+  outline-offset: 1px;
+}
+
+/* As wide as the grid, so the legend sits under its right edge. */
+.heatmap__footer {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  justify-content: space-between;
+  margin-top: 10px;
+  max-width: 980px;
+}
+
+.heatmap__legend {
+  align-items: center;
+  color: var(--app-text-faint);
+  display: inline-flex;
+  font-size: 11px;
+  gap: 3px;
+}
+
+.heatmap__legend .heatmap__cell {
+  width: 11px;
+}
+
+.heatmap__tip {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  box-shadow: var(--app-shadow);
+  font-size: 12px;
+  min-width: 168px;
+  padding: 8px 10px;
+  pointer-events: none;
+  position: absolute;
+  z-index: 10;
+}
+
+.heatmap__tip-date {
+  color: var(--app-text-muted);
+  margin-bottom: 6px;
+}
+
+.heatmap__tip-row {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
 }
 
 /* ===========================================================================
