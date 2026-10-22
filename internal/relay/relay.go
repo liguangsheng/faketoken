@@ -1189,6 +1189,13 @@ func (rl *Relay) settle(c *call, ch *model.Channel, out attemptOutcome) {
 	entry.TTFBMS = int32(out.ttfb.Milliseconds())
 	entry.DurationMS = int32(time.Since(c.started).Milliseconds())
 	entry.Error = out.message
+
+	// Some upstreams report output but leave input at zero; estimate it so
+	// the input side is still logged and billed.
+	if out.status < 400 && out.hasUsage {
+		out.usage, entry.PromptEstimated = estimateMissingPrompt(out.usage, c.protocol, c.body)
+	}
+
 	entry.PromptTokens = int32(out.usage.PromptTokens)
 	entry.CompletionTokens = int32(out.usage.CompletionTokens)
 	entry.CachedTokens = int32(out.usage.CachedTokens)

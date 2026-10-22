@@ -100,6 +100,7 @@ export default function LogMeta({ detail, admin }: { detail: RequestLog; admin?:
           detail.total_tokens ||
             detail.prompt_tokens + detail.completion_tokens,
         )}
+        {detail.prompt_estimated && <EstimatedTag />}
       </Descriptions.Item>
       <Descriptions.Item label="缓存命中">
         {formatNumber(detail.cached_tokens)}
@@ -120,6 +121,7 @@ export default function LogMeta({ detail, admin }: { detail: RequestLog; admin?:
       </Descriptions.Item>
       <Descriptions.Item label="费用">
         {formatUSD(detail.cost, 6)}
+        {detail.prompt_estimated && <EstimatedTag />}
       </Descriptions.Item>
       <Descriptions.Item label="耗时">
         总计 {formatDuration(detail.duration_ms)}
@@ -142,5 +144,16 @@ export default function LogMeta({ detail, admin }: { detail: RequestLog; admin?:
         )}
       </Descriptions.Item>
     </Descriptions>
+  );
+}
+
+// EstimatedTag flags input tokens, and the cost built on them, as estimated.
+function EstimatedTag() {
+  return (
+    <Tooltip title="上游未返回输入 token 数，按请求体估算并据此计费，误差约 ±30%">
+      <Tag color="orange" style={{ marginInlineStart: 8 }}>
+        输入为估算
+      </Tag>
+    </Tooltip>
   );
 }

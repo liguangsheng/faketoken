@@ -137,6 +137,8 @@ export interface RequestLog {
   cached_tokens: number
   /** Prompt tokens written into the cache; also part of prompt_tokens. */
   cache_creation_tokens: number
+  /** prompt_tokens was estimated from the request body; the upstream reported zero. */
+  prompt_estimated: boolean
   total_tokens: number
   cost: number
   duration_ms: number

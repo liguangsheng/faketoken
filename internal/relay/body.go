@@ -287,3 +287,61 @@ func protocolFromPath(path string) string {
 	}
 	return ""
 }
+
+// imageTokens stands in for an inline image: its base64 length says nothing
+// about what it costs, and a typical screenshot bills near this.
+const imageTokens = 1000
+
+// estimateMissingPrompt fills in input tokens an upstream reported as zero,
+// and reports whether it did. Only the chat dialects are estimated; other
+// bodies are not prompts.
+func estimateMissingPrompt(u model.Usage, protocol string, body []byte) (model.Usage, bool) {
+	if u.PromptTokens > 0 || protocol == "" {
+		return u, false
+	}
+
+	var v any
+	if err := json.Unmarshal(body, &v); err != nil {
+		return u, false
+	}
+
+	n := estimateJSONTokens(v)
+	if n == 0 {
+		return u, false
+	}
+
+	u.PromptTokens = n
+	u.TotalTokens = max(u.TotalTokens, u.PromptTokens+u.CompletionTokens)
+	return u, true
+}
+
+// estimateJSONTokens counts keys and string values only: quotes, braces and
+// escapes are transport, not prompt.
+func estimateJSONTokens(v any) int {
+	switch t := v.(type) {
+	case map[string]any:
+		n := 0
+		for k, e := range t {
+			// Anthropic image/document source: {"type":"base64","data":"iVBOR..."}
+			if s, ok := e.(string); ok && k == "data" && len(s) > 1024 {
+				n += imageTokens
+				continue
+			}
+			n += estimateTokens(k) + estimateJSONTokens(e)
+		}
+		return n
+	case []any:
+		n := 0
+		for _, e := range t {
+			n += estimateJSONTokens(e)
+		}
+		return n
+	case string:
+		// OpenAI inline image: "data:image/png;base64,..."
+		if strings.HasPrefix(t, "data:") {
+			return imageTokens
+		}
+		return estimateTokens(t)
+	}
+	return 0
+}

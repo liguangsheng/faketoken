@@ -423,15 +423,18 @@ type RequestLog struct {
 	CompletionTokens int32 `json:"completion_tokens"`
 	// CachedTokens are prompt tokens served from cache; CacheCreationTokens
 	// are the ones written into it. Both are already counted in PromptTokens.
-	CachedTokens        int32  `json:"cached_tokens"`
-	CacheCreationTokens int32  `json:"cache_creation_tokens"`
-	TotalTokens         int32  `json:"total_tokens"`
-	Cost                int64  `json:"cost"`
-	DurationMS          int32  `json:"duration_ms"`
-	TTFBMS              int32  `json:"ttfb_ms"`
-	Retries             int32  `json:"retries"`
-	ClientIP            string `json:"client_ip"`
-	Error               string `json:"error"`
+	CachedTokens        int32 `json:"cached_tokens"`
+	CacheCreationTokens int32 `json:"cache_creation_tokens"`
+	// PromptEstimated marks PromptTokens as estimated from the request body,
+	// because the upstream reported zero input.
+	PromptEstimated bool   `json:"prompt_estimated"`
+	TotalTokens     int32  `json:"total_tokens"`
+	Cost            int64  `json:"cost"`
+	DurationMS      int32  `json:"duration_ms"`
+	TTFBMS          int32  `json:"ttfb_ms"`
+	Retries         int32  `json:"retries"`
+	ClientIP        string `json:"client_ip"`
+	Error           string `json:"error"`
 	// ReasoningEffort is what the caller asked the model to spend on thinking;
 	// empty when the request said nothing about it.
 	ReasoningEffort string `json:"reasoning_effort"`

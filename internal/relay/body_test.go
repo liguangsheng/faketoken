@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/faketoken/faketoken/internal/model"
 )
 
 func TestRewriteModelPreservesEverythingElse(t *testing.T) {
@@ -129,5 +131,34 @@ func TestHasConversationAttachment(t *testing.T) {
 				t.Fatalf("hasConversationAttachment() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// An upstream that reports output but zero input still gets an input count.
+func TestEstimateMissingPrompt(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-5-5","system":"` + strings.Repeat("be brief ", 50) +
+		`","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"` +
+		strings.Repeat("A", 4096) + `"}}]}]}`)
+
+	got, estimated := estimateMissingPrompt(model.Usage{CompletionTokens: 10, TotalTokens: 10}, model.ProtocolMessages, body)
+	if !estimated {
+		t.Fatal("estimate not flagged")
+	}
+	if got.PromptTokens < imageTokens+50 || got.PromptTokens > imageTokens+300 {
+		t.Fatalf("PromptTokens = %d", got.PromptTokens)
+	}
+	if got.TotalTokens != got.PromptTokens+10 {
+		t.Fatalf("TotalTokens = %d", got.TotalTokens)
+	}
+
+	// A reported count is never overwritten.
+	kept, estimated := estimateMissingPrompt(model.Usage{PromptTokens: 7}, model.ProtocolMessages, body)
+	if kept.PromptTokens != 7 || estimated {
+		t.Fatalf("overwrote reported count: %d", kept.PromptTokens)
+	}
+
+	// Non-chat endpoints are left alone.
+	if u, estimated := estimateMissingPrompt(model.Usage{}, "", body); u.PromptTokens != 0 || estimated {
+		t.Fatalf("estimated a non-chat body: %d", u.PromptTokens)
 	}
 }
