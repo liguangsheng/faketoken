@@ -172,8 +172,11 @@ func (s *Store) ListLogs(ctx context.Context, f LogFilter) ([]*model.RequestLog,
 	args = append(args, f.Limit, f.Offset)
 	// Assembled from the logColumns constant, the clause built above and two
 	// placeholder indices. Every caller-supplied value travels in args.
+	//
+	// Newest first by time, not by id: rows imported later carry their own
+	// timestamps and new ids, and would otherwise lead the list. id breaks ties.
 	query := fmt.Sprintf(
-		`SELECT %s FROM request_logs WHERE %s ORDER BY id DESC LIMIT $%d OFFSET $%d`,
+		`SELECT %s FROM request_logs WHERE %s ORDER BY created_at DESC, id DESC LIMIT $%d OFFSET $%d`,
 		logColumns, where, len(args)-1, len(args))
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {

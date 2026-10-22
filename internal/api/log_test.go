@@ -652,3 +652,50 @@ func TestUsageHeatmapSurvivesLogPurge(t *testing.T) {
 		t.Fatalf("bad tz: HTTP %d, want 400", bad.StatusCode)
 	}
 }
+
+// Rows imported from another gateway get new ids but keep their own times, so
+// the list orders by time: a month-old import must not lead it.
+func TestLogListOrdersByTime(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 10, 5)
+	})
+	h.createChannel(channelInput{
+		Name: "c", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key, `{"model":"gpt-4o"}`)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	live := h.waitForLog(t, 1)
+
+	var imported int64
+	if err := h.pool.QueryRow(context.Background(), `INSERT INTO request_logs
+		(user_id, username, model, endpoint, method, status_code, created_at)
+		VALUES ($1, 'admin', 'gpt-4o', '/v1/chat/completions', 'POST', 200, now() - interval '30 days')
+		RETURNING id`, live.UserID).Scan(&imported); err != nil {
+		t.Fatal(err)
+	}
+	if imported <= live.ID {
+		t.Fatalf("imported id %d, want above %d", imported, live.ID)
+	}
+
+	var out struct {
+		Data []model.RequestLog `json:"data"`
+	}
+	list := h.do(http.MethodGet, "/api/admin/logs?limit=10", h.admin, nil, &out)
+	list.Body.Close()
+	if list.StatusCode != http.StatusOK {
+		t.Fatalf("list: HTTP %d", list.StatusCode)
+	}
+	if len(out.Data) != 2 || out.Data[0].ID != live.ID || out.Data[1].ID != imported {
+		got := make([]int64, len(out.Data))
+		for i, l := range out.Data {
+			got[i] = l.ID
+		}
+		t.Fatalf("order %v, want [%d %d]", got, live.ID, imported)
+	}
+}
