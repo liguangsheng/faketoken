@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -44,9 +46,19 @@ func failErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrInvalidInput):
 		fail(w, http.StatusBadRequest, err.Error())
 	default:
-		slog.Error("request failed", "error", err)
-		fail(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, internalError(err))
 	}
+}
+
+// internalError logs err under a short reference and returns the text the
+// caller sees instead: the reference ties a report to the log line, while
+// what failed inside — a driver message, a table name — stays in the log.
+func internalError(err error) string {
+	raw := make([]byte, 4)
+	_, _ = rand.Read(raw)
+	ref := hex.EncodeToString(raw)
+	slog.Error("request failed", "ref", ref, "error", err)
+	return "服务端内部错误（编号 " + ref + "），详情见服务端日志"
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {

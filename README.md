@@ -30,24 +30,40 @@ Go + React + Postgres 实现的多用户 LLM API 网关。核心目标是**尽�
 
 ```bash
 cp .env.example .env
-# 必填三项，都没有默认值
+# 必填项，都没有默认值
 sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" .env
 sed -i "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=$(openssl rand -hex 32)|" .env
 sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(openssl rand -hex 32)|" .env
+sed -i "s|^APP_DB_PASSWORD=.*|APP_DB_PASSWORD=$(openssl rand -hex 32)|" .env
+# 首个管理员的密码，至少 12 个字符，只在库里还没有用户时读取
+sed -i "s|^INIT_ADMIN_PASS=.*|INIT_ADMIN_PASS=$(openssl rand -hex 12)|" .env
 
 docker compose up -d --build
 ```
 
-打开 http://localhost:3200 ，用 `.env` 里的 `INIT_ADMIN_USER` / `INIT_ADMIN_PASS`（默认 `admin` / `admin123`）登录，**第一件事是改密码**。
+打开 http://localhost:3200 ，用 `.env` 里的 `INIT_ADMIN_USER`（默认 `admin`）和 `INIT_ADMIN_PASS` 登录。`INIT_ADMIN_PASS` 没有默认值，不足 12 个字符时服务拒绝创建管理员、直接退出。注册默认关闭，需要时在「全局设置」里打开。
 
 想换端口只改 `.env` 里的 `SERVER_PORT`（宿主机映射端口），例如 `SERVER_PORT=8080` 后 `docker compose up -d` 即可，容器内部始终监听 3200。
+
+### 从旧版本升级
+
+服务改用非超级用户 `APP_DB_USER` 连库。新数据卷初始化时会自动建好这个角色；已有数据卷的部署要手动补一次：
+
+```bash
+# 先在 .env 里补上 APP_DB_USER、APP_DB_PASSWORD
+docker compose up -d postgres
+docker compose exec postgres /docker-entrypoint-initdb.d/10-app-role.sh
+docker compose up -d --build
+```
+
+脚本可以重复执行。以后要改 `APP_DB_PASSWORD`，也是改完 `.env` 再把这三条跑一遍。
 
 ### 本地开发
 
 ```bash
 make db-up        # 只起 Postgres（映射到宿主机 127.0.0.1:5433）
 make web          # 构建前端到 web/dist
-make run          # 编译并运行后端，读取 .env（DATABASE_URL 里的口令要与 POSTGRES_PASSWORD 一致）
+make run          # 编译并运行后端，读取 .env（DATABASE_URL 用应用角色，口令与 APP_DB_PASSWORD 一致）
 
 make dev          # 另开终端跑 Vite，热更新，自动代理 /api 与 /v1 到 :3200
 ```
@@ -255,8 +271,10 @@ GROUP BY model ORDER BY 3 DESC;
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `JWT_SECRET` | 必填 | 会话签名密钥 |
-| `ENCRYPTION_KEY` | 必填 | 渠道密钥加密主密钥，**更换会导致已存密钥无法解密** |
-| `POSTGRES_PASSWORD` | 必填 | 数据库口令，该角色是超级用户。只在数据卷首次初始化时生效，之后要改还得在库里 `ALTER ROLE` |
+| `ENCRYPTION_KEY` | 必填 | 渠道凭证加密主密钥，**更换会导致已存的渠道密钥、凭证类请求头和代理地址无法解密** |
+| `POSTGRES_PASSWORD` | 必填 | 超级用户口令，只用于初始化和运维。只在数据卷首次初始化时生效，之后要改还得在库里 `ALTER ROLE` |
+| `APP_DB_USER` | `faketoken_app` | 服务和备份连库用的角色：库和所有表的属主，不是超级用户 |
+| `APP_DB_PASSWORD` | 必填 | 上面那个角色的口令。改它要重跑 `scripts/pg-init-app-role.sh`（见快速开始） |
 | `DATABASE_URL` | localhost:5433 | Postgres 连接串 |
 | `LISTEN` | `:3200` | 进程监听地址（容器内） |
 | `SERVER_PORT` | `3200` | docker-compose 发布到宿主机的端口 |
@@ -265,7 +283,8 @@ GROUP BY model ORDER BY 3 DESC;
 | `STREAM_IDLE_TIMEOUT` | `120s` | 流式响应静默多久判定为卡死 |
 | `MAX_RETRIES` | `3` | 单次请求最多尝试的渠道数 |
 | `RETRY_BACKOFF` | `200ms` | 换渠道重试前的停顿基数，按尝试次数递增，上限 2 秒 |
-| `ALLOW_REGISTER` | `true` | 是否开放注册，可在「全局设置」中覆盖（无需重启） |
+| `INIT_ADMIN_PASS` | 首次启动必填 | 首个管理员的密码，至少 12 个字符；库里已有用户后不再读取 |
+| `ALLOW_REGISTER` | `false` | 是否开放注册，可在「全局设置」中覆盖（无需重启） |
 | `INIT_QUOTA_MICRO_USD` | `1000000` | 新用户初始余额（$1），可在「全局设置」中覆盖 |
 | `BILLING_UNPRICED_POLICY` | `reject` | 模型未配价时：`reject` / `fallback` / `free` |
 | `BILLING_FALLBACK_INPUT_PRICE` | `0` | 兜底输入价（美元 / 1M token），仅 `fallback` 使用 |
@@ -281,12 +300,14 @@ GROUP BY model ORDER BY 3 DESC;
 - 用户密码用 bcrypt 存储，不可逆
 - 登录、注册、改密按来源 IP 和用户名分别计失败次数：第 5 次失败起锁定 1 分钟，之后每次失败翻倍，最长 15 分钟，锁定期间连正确密码也拒绝（`429` + `Retry-After`）。不存在的用户名同样计数、同样跑一次 bcrypt，响应和耗时都分不出用户名是否存在。注册时只有不存在的邀请码算猜测
 - Postgres 端口只绑 `127.0.0.1`，口令没有默认值
+- 服务和备份以非超级用户 `APP_DB_USER` 连库。它是库和所有表的属主，迁移照常执行，但碰不到库外的东西（`COPY ... PROGRAM`、读服务器文件都不行）。集成测试也用这个角色跑，需要超级用户的迁移会先在测试里失败
+- 500 错误只返回一个编号，驱动报错、表名这类内部信息只写进服务端日志，按编号可查
 - 改密（本人修改或管理员重置）后，之前签发的会话全部失效；本人改密的那个页面会换发新令牌，不用重新登录。已打开的实时日志流在下一次心跳（20 秒内）断开
 - 读不到注册开关或邀请码开关时按关闭处理，注册返回 `503`，不回落到环境变量的默认值
 - 控制台响应带 CSP（脚本只允许同源和 index.html 自带的内联脚本，后者按启动时读到的内容计算哈希）、`nosniff`、`X-Frame-Options: DENY`；转发接口的响应不加，保持透传
 - API 密钥用 sha256 索引（转发热路径只比对哈希，不做解密），同时用 AES-256-GCM 加密留存一份，便于在密钥页重新复制。这是一个取舍：数据库单独泄露拿不到可用密钥，但泄露叠加 `ENCRYPTION_KEY` 就可以——与渠道上游密钥同样的假设。不想要这一层的话，删掉 `tokens.key_enc` 即可退回只存哈希
 - 取回密钥是独立接口 `GET /api/tokens/{id}/key`，只有密钥所有者和管理员可调用；列表接口永远不返回明文
-- 渠道上游密钥用 AES-256-GCM 加密落库，API 返回时脱敏为 `sk-abc...wxyz`
+- 渠道上游密钥用 AES-256-GCM 加密落库，API 返回时脱敏为 `sk-abc...wxyz`。凭证类请求头的值和代理地址同样加密落库，库和备份里都读不到；普通请求头保持明文，便于直接查库排查。升级前存下的明文在启动时自动加密
 - 编辑渠道时密钥留空表示保持不变，密钥不会回传到浏览器
 - 渠道的凭证类请求头（名字含 auth、key、token、secret、cookie、password）和代理地址里的密码，返回时同样脱敏；保存时原样带回的脱敏值表示不修改，对不上原值的占位会被拒绝
 

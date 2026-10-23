@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/faketoken/faketoken/internal/api"
 	"github.com/faketoken/faketoken/internal/auth"
@@ -64,6 +65,14 @@ func run() error {
 
 	if err := bootstrapAdmin(ctx, st, cfg); err != nil {
 		return err
+	}
+
+	// Credentials saved before the store encrypted them get sealed here. Not
+	// fatal: nothing depends on it, and the next boot tries again.
+	if sealed, err := st.SealChannelSecrets(ctx); err != nil {
+		slog.Error("could not encrypt channel credentials stored in the clear", "error", err)
+	} else if sealed > 0 {
+		slog.Info("encrypted channel credentials stored in the clear", "channels", sealed)
 	}
 
 	settings := billing.Settings{
@@ -204,6 +213,11 @@ func logKeepaliveSchedule(ctx context.Context, st *store.Store) {
 	}
 }
 
+// minInitAdminPass is longer than the console's own minimum: the gateway may
+// face the internet the moment it boots, and nothing forces this password to
+// be changed afterwards.
+const minInitAdminPass = 12
+
 // bootstrapAdmin creates the first administrator on an empty database.
 func bootstrapAdmin(ctx context.Context, st *store.Store, cfg *config.Config) error {
 	count, err := st.CountUsers(ctx)
@@ -214,6 +228,9 @@ func bootstrapAdmin(ctx context.Context, st *store.Store, cfg *config.Config) er
 		return nil
 	}
 
+	if err := checkInitAdminPass(cfg.InitAdminPass); err != nil {
+		return err
+	}
 	hash, err := auth.HashPassword(cfg.InitAdminPass)
 	if err != nil {
 		return err
@@ -231,5 +248,15 @@ func bootstrapAdmin(ctx context.Context, st *store.Store, cfg *config.Config) er
 	}
 	slog.Warn("created the initial administrator account — change the password immediately",
 		"username", cfg.InitAdminUser)
+	return nil
+}
+
+// checkInitAdminPass refuses a missing or short first password. There is no
+// default to fall back on: a default password is a published one.
+func checkInitAdminPass(pass string) error {
+	if utf8.RuneCountInString(pass) < minInitAdminPass {
+		return fmt.Errorf("set INIT_ADMIN_PASS to at least %d characters to create the first administrator",
+			minInitAdminPass)
+	}
 	return nil
 }

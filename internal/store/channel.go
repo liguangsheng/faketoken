@@ -81,6 +81,8 @@ func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 	if c.Headers == nil {
 		c.Headers = map[string]string{}
 	}
+	s.openHeaders(c.Headers)
+	c.ProxyURL = s.open(c.ProxyURL)
 	if c.SupportedProtocols == nil {
 		c.SupportedProtocols = []string{}
 	}
@@ -98,6 +100,10 @@ func (s *Store) scanChannel(row pgx.Row) (*model.Channel, error) {
 
 func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Channel, error) {
 	enc, err := s.cipher.Encrypt(c.APIKey)
+	if err != nil {
+		return nil, err
+	}
+	headers, proxy, err := s.sealedSecrets(c.Headers, c.ProxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +128,7 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
 		RETURNING `+channelColumns,
 		c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, enc, c.Status, c.Priority, c.Weight,
-		c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL, c.PriceRatio,
+		c.Groups, c.Models, c.ModelMapping, headers, c.TimeoutSecs, proxy, c.PriceRatio,
 		c.RPMLimit, c.Note, c.RetryCount, c.RetryBackoffMS, c.ModelPrefixes, c.TestModel, normaliseProtocols(c.SupportedProtocols),
 		model.NormaliseEffortMapping(c.ReasoningEffortMapping),
 		c.AllowAttachments,
@@ -143,6 +149,10 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 }
 
 func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Channel, error) {
+	headers, proxy, err := s.sealedSecrets(c.Headers, c.ProxyURL)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -153,7 +163,7 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	// round-trip the secret back to the browser.
 	keyClause := "api_key_enc"
 	args := []any{c.ID, c.Name, strings.TrimRight(c.BaseURL, "/"), c.AuthStyle, c.Status, c.Priority,
-		c.Weight, c.Groups, c.Models, c.ModelMapping, c.Headers, c.TimeoutSecs, c.ProxyURL,
+		c.Weight, c.Groups, c.Models, c.ModelMapping, headers, c.TimeoutSecs, proxy,
 		c.PriceRatio, c.RPMLimit, c.Note, c.RetryCount, c.RetryBackoffMS, c.ModelPrefixes, c.TestModel,
 		normaliseProtocols(c.SupportedProtocols),
 		model.NormaliseEffortMapping(c.ReasoningEffortMapping),

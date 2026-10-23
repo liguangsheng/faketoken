@@ -24,7 +24,7 @@ DSN=$(
 	[ -f .env ] && . ./.env
 	set +a
 	printf 'postgres://%s:%s@127.0.0.1:%s/faketoken_test?sslmode=disable' \
-		"${POSTGRES_USER:-faketoken}" "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}" \
+		"${APP_DB_USER:-faketoken_app}" "${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}" \
 		"${TEST_POSTGRES_PORT:-5434}"
 )
 
@@ -52,5 +52,9 @@ teardown() {
 trap teardown EXIT INT TERM
 
 docker compose --profile test up -d --wait "$SERVICE"
+# The suite connects as the unprivileged role the server uses. A fresh
+# instance created it while initialising; one kept up from before may predate
+# it or hold an older password. The script is idempotent either way.
+docker compose --profile test exec -T "$SERVICE" /docker-entrypoint-initdb.d/10-app-role.sh
 
 TEST_DATABASE_URL="$DSN" go test ./internal/api -count=1 "$@"

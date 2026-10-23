@@ -51,3 +51,23 @@ func withRequiredSecrets(t *testing.T) {
 	t.Setenv("JWT_SECRET", "test-secret")
 	t.Setenv("ENCRYPTION_KEY", "test-encryption-key")
 }
+
+// A fresh deployment can face the internet before anyone opens the console, so
+// nothing defaults to open: registration is closed, and there is no
+// administrator password to guess.
+func TestDefaultsAreClosed(t *testing.T) {
+	withRequiredSecrets(t)
+	t.Setenv("ALLOW_REGISTER", "")
+	t.Setenv("INIT_ADMIN_PASS", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AllowRegister {
+		t.Fatal("registration is open by default")
+	}
+	if cfg.InitAdminPass != "" {
+		t.Fatalf("the first administrator gets a default password: %q", cfg.InitAdminPass)
+	}
+}

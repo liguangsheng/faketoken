@@ -9,6 +9,8 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -190,6 +192,17 @@ func writeError(w http.ResponseWriter, status int, errType, code, message string
 	})
 }
 
+// internalError logs err under a short reference and returns what the caller
+// reads instead. Callers include anonymous ones, and a driver message names
+// hosts, roles and tables; the reference is enough to find the log line.
+func internalError(err error) string {
+	raw := make([]byte, 4)
+	_, _ = rand.Read(raw)
+	ref := hex.EncodeToString(raw)
+	slog.Error("internal error", "ref", ref, "error", err)
+	return "internal error (ref " + ref + ")"
+}
+
 // ------------------------------------------------------------- authentication
 
 type principal struct {
@@ -234,7 +247,7 @@ func (rl *Relay) authenticate(ctx context.Context, r *http.Request) (*principal,
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, http.StatusUnauthorized, errors.New("invalid API key")
 		}
-		return nil, http.StatusInternalServerError, err
+		return nil, http.StatusInternalServerError, errors.New(internalError(err))
 	}
 	if token.Status != model.StatusEnabled {
 		return nil, http.StatusForbidden, errors.New("this API key is disabled")
@@ -271,7 +284,7 @@ func (rl *Relay) handleModels(w http.ResponseWriter, r *http.Request) {
 
 	models, err := rl.st.GroupModels(ctx, p.group())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "server_error", "", err.Error())
+		writeError(w, http.StatusInternalServerError, "server_error", "", internalError(err))
 		return
 	}
 	models = filterAllowed(models, p.token.AllowedModels)
@@ -503,7 +516,7 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		candidates, err = rl.st.Candidates(ctx, p.group(), info.Model, c.protocol)
 		if err != nil {
-			rl.reject(c, http.StatusInternalServerError, "server_error", "", err.Error(), "")
+			rl.reject(c, http.StatusInternalServerError, "server_error", "", internalError(err), err.Error())
 			return
 		}
 		if len(candidates) == 0 {
@@ -574,7 +587,7 @@ func (rl *Relay) pinnedCandidate(c *call, pin string) (model.Candidate, bool) {
 		return model.Candidate{}, false
 	}
 	if err != nil {
-		rl.reject(c, http.StatusInternalServerError, "server_error", "", err.Error(), "")
+		rl.reject(c, http.StatusInternalServerError, "server_error", "", internalError(err), err.Error())
 		return model.Candidate{}, false
 	}
 	return *pinned, true
@@ -878,7 +891,7 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 		lockedUA, lockErr = rl.st.GetChannelUserAgent(ctx, ch.ID, upstreamProtocol)
 		if lockErr != nil {
 			return attemptOutcome{kind: outcomeRetry, status: http.StatusInternalServerError,
-				message: "could not read the channel User-Agent configuration: " + lockErr.Error()}
+				message: internalError(fmt.Errorf("read the channel User-Agent configuration: %w", lockErr))}
 		}
 		// An explicitly configured value always wins, even when automatic
 		// locking is disabled, and wins over the channel's additional headers.
