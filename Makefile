@@ -1,4 +1,4 @@
-.PHONY: help dev build web run test test-db test-db-down test-integration lint fmt db-up db-down up down logs backup backups search clean
+.PHONY: help dev build web run test test-db test-db-down test-integration lint fmt db-up db-down up down logs backup backups clean
 
 BIN := bin/server
 
@@ -57,14 +57,6 @@ logs: ## Follow the server logs
 
 backup: ## Take an on-demand dump now (the service also dumps nightly)
 	docker compose run --rm backup once
-
-# KEYWORD is required; anything else goes in ARGS, e.g.
-#   make search KEYWORD=海鸥 ARGS='--field req --no-bodies'
-# Quoted so a keyword with spaces survives; for one containing quotes or $,
-# call scripts/search-logs.sh directly.
-search: ## Search the captured request/response bodies, export to .search/ (KEYWORD=...)
-	@[ -n "$(KEYWORD)" ] || { echo "set KEYWORD=<关键字>" >&2; exit 2; }
-	@./scripts/search-logs.sh $(ARGS) -- "$(KEYWORD)"
 
 backups: ## List the dumps currently retained
 	@ls -lh $${BACKUP_DIR:-./.backup}/*.dump 2>/dev/null || echo "no dumps yet"

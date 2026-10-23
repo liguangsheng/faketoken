@@ -15,7 +15,7 @@ const FALLBACK: ConsoleSettings = {
   allow_register: false,
   import_priority: 999,
   import_weight: 100,
-  log_detail_keep: 1000,
+  log_detail_keep: 20000,
   require_invite_code: false,
   blocked_status: 200,
   block_rules: [],

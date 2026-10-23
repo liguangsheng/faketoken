@@ -101,6 +101,10 @@ func run() error {
 	keepalive.New(st).Start(ctx, time.Minute)
 	logKeepaliveSchedule(ctx, st)
 
+	// Bodies share chunks, so trimming the window leaves orphans behind.
+	// Nothing waits on them; collecting every few minutes bounds the waste.
+	st.StartChunkCollector(ctx, 10*time.Minute)
+
 	jwt := auth.NewJWTManager(cfg.JWTSecret, cfg.SessionTTL)
 	clients := upstream.NewPool()
 	rl := relay.New(st, pricer, cfg, clients)

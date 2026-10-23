@@ -71,10 +71,10 @@ const (
 	// channel unreachable. channelInput.toModel clamps to 1 for the same reason.
 	minImportWeight = 1
 
-	// Each retained call costs up to two bodies at the capture limit above, so
-	// the ceiling here is a storage decision more than a diagnostic one:
-	// 20 000 calls at the 64 MiB maximum would be far past any disk.
-	maxLogDetailKeep = 20_000
+	// Bodies are stored as shared chunks, so a call costs tens of kilobytes on
+	// average rather than up to two bodies at the capture limit. The ceiling
+	// is about how long a window is worth keeping, not about disk.
+	maxLogDetailKeep = 100_000
 	// Zero is meaningful: it stops recording bodies and clears what is stored.
 	minLogDetailKeep = 0
 

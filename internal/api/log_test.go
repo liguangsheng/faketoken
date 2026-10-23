@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -131,9 +132,10 @@ func TestRequestDetailKeepsEachCallsOwnBodies(t *testing.T) {
 		return len(listed.Data) >= 2
 	}, waiting("two log rows"))
 
-	// Newest first, so the second call is listed first.
-	for index, want := range []string{"second-question", "first-question"} {
-		entry := listed.Data[index]
+	// Matched by content, not position: each row is written by its own
+	// detached goroutine, so under load the second call's row can land first.
+	held := map[string]int64{}
+	for _, entry := range listed.Data[:2] {
 		// The bodies are written just after the log row they belong to, so a
 		// list that already has the row can still be a moment ahead of them.
 		var detail model.RequestLogDetail
@@ -147,13 +149,19 @@ func TestRequestDetailKeepsEachCallsOwnBodies(t *testing.T) {
 		}, func() string {
 			return fmt.Sprintf("detail for log %d, last saw HTTP %d", entry.ID, status)
 		})
-		if !strings.Contains(detail.RequestBody, want) {
-			t.Fatalf("log %d holds the wrong request: want %q in %s",
-				entry.ID, want, detail.RequestBody)
+		for _, prompt := range []string{"first-question", "second-question"} {
+			if strings.Contains(detail.RequestBody, prompt) {
+				held[prompt] = entry.ID
+			}
 		}
 		if detail.ResponseBody == "" {
 			t.Fatalf("log %d kept no response body", entry.ID)
 		}
+	}
+	// Collapsed into one record per conversation, both rows would hold the
+	// same prompt and one of the two would be missing here.
+	if len(held) != 2 || held["first-question"] == held["second-question"] {
+		t.Fatalf("the two calls hold %v, want each prompt on its own row", held)
 	}
 }
 
@@ -244,28 +252,40 @@ func TestRequestDetailWindowDropsTheOldest(t *testing.T) {
 		return len(listed.Data) >= calls
 	}, func() string { return fmt.Sprintf("%d log rows, saw %d", calls, len(listed.Data)) })
 
-	var stored int
+	// The window is by log id. A count of 3 alone can hold for a moment
+	// while later bodies are still being written, so wait for the exact set.
+	ids := logIDs(listed.Data)
+	want := ids[len(ids)-3:]
+	var stored []int64
 	waitFor(t, func() bool {
-		if err := h.pool.QueryRow(context.Background(),
-			`SELECT count(*) FROM request_log_details`).Scan(&stored); err != nil {
-			t.Fatal(err)
-		}
-		return stored == 3
-	}, func() string { return fmt.Sprintf("the window to settle at 3 rows, saw %d", stored) })
+		stored = h.storedBodyIDs(t)
+		return slices.Equal(stored, want)
+	}, func() string { return fmt.Sprintf("the window to settle at %v, saw %v", want, stored) })
 
 	newest := h.do(http.MethodGet,
-		fmt.Sprintf("/api/admin/logs/%d/detail", listed.Data[0].ID), h.admin, nil, nil)
+		fmt.Sprintf("/api/admin/logs/%d/detail", ids[len(ids)-1]), h.admin, nil, nil)
 	newest.Body.Close()
 	if newest.StatusCode != http.StatusOK {
 		t.Fatalf("the newest call lost its bodies: HTTP %d", newest.StatusCode)
 	}
 
 	oldest := h.do(http.MethodGet,
-		fmt.Sprintf("/api/admin/logs/%d/detail", listed.Data[calls-1].ID), h.admin, nil, nil)
+		fmt.Sprintf("/api/admin/logs/%d/detail", ids[0]), h.admin, nil, nil)
 	oldest.Body.Close()
 	if oldest.StatusCode != http.StatusGone {
 		t.Fatalf("the oldest call still has bodies: HTTP %d, want 410", oldest.StatusCode)
 	}
+}
+
+// logIDs returns the rows' ids in ascending order, which is the order the
+// detail window is cut in.
+func logIDs(rows []*model.RequestLog) []int64 {
+	ids := make([]int64, len(rows))
+	for i, r := range rows {
+		ids[i] = r.ID
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // Turning the window off has to clear what was already recorded, otherwise
@@ -288,10 +308,7 @@ func TestRequestDetailWindowOfZeroClearsStoredBodies(t *testing.T) {
 
 	var stored int
 	waitFor(t, func() bool {
-		if err := h.pool.QueryRow(context.Background(),
-			`SELECT count(*) FROM request_log_details`).Scan(&stored); err != nil {
-			t.Fatal(err)
-		}
+		stored = h.storedBodies(t)
 		return stored == 1
 	}, waiting("the first body to be recorded"))
 
@@ -305,13 +322,15 @@ func TestRequestDetailWindowOfZeroClearsStoredBodies(t *testing.T) {
 	_, _ = io.Copy(io.Discard, relayed.Body)
 	relayed.Body.Close()
 
+	// The chunks go too: turning recording off is a promise that no body is
+	// left on disk, and a chunk is a piece of one.
+	var chunks int
 	waitFor(t, func() bool {
-		if err := h.pool.QueryRow(context.Background(),
-			`SELECT count(*) FROM request_log_details`).Scan(&stored); err != nil {
-			t.Fatal(err)
-		}
-		return stored == 0
-	}, func() string { return fmt.Sprintf("stored bodies to be cleared, saw %d", stored) })
+		stored, chunks = h.storedBodies(t), h.storedChunks(t)
+		return stored == 0 && chunks == 0
+	}, func() string {
+		return fmt.Sprintf("stored bodies to be cleared, saw %d rows and %d chunks", stored, chunks)
+	})
 }
 
 // Purging the metadata must take the bodies with it: a body outliving the row
@@ -334,10 +353,7 @@ func TestPurgingLogsRemovesTheirBodies(t *testing.T) {
 
 	var stored int
 	waitFor(t, func() bool {
-		if err := h.pool.QueryRow(context.Background(),
-			`SELECT count(*) FROM request_log_details`).Scan(&stored); err != nil {
-			t.Fatal(err)
-		}
+		stored = h.storedBodies(t)
 		return stored == 1
 	}, waiting("the body to be recorded"))
 
@@ -348,12 +364,229 @@ func TestPurgingLogsRemovesTheirBodies(t *testing.T) {
 		t.Fatalf("purge: HTTP %d", resp.StatusCode)
 	}
 
-	if err := h.pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM request_log_details`).Scan(&stored); err != nil {
+	if stored = h.storedBodies(t); stored != 0 {
+		t.Fatalf("%d bodies outlived the purged logs", stored)
+	}
+
+	// The chunks are shared, so the purge cannot take them; the collector
+	// does, once nothing points at them. Collected here rather than waited
+	// for, with the grace period already behind them.
+	h.ageChunks(t)
+	if _, err := h.store.CollectChunks(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if stored != 0 {
-		t.Fatalf("%d bodies outlived the purged logs", stored)
+	if chunks := h.storedChunks(t); chunks != 0 {
+		t.Fatalf("%d chunks outlived the purged logs", chunks)
+	}
+}
+
+// A coding agent resends the whole conversation every turn. Stored as chunks,
+// the second turn has to cost its new tail rather than the history again, and
+// both turns still have to read back exactly as they were sent.
+func TestRequestDetailSharesRepeatedHistory(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1, 1)
+	})
+	h.createChannel(channelInput{
+		Name: "c", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	// A long, varied history: dedup only shows on bodies several chunks long.
+	var history strings.Builder
+	for i := range 4000 {
+		fmt.Fprintf(&history, "turn %d said something particular to %d. ", i, i*7919)
+	}
+	turn := func(tail string) string {
+		return `{"model":"gpt-4o","messages":[{"role":"user","content":"` +
+			history.String() + tail + `"}]}`
+	}
+	first, second := turn("first question"), turn("second question")
+
+	send := func(body string) {
+		r := h.relayRequest(http.MethodPost, "/v1/chat/completions", key, body)
+		_, _ = io.Copy(io.Discard, r.Body)
+		r.Body.Close()
+	}
+
+	send(first)
+	waitFor(t, func() bool { return h.storedBodies(t) == 1 }, waiting("the first body"))
+	afterFirst := h.storedChunks(t)
+
+	send(second)
+	waitFor(t, func() bool { return h.storedBodies(t) == 2 }, waiting("the second body"))
+	added := h.storedChunks(t) - afterFirst
+
+	if afterFirst < 10 {
+		t.Fatalf("the first body made %d chunks; the history is too short to test dedup", afterFirst)
+	}
+	// The changed tail, plus the response, which is new each time.
+	if added > 4 {
+		t.Fatalf("the second turn stored %d new chunks of %d, want only its tail", added, afterFirst)
+	}
+
+	var listed page[*model.RequestLog]
+	r := h.do(http.MethodGet, "/api/admin/logs", h.admin, nil, &listed)
+	r.Body.Close()
+	for i, want := range []string{"second question", "first question"} {
+		var detail model.RequestLogDetail
+		resp := h.do(http.MethodGet,
+			fmt.Sprintf("/api/admin/logs/%d/detail", listed.Data[i].ID), h.admin, nil, &detail)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("detail %d: HTTP %d", listed.Data[i].ID, resp.StatusCode)
+		}
+		if got := promptOf(t, detail.RequestBody); got != history.String()+want {
+			t.Fatalf("log %d read back a %d-byte prompt, want the %d sent",
+				listed.Data[i].ID, len(got), len(history.String()+want))
+		}
+	}
+}
+
+// promptOf is the user message of a stored chat request. The capture
+// re-indents JSON, so a body is compared by what it says, not byte for byte.
+func promptOf(t *testing.T, body string) string {
+	t.Helper()
+	var req struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil || len(req.Messages) != 1 {
+		t.Fatalf("stored body is not the chat request: %v", err)
+	}
+	return req.Messages[0].Content
+}
+
+// Parallel calls from one conversation store the same new chunks at the same
+// moment. None of them may lose its body to a deadlock or a conflict, and
+// every one has to read back as sent.
+func TestRequestDetailSurvivesConcurrentSharedWrites(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1, 1)
+	})
+	h.createChannel(channelInput{
+		Name: "c", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	var history strings.Builder
+	for i := range 4000 {
+		fmt.Fprintf(&history, "turn %d said something particular to %d. ", i, i*7919)
+	}
+
+	const calls = 12
+	var wg sync.WaitGroup
+	for i := range calls {
+		wg.Go(func() {
+			r := h.relayRequest(http.MethodPost, "/v1/chat/completions", key,
+				fmt.Sprintf(`{"model":"gpt-4o","messages":[{"role":"user","content":"%stail-%02d"}]}`,
+					history.String(), i))
+			_, _ = io.Copy(io.Discard, r.Body)
+			r.Body.Close()
+		})
+	}
+	wg.Wait()
+
+	var listed page[*model.RequestLog]
+	waitFor(t, func() bool {
+		r := h.do(http.MethodGet, "/api/admin/logs?limit=50", h.admin, nil, &listed)
+		r.Body.Close()
+		return len(listed.Data) >= calls && h.storedBodies(t) == calls
+	}, func() string {
+		return fmt.Sprintf("%d bodies, saw %d rows and %d bodies", calls, len(listed.Data), h.storedBodies(t))
+	})
+
+	tails := map[string]bool{}
+	for _, entry := range listed.Data {
+		var detail model.RequestLogDetail
+		r := h.do(http.MethodGet,
+			fmt.Sprintf("/api/admin/logs/%d/detail", entry.ID), h.admin, nil, &detail)
+		r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("log %d: HTTP %d", entry.ID, r.StatusCode)
+		}
+		prompt := promptOf(t, detail.RequestBody)
+		tail, ok := strings.CutPrefix(prompt, history.String())
+		if !ok || !strings.HasPrefix(tail, "tail-") {
+			t.Fatalf("log %d read back a damaged %d-byte prompt", entry.ID, len(prompt))
+		}
+		tails[tail] = true
+	}
+	if len(tails) != calls {
+		t.Fatalf("%d distinct calls read back, want %d", len(tails), calls)
+	}
+}
+
+// The collector takes what nothing points at and nothing else: a chunk shared
+// by a body still in the window has to survive the one that left.
+func TestChunkCollectorKeepsSharedChunks(t *testing.T) {
+	h := newHarness(t)
+
+	settings := h.settings(t)
+	settings.LogDetailKeep = 1
+	resp := h.do(http.MethodPut, "/api/admin/settings", h.admin, settings, nil)
+	resp.Body.Close()
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		chatResponse(w, "ok", 1, 1)
+	})
+	h.createChannel(channelInput{
+		Name: "c", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+
+	var history strings.Builder
+	for i := range 4000 {
+		fmt.Fprintf(&history, "turn %d said something particular to %d. ", i, i*7919)
+	}
+	for _, tail := range []string{"first", "second"} {
+		r := h.relayRequest(http.MethodPost, "/v1/chat/completions", key,
+			`{"model":"gpt-4o","messages":[{"role":"user","content":"`+history.String()+tail+`"}]}`)
+		_, _ = io.Copy(io.Discard, r.Body)
+		r.Body.Close()
+	}
+
+	// The window holds one: the newer call's body, once both are written.
+	var listed page[*model.RequestLog]
+	waitFor(t, func() bool {
+		r := h.do(http.MethodGet, "/api/admin/logs", h.admin, nil, &listed)
+		r.Body.Close()
+		return len(listed.Data) >= 2
+	}, waiting("two log rows"))
+	ids := logIDs(listed.Data)
+	newest := ids[len(ids)-1]
+	waitFor(t, func() bool {
+		return slices.Equal(h.storedBodyIDs(t), []int64{newest})
+	}, waiting("only the newer body left in the window"))
+
+	h.ageChunks(t)
+	removed, err := h.store.CollectChunks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed == 0 {
+		t.Fatal("the first call's own chunks were not collected")
+	}
+
+	var detail model.RequestLogDetail
+	r := h.do(http.MethodGet,
+		fmt.Sprintf("/api/admin/logs/%d/detail", newest), h.admin, nil, &detail)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("the surviving body cannot be read after collection: HTTP %d", r.StatusCode)
+	}
+	// Either call can hold the newer id, so either prompt may be the survivor.
+	if got := promptOf(t, detail.RequestBody); got != history.String()+"first" &&
+		got != history.String()+"second" {
+		t.Fatal("the surviving body did not read back intact")
 	}
 }
 

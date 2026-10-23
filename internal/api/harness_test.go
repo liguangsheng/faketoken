@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/faketoken/faketoken/internal/auth"
@@ -423,6 +424,52 @@ func waitFor(t *testing.T, cond func() bool, describe func() string) {
 // waiting builds a static description for waitFor.
 func waiting(text string) func() string {
 	return func() string { return text }
+}
+
+// storedBodies counts the calls whose full bodies are retained.
+func (h *harness) storedBodies(t *testing.T) int {
+	t.Helper()
+	return h.count(t, `SELECT count(*) FROM request_log_details`)
+}
+
+// storedBodyIDs lists the calls whose full bodies are retained, ascending.
+func (h *harness) storedBodyIDs(t *testing.T) []int64 {
+	t.Helper()
+	rows, err := h.pool.Query(context.Background(),
+		`SELECT log_id FROM request_log_details ORDER BY log_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
+// storedChunks counts the distinct body chunks on disk.
+func (h *harness) storedChunks(t *testing.T) int {
+	t.Helper()
+	return h.count(t, `SELECT count(*) FROM body_chunks`)
+}
+
+func (h *harness) count(t *testing.T, query string) int {
+	t.Helper()
+	var n int
+	if err := h.pool.QueryRow(context.Background(), query).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// ageChunks moves every chunk past the collector's grace period, so a test
+// can collect without waiting it out.
+func (h *harness) ageChunks(t *testing.T) {
+	t.Helper()
+	if _, err := h.pool.Exec(context.Background(),
+		`UPDATE body_chunks SET last_used = last_used - interval '1 day'`); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // createKey mints a relay API key for the admin user.

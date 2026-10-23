@@ -140,7 +140,7 @@ services:
       BACKUP_DIR: /backup
       BACKUP_AT: ${BACKUP_AT:-05:00}
       BACKUP_KEEP: ${BACKUP_KEEP:-10}
-      BACKUP_EXCLUDE_DATA: ${BACKUP_EXCLUDE_DATA:-request_log_details}
+      BACKUP_EXCLUDE_DATA: ${BACKUP_EXCLUDE_DATA:-request_log_details body_chunks}
     volumes:
       - ./scripts/pg-backup.sh:/usr/local/bin/pg-backup.sh:ro
       - ${BACKUP_DIR:-./.backup}:/backup

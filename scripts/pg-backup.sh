@@ -11,11 +11,12 @@ set -eu
 : "${BACKUP_DIR:=/backup}"
 : "${BACKUP_AT:=05:00}"       # local time in TZ, HH:MM
 : "${BACKUP_KEEP:=10}"        # how many dumps to keep, newest first
-# Tables whose rows are dropped from the dump, schema kept. request_log_details
-# holds the raw HTTP bodies and is two orders of magnitude larger than
-# everything else combined, so including it would make the backup a log
-# archive that happens to also carry the data you cannot lose.
-: "${BACKUP_EXCLUDE_DATA:=request_log_details}"
+# Tables whose rows are dropped from the dump, schema kept. The request and
+# response bodies (request_log_details and the body_chunks they point into)
+# are a rolling diagnostic window: restoring them buys nothing, and including
+# them would make the backup a log archive that happens to also carry the
+# data you cannot lose.
+: "${BACKUP_EXCLUDE_DATA:=request_log_details body_chunks}"
 : "${PGHOST:=postgres}"
 : "${PGUSER:=faketoken}"
 : "${PGDATABASE:=faketoken}"

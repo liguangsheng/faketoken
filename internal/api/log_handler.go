@@ -141,7 +141,8 @@ func (s *Server) handlePurgeLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	before := time.Now().AddDate(0, 0, -days)
 	// The stored bodies hang off request_logs with ON DELETE CASCADE, so this
-	// one statement takes them with it.
+	// one statement takes them with it. The chunks they shared go at the next
+	// collection.
 	deleted, err := s.store.DeleteLogsBefore(r.Context(), before)
 	if err != nil {
 		failErr(w, err)
