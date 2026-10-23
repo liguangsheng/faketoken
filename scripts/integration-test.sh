@@ -24,7 +24,7 @@ DSN=$(
 	[ -f .env ] && . ./.env
 	set +a
 	printf 'postgres://%s:%s@localhost:%s/faketoken_test?sslmode=disable' \
-		"${POSTGRES_USER:-llmproxy}" "${POSTGRES_PASSWORD:-llmproxy}" \
+		"${POSTGRES_USER:-faketoken}" "${POSTGRES_PASSWORD:-faketoken}" \
 		"${TEST_POSTGRES_PORT:-5434}"
 )
 

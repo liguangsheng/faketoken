@@ -73,7 +73,7 @@ func Load() (*Config, error) {
 	c := &Config{
 		Listen:            env("LISTEN", ":3200"),
 		BaseURL:           env("BASE_URL", ""),
-		DatabaseURL:       env("DATABASE_URL", "postgres://llmproxy:llmproxy@localhost:5432/llmproxy?sslmode=disable"),
+		DatabaseURL:       env("DATABASE_URL", "postgres://faketoken:faketoken@localhost:5432/faketoken?sslmode=disable"),
 		SessionTTL:        envDuration("SESSION_TTL", 7*24*time.Hour),
 		InitAdminUser:     env("INIT_ADMIN_USER", "admin"),
 		InitAdminPass:     env("INIT_ADMIN_PASS", "admin123"),

@@ -242,8 +242,8 @@ eval "$(
 	set -a
 	[ -f .env ] && . ./.env
 	set +a
-	echo "PGUSER='${POSTGRES_USER:-llmproxy}'"
-	echo "PGDATABASE='${POSTGRES_DB:-llmproxy}'"
+	echo "PGUSER='${POSTGRES_USER:-faketoken}'"
+	echo "PGDATABASE='${POSTGRES_DB:-faketoken}'"
 	echo "PGTZ='${TZ:-Asia/Singapore}'"
 )"
 

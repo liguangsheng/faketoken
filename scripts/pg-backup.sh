@@ -17,8 +17,8 @@ set -eu
 # archive that happens to also carry the data you cannot lose.
 : "${BACKUP_EXCLUDE_DATA:=request_log_details}"
 : "${PGHOST:=postgres}"
-: "${PGUSER:=llmproxy}"
-: "${PGDATABASE:=llmproxy}"
+: "${PGUSER:=faketoken}"
+: "${PGDATABASE:=faketoken}"
 
 log() { echo "[pg-backup] $(date '+%Y-%m-%d %H:%M:%S') $*"; }
 
