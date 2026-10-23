@@ -7,7 +7,9 @@ COPY web/ ./
 RUN npm run build
 
 # ---- backend -----------------------------------------------------------
-FROM golang:1.25-alpine AS build
+# Pinned to a patch release, and kept equal to the toolchain line in go.mod:
+# a floating tag only moves when someone remembers to pull it.
+FROM golang:1.27.3-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

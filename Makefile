@@ -21,8 +21,9 @@ dev: ## Run the Vite dev server against a local backend
 test: ## Run the Go test suite
 	go test ./... -count=1
 
-lint: ## Vet and format-check
+lint: ## Vet, format-check and confirm go.mod is tidy
 	go vet ./...
+	go mod tidy -diff
 	@[ -z "$$(gofmt -l ./cmd ./internal)" ] || (gofmt -l ./cmd ./internal; exit 1)
 
 fmt: ## Format Go sources
