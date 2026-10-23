@@ -120,8 +120,9 @@ export const api = {
   me: () => request<User>('GET', '/api/me'),
   updateMe: (display_name: string, email: string) =>
     request<User>('PUT', '/api/me', { display_name, email }),
+  /** Ends every other session; the reply carries this one's replacement token. */
   changePassword: (old_password: string, new_password: string) =>
-    request<{ message: string }>('PUT', '/api/me/password', {
+    request<{ message: string; token: string; expires_at: string }>('PUT', '/api/me/password', {
       old_password,
       new_password,
     }),

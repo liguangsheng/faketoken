@@ -11,13 +11,13 @@ import (
 )
 
 const userColumns = `id, username, password_hash, display_name, email, role, status,
-	user_group, quota, used_quota, request_count, created_at, updated_at`
+	user_group, quota, used_quota, request_count, created_at, updated_at, token_version`
 
 func scanUser(row pgx.Row) (*model.User, error) {
 	var u model.User
 	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName, &u.Email,
 		&u.Role, &u.Status, &u.Group, &u.Quota, &u.UsedQuota, &u.RequestCount,
-		&u.CreatedAt, &u.UpdatedAt)
+		&u.CreatedAt, &u.UpdatedAt, &u.TokenVersion)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -116,16 +116,15 @@ func (s *Store) UpdateUser(ctx context.Context, u *model.User) (*model.User, err
 	return scanUser(row)
 }
 
-func (s *Store) UpdateUserPassword(ctx context.Context, id int64, hash string) error {
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1`, id, hash)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+// UpdateUserPassword sets the hash and, in the same statement, bumps the token
+// version, so no session from before the change survives it. Returns the new
+// version for a caller that wants to stay signed in.
+func (s *Store) UpdateUserPassword(ctx context.Context, id int64, hash string) (int32, error) {
+	var version int32
+	err := s.pool.QueryRow(ctx, `UPDATE users
+		SET password_hash = $2, token_version = token_version + 1, updated_at = now()
+		WHERE id = $1 RETURNING token_version`, id, hash).Scan(&version)
+	return version, mapErr(err)
 }
 
 func (s *Store) UpdateUserProfile(ctx context.Context, id int64, displayName, email string) error {

@@ -694,6 +694,7 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
                       name="headers"
                       label="附加请求头"
                       tooltip="每行一个头，写成 Header-Name: value，可从 curl 或浏览器直接粘贴。其中的 User-Agent 会被上方锁定的 UA 覆盖"
+                      extra="凭证类请求头（名字含 auth、key、token 等）的值脱敏显示，含 •••• 的值保持原样即不修改"
                     >
                       <Input.TextArea
                         className="mono"
@@ -702,7 +703,11 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
                       />
                     </Form.Item>
 
-                    <Form.Item name="proxy_url" label="HTTP 代理" tooltip="例如 http://127.0.0.1:7890">
+                    <Form.Item
+                      name="proxy_url"
+                      label="HTTP 代理"
+                      tooltip="例如 http://127.0.0.1:7890。地址里的密码显示为 xxxxx，原样保存即不修改"
+                    >
                       <Input placeholder="留空表示直连" />
                     </Form.Item>
 

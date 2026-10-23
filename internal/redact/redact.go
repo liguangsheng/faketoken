@@ -35,7 +35,7 @@ func Headers(headers http.Header) map[string][]string {
 			break
 		}
 		canonical := http.CanonicalHeaderKey(key)
-		if sensitiveHeader(canonical) {
+		if SensitiveHeader(canonical) {
 			out[canonical] = []string{"[REDACTED]"}
 			continue
 		}
@@ -52,14 +52,18 @@ func Headers(headers http.Header) map[string][]string {
 	return out
 }
 
-func sensitiveHeader(name string) bool {
+// SensitiveHeader reports whether a header carries a credential, judged by its
+// name. Matched on parts rather than a list of names, because upstreams invent
+// their own (Ocp-Apim-Subscription-Key, X-Token), and it errs towards hiding: a
+// request id lost to redaction costs less than a key kept in the clear.
+func SensitiveHeader(name string) bool {
 	normalized := strings.ToLower(strings.ReplaceAll(name, "-", ""))
-	switch normalized {
-	case "authorization", "proxyauthorization", "cookie", "setcookie", "xapikey",
-		"xgoogapikey", "apikey", "xauthtoken", "xaccesstoken":
-		return true
+	for _, part := range []string{"auth", "key", "token", "secret", "cookie", "password"} {
+		if strings.Contains(normalized, part) {
+			return true
+		}
 	}
-	return strings.Contains(normalized, "secret")
+	return false
 }
 
 // Body renders a body for storage: truncated to the limit, redacted, and

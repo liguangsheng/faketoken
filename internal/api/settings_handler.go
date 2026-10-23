@@ -207,34 +207,40 @@ func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
 // allowRegister answers whether self-registration is open. Read per request so
 // closing it takes effect immediately, including for the anonymous status
 // endpoint the login page uses to decide whether to offer the register tab.
-func (s *Server) allowRegister(ctx context.Context) bool {
+//
+// A missing row falls back to the environment default. A read that fails is an
+// error instead: falling back there would open registration whenever the
+// database hiccups, on a deployment that closed it.
+func (s *Server) allowRegister(ctx context.Context) (bool, error) {
 	raw, err := s.store.GetOption(ctx, optionAllowRegister)
 	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			slog.Error("read registration setting", "error", err)
+		if errors.Is(err, store.ErrNotFound) {
+			return s.cfg.AllowRegister, nil
 		}
-		return s.cfg.AllowRegister
+		return false, fmt.Errorf("read registration setting: %w", err)
 	}
 	if value, err := strconv.ParseBool(raw); err == nil {
-		return value
+		return value, nil
 	}
-	return s.cfg.AllowRegister
+	return s.cfg.AllowRegister, nil
 }
 
 // requireInviteCode answers whether a visitor must present an invitation.
 // Read per request for the same reason allowRegister is: turning it on has to
 // take effect immediately, including for the anonymous status endpoint the
 // login page uses to decide whether to show the field.
-func (s *Server) requireInviteCode(ctx context.Context) bool {
+//
+// A failed read is an error, for the same reason as in allowRegister.
+func (s *Server) requireInviteCode(ctx context.Context) (bool, error) {
 	raw, err := s.store.GetOption(ctx, optionRequireInvite)
 	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			slog.Error("read invite requirement", "error", err)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
 		}
-		return false
+		return false, fmt.Errorf("read invite requirement: %w", err)
 	}
 	value, err := strconv.ParseBool(raw)
-	return err == nil && value
+	return err == nil && value, nil
 }
 
 // countKeywords totals the keywords across groups, for the startup and save

@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	"github.com/faketoken/faketoken/internal/logstream"
 	"github.com/faketoken/faketoken/internal/model"
 	"github.com/faketoken/faketoken/internal/relay"
+	"github.com/faketoken/faketoken/internal/store"
 )
 
 // heartbeatInterval keeps idle connections alive. Reverse proxies commonly
@@ -206,6 +210,7 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, filter strea
 	defer ticker.Stop()
 
 	ctx := r.Context()
+	me := userFrom(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -248,6 +253,12 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, filter strea
 			_ = rc.Flush()
 
 		case <-ticker.C:
+			// The feed outlives the request that authenticated it, so a
+			// password change, a disabled account or a lost role has to end it
+			// here. The console reconnects, and requireAuth decides afresh.
+			if me != nil && !s.sessionStillValid(ctx, me) {
+				return
+			}
 			// A comment doubles as the keepalive and as the channel for
 			// reporting events this consumer was too slow to receive.
 			if _, err := fmt.Fprintf(w, ": ping %d\n\n", sub.Dropped()); err != nil {
@@ -265,4 +276,22 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, filter strea
 			_ = rc.Flush()
 		}
 	}
+}
+
+// sessionStillValid repeats, for a connection that outlives its request, what
+// requireAuth checked when it opened: the account exists, is enabled, holds the
+// same role and has not changed its password since. A failed read keeps the
+// connection; the next heartbeat asks again.
+func (s *Server) sessionStillValid(ctx context.Context, me *model.User) bool {
+	current, err := s.store.GetUser(ctx, me.ID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return false
+		}
+		slog.Warn("could not re-check a streaming session", "user", me.ID, "error", err)
+		return true
+	}
+	return current.TokenVersion == me.TokenVersion &&
+		current.Status == model.StatusEnabled &&
+		current.Role == me.Role
 }

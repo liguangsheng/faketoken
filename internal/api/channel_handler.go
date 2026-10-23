@@ -202,12 +202,14 @@ func (s *Server) handleClearChannelUserAgent(w http.ResponseWriter, r *http.Requ
 	ok(w, mask(updated))
 }
 
-// mask hides the upstream credential; the console never needs the real value.
+// mask hides the upstream credentials; the console never needs the real values.
 func mask(ch *model.Channel) *model.Channel {
 	clone := *ch
 	if clone.APIKey != "" {
 		clone.APIKey = auth.MaskAPIKey(clone.APIKey)
 	}
+	clone.Headers = maskHeaders(ch.Headers)
+	clone.ProxyURL = maskProxy(ch.ProxyURL)
 	return &clone
 }
 
@@ -337,7 +339,12 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	created, err := s.store.CreateChannel(r.Context(), in.toModel(0))
+	ch := in.toModel(0)
+	if message, ok := keepMaskedSecrets(ch, nil); !ok {
+		fail(w, http.StatusBadRequest, message)
+		return
+	}
+	created, err := s.store.CreateChannel(r.Context(), ch)
 	if err != nil {
 		failErr(w, err)
 		return
@@ -359,7 +366,17 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := s.store.UpdateChannel(r.Context(), in.toModel(id))
+	stored, err := s.store.GetChannel(r.Context(), id)
+	if err != nil {
+		failErr(w, err)
+		return
+	}
+	ch := in.toModel(id)
+	if message, ok := keepMaskedSecrets(ch, stored); !ok {
+		fail(w, http.StatusBadRequest, message)
+		return
+	}
+	updated, err := s.store.UpdateChannel(r.Context(), ch)
 	if err != nil {
 		failErr(w, err)
 		return

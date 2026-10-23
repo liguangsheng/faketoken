@@ -162,7 +162,9 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		failErr(w, err)
 		return
 	}
-	if err := s.store.UpdateUserPassword(r.Context(), id, hash); err != nil {
+	// Ends the account's sessions as well: a reset is usually because someone
+	// else may know the old password.
+	if _, err := s.store.UpdateUserPassword(r.Context(), id, hash); err != nil {
 		failErr(w, err)
 		return
 	}

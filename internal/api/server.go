@@ -1,10 +1,14 @@
 package api
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/faketoken/faketoken/internal/auth"
@@ -166,7 +170,7 @@ func (s *Server) Handler() http.Handler {
 	// ---- single page app
 	mux.Handle("/", s.spaHandler())
 
-	return recoverPanic(requestLogger(withCORS(mux)))
+	return recoverPanic(requestLogger(withCORS(securityHeaders(consolePolicy(s.cfg.WebDir), mux))))
 }
 
 const version = "1.0.0"
@@ -176,17 +180,46 @@ const version = "1.0.0"
 // details and anything else that identifies the deployment stay behind a
 // session.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	open, openErr := s.allowRegister(r.Context())
+	invite, inviteErr := s.requireInviteCode(r.Context())
 	ok(w, map[string]any{
-		"allow_register": s.allowRegister(r.Context()),
+		// An unreadable setting reads as closed, which is what registration
+		// itself answers in that case.
+		"allow_register": open && openErr == nil && inviteErr == nil,
 		// Not a secret: a visitor finds out the moment they try to register,
 		// and telling the form up front avoids a pointless failed attempt.
 		// The codes themselves stay behind the administrator surface.
-		"require_invite_code": s.requireInviteCode(r.Context()),
+		"require_invite_code": invite,
 	})
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"version": version})
+}
+
+// inlineScript matches a script element and captures its attributes and body.
+var inlineScript = regexp.MustCompile(`(?is)<script([^>]*)>(.*?)</script>`)
+
+// consolePolicy builds the console's Content-Security-Policy. Scripts are what
+// an injected payload needs, and the session token sits in localStorage within
+// their reach, so they are the part locked down: this origin, plus the inline
+// scripts index.html ships, allowed by hash. Read from the built file at start,
+// so editing the theme script needs no matching edit here. Styles, images and
+// connections stay open: antd injects styles at runtime, and the playgrounds
+// show and fetch whatever an upstream points at.
+func consolePolicy(webDir string) string {
+	sources := []string{"'self'"}
+	if html, err := os.ReadFile(filepath.Join(webDir, "index.html")); err == nil {
+		for _, match := range inlineScript.FindAllSubmatch(html, -1) {
+			if bytes.Contains(bytes.ToLower(match[1]), []byte("src=")) {
+				continue
+			}
+			sum := sha256.Sum256(match[2])
+			sources = append(sources, "'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'")
+		}
+	}
+	return "script-src " + strings.Join(sources, " ") +
+		"; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 }
 
 // spaHandler serves the built React console and falls back to index.html so

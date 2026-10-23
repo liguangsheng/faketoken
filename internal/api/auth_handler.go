@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -34,6 +35,13 @@ func failInvite(w http.ResponseWriter, err error) {
 	default:
 		failErr(w, err)
 	}
+}
+
+// failRegistrationSettings refuses a signup whose switches could not be read.
+// Guessing them would mean guessing open.
+func failRegistrationSettings(w http.ResponseWriter, err error) {
+	slog.Error("signup refused", "error", err)
+	fail(w, http.StatusServiceUnavailable, "暂时无法注册，请稍后再试")
 }
 
 type sessionResponse struct {
@@ -77,7 +85,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, expires, err := s.jwt.Issue(user.ID, user.Role, user.Username)
+	token, expires, err := s.jwt.Issue(user.ID, user.Role, user.Username, user.TokenVersion)
 	if err != nil {
 		failErr(w, err)
 		return
@@ -89,7 +97,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Checked per request rather than at boot: an administrator closing
 	// registration from the console has to take effect on the next attempt,
 	// not the next restart.
-	if !s.allowRegister(r.Context()) {
+	open, err := s.allowRegister(r.Context())
+	if err != nil {
+		failRegistrationSettings(w, err)
+		return
+	}
+	if !open {
 		fail(w, http.StatusForbidden, "self-registration is disabled")
 		return
 	}
@@ -108,7 +121,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Whether an invitation is needed is decided here, not by the form: the
 	// register endpoint is reachable without ever loading the login page.
-	needsInvite := s.requireInviteCode(r.Context())
+	needsInvite, err := s.requireInviteCode(r.Context())
+	if err != nil {
+		failRegistrationSettings(w, err)
+		return
+	}
 	code := auth.NormalizeInviteCode(in.InviteCode)
 	if needsInvite && code == "" {
 		fail(w, http.StatusBadRequest, "注册需要邀请码")
@@ -166,7 +183,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, expires, err := s.jwt.Issue(user.ID, user.Role, user.Username)
+	token, expires, err := s.jwt.Issue(user.ID, user.Role, user.Username, user.TokenVersion)
 	if err != nil {
 		failErr(w, err)
 		return
@@ -231,11 +248,25 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		failErr(w, err)
 		return
 	}
-	if err := s.store.UpdateUserPassword(r.Context(), me.ID, hash); err != nil {
+	version, err := s.store.UpdateUserPassword(r.Context(), me.ID, hash)
+	if err != nil {
 		failErr(w, err)
 		return
 	}
-	ok(w, map[string]string{"message": "password updated"})
+
+	// The change ended every session, this one included. The caller just
+	// proved the password, so it gets a fresh token instead of a trip back to
+	// the login form; every other device has to sign in again.
+	token, expires, err := s.jwt.Issue(me.ID, me.Role, me.Username, version)
+	if err != nil {
+		failErr(w, err)
+		return
+	}
+	ok(w, map[string]string{
+		"message":    "password updated",
+		"token":      token,
+		"expires_at": expires.UTC().Format("2006-01-02T15:04:05Z"),
+	})
 }
 
 func (s *Server) handleMyModels(w http.ResponseWriter, r *http.Request) {

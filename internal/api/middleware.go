@@ -38,6 +38,12 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			fail(w, http.StatusUnauthorized, "account no longer exists")
 			return
 		}
+		// The password changed after this token was issued: whoever holds it
+		// has not proved they know the new one.
+		if claims.Version != user.TokenVersion {
+			fail(w, http.StatusUnauthorized, "session expired, please sign in again")
+			return
+		}
 		if user.Status != model.StatusEnabled {
 			fail(w, http.StatusForbidden, "this account is disabled")
 			return
@@ -94,6 +100,34 @@ func requestLogger(next http.Handler) http.Handler {
 				"status", rec.status, "duration", time.Since(start).Round(time.Millisecond))
 		}
 	})
+}
+
+// securityHeaders limits what a browser may do with the console's responses:
+// which scripts run, whether a page may frame it, whether a type may be
+// sniffed. The relay surface is left alone, because its responses are the
+// upstream's and pass through as they came.
+func securityHeaders(policy string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isRelayPath(r.URL.Path) {
+			h := w.Header()
+			h.Set("Content-Security-Policy", policy)
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Referrer-Policy", "same-origin")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isRelayPath reports whether a path belongs to the relay rather than the
+// console. Kept in step with relay.Register.
+func isRelayPath(path string) bool {
+	for _, prefix := range []string{"/v1/", "/v1beta/", "/v1alpha/", "/dashboard/billing/"} {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // withCORS lets the Vite dev server (and third-party SDKs hitting /v1) talk to

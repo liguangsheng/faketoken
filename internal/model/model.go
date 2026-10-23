@@ -67,6 +67,9 @@ type User struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 
 	PasswordHash string `json:"-"`
+	// TokenVersion is signed into every session token; a token carrying any
+	// other value is refused. Changing the password bumps it.
+	TokenVersion int32 `json:"-"`
 }
 
 func (u *User) IsAdmin() bool { return u.Role >= RoleAdmin }

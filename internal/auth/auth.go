@@ -196,6 +196,9 @@ type Claims struct {
 	UserID int64  `json:"uid"`
 	Role   int16  `json:"role"`
 	Name   string `json:"name"`
+	// Version is the account's token version at issue time. Absent from tokens
+	// older than the field, which decode it as 0.
+	Version int32 `json:"ver"`
 	jwt.RegisteredClaims
 }
 
@@ -208,12 +211,13 @@ func NewJWTManager(secret []byte, ttl time.Duration) *JWTManager {
 	return &JWTManager{secret: secret, ttl: ttl}
 }
 
-func (m *JWTManager) Issue(userID int64, role int16, name string) (string, time.Time, error) {
+func (m *JWTManager) Issue(userID int64, role int16, name string, version int32) (string, time.Time, error) {
 	expires := time.Now().Add(m.ttl)
 	claims := &Claims{
-		UserID: userID,
-		Role:   role,
-		Name:   name,
+		UserID:  userID,
+		Role:    role,
+		Name:    name,
+		Version: version,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   strconv.FormatInt(userID, 10),
 			ExpiresAt: jwt.NewNumericDate(expires),

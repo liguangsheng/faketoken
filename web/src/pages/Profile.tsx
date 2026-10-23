@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { App, Avatar, Button, Card, Col, Form, Input, Row, Space, Tag, Typography } from 'antd'
 
-import { api } from '../api/client'
+import { api, session } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import PageHeader from '../components/PageHeader'
 import { formatMoney, formatNumber, formatTime } from '../utils/format'
@@ -56,8 +56,11 @@ export default function Profile() {
   const changePassword = async (values: PasswordValues) => {
     setSavingPassword(true)
     try {
-      await api.changePassword(values.old_password, values.new_password)
-      message.success('密码已修改')
+      const result = await api.changePassword(values.old_password, values.new_password)
+      // The old token died with the old password; without this the next
+      // request would bounce this tab to the login form.
+      session.set(result.token)
+      message.success('密码已修改，其他设备需重新登录')
       passwordForm.resetFields()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '修改失败')
