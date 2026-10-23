@@ -25,14 +25,8 @@ func scanUser(row pgx.Row) (*model.User, error) {
 }
 
 func (s *Store) CreateUser(ctx context.Context, u *model.User) (*model.User, error) {
-	var exists bool
-	if err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM users WHERE lower(username) = lower($1))`, u.Username).
-		Scan(&exists); err != nil {
+	if err := s.CheckUsernameFree(ctx, u.Username); err != nil {
 		return nil, err
-	}
-	if exists {
-		return nil, fmt.Errorf("%w: username %q", ErrDuplicate, u.Username)
 	}
 
 	row := s.pool.QueryRow(ctx, `INSERT INTO users
@@ -40,6 +34,22 @@ func (s *Store) CreateUser(ctx context.Context, u *model.User) (*model.User, err
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING `+userColumns,
 		u.Username, u.PasswordHash, u.DisplayName, u.Email, u.Role, u.Status, u.Group, u.Quota)
 	return scanUser(row)
+}
+
+// CheckUsernameFree reports ErrDuplicate when the name is taken, ignoring case
+// like every username lookup. The insert stays the authority: the name can be
+// taken between this read and it.
+func (s *Store) CheckUsernameFree(ctx context.Context, username string) error {
+	var exists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE lower(username) = lower($1))`, username).
+		Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("%w: username %q", ErrDuplicate, username)
+	}
+	return nil
 }
 
 func (s *Store) GetUser(ctx context.Context, id int64) (*model.User, error) {

@@ -47,12 +47,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	ipKey, userKey := ipGuardKey(r), userGuardKey(in.Username)
+	if s.throttled(w, ipKey, userKey) {
+		return
+	}
 
 	user, err := s.store.GetUserByUsername(r.Context(), strings.TrimSpace(in.Username))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			// Same message for unknown user and wrong password: do not confirm
-			// which usernames exist.
+			// Same message, same bcrypt and same charge for an unknown user and
+			// a wrong password: none of them may confirm which usernames exist.
+			auth.CheckPassword(missHash(), in.Password)
+			s.charge("login failed", ipKey, userKey)
 			fail(w, http.StatusUnauthorized, "incorrect username or password")
 			return
 		}
@@ -60,9 +66,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !auth.CheckPassword(user.PasswordHash, in.Password) {
+		s.charge("login failed", ipKey, userKey)
 		fail(w, http.StatusUnauthorized, "incorrect username or password")
 		return
 	}
+	s.guard.succeed(ipKey)
+	s.guard.succeed(userKey)
 	if user.Status != model.StatusEnabled {
 		fail(w, http.StatusForbidden, "this account is disabled")
 		return
@@ -84,6 +93,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, "self-registration is disabled")
 		return
 	}
+	ipKey := ipGuardKey(r)
+	if s.throttled(w, ipKey) {
+		return
+	}
 	var in credentials
 	if !decode(w, r, &in) {
 		return
@@ -99,6 +112,26 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	code := auth.NormalizeInviteCode(in.InviteCode)
 	if needsInvite && code == "" {
 		fail(w, http.StatusBadRequest, "注册需要邀请码")
+		return
+	}
+
+	// Both checked before the bcrypt below, so a made-up code or a taken name
+	// costs an indexed read rather than ~100ms of CPU. The writes further down
+	// stay the authority: either answer can change before they run.
+	if needsInvite {
+		if err := s.store.CheckInviteCode(r.Context(), code); err != nil {
+			// Only a code that does not exist is a guess. A spent, disabled or
+			// expired one was real, and charging those would lock out the
+			// losers of a race the claim settles anyway.
+			if errors.Is(err, store.ErrInviteNotFound) {
+				s.charge("signup with an unknown invite code", ipKey)
+			}
+			failInvite(w, err)
+			return
+		}
+	}
+	if err := s.store.CheckUsernameFree(r.Context(), strings.TrimSpace(in.Username)); err != nil {
+		failErr(w, err)
 		return
 	}
 
@@ -177,10 +210,18 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	me := userFrom(r.Context())
+	// A stolen session must not become a way to guess the password, so this
+	// shares the login lock for the account.
+	userKey := userGuardKey(me.Username)
+	if s.throttled(w, userKey) {
+		return
+	}
 	if !auth.CheckPassword(me.PasswordHash, in.OldPassword) {
+		s.charge("wrong current password", userKey)
 		fail(w, http.StatusForbidden, "current password is incorrect")
 		return
 	}
+	s.guard.succeed(userKey)
 	if utf8.RuneCountInString(in.NewPassword) < 8 {
 		fail(w, http.StatusBadRequest, "the new password must be at least 8 characters")
 		return

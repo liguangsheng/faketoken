@@ -216,9 +216,27 @@ func (s *Store) CreateUserWithInvite(ctx context.Context, u *model.User, code st
 	return created, nil
 }
 
+// CheckInviteCode reports why code cannot be claimed right now, or nil when it
+// can, without claiming it. CreateUserWithInvite stays the authority: the code
+// can still be spent between this read and that claim.
+func (s *Store) CheckInviteCode(ctx context.Context, code string) error {
+	return s.inviteRefusal(ctx, code)
+}
+
 // explainInviteFailure turns "nothing was claimed" into a reason. Read outside
 // the caller's transaction, which is already destined to roll back.
 func (s *Store) explainInviteFailure(ctx context.Context, code string) error {
+	if err := s.inviteRefusal(ctx, code); err != nil {
+		return err
+	}
+	// The row looks usable now, so it was claimed between the failed UPDATE
+	// and this read. Reporting it as spent is the accurate answer.
+	return ErrInviteUsed
+}
+
+// inviteRefusal reads the reason code cannot be claimed; nil when it looks
+// usable.
+func (s *Store) inviteRefusal(ctx context.Context, code string) error {
 	var status int16
 	var expiresAt *time.Time
 	err := s.pool.QueryRow(ctx,
@@ -235,7 +253,5 @@ func (s *Store) explainInviteFailure(ctx context.Context, code string) error {
 	case expiresAt != nil && !expiresAt.After(time.Now()):
 		return ErrInviteExpired
 	}
-	// The row looks usable now, so it was claimed between the failed UPDATE
-	// and this read. Reporting it as spent is the accurate answer.
-	return ErrInviteUsed
+	return nil
 }

@@ -407,7 +407,7 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Endpoint:  r.URL.Path,
 		Method:    r.Method,
 		Stream:    info.Stream,
-		ClientIP:  clientIP(r),
+		ClientIP:  ClientIP(r),
 		// Read from what the caller already sent. A channel with a thinking-level
 		// mapping rewrites this per attempt to say what the upstream received.
 		ReasoningEffort: info.Effort,
@@ -1423,7 +1423,11 @@ func connectionTokens(h http.Header) map[string]struct{} {
 	return out
 }
 
-func clientIP(r *http.Request) string {
+// ClientIP names the caller the way the request log records it. It trusts the
+// first X-Forwarded-For entry, so it is only as good as the proxy in front: one
+// that overwrites the header names the real caller, while a caller reaching
+// the port directly can forge it.
+func ClientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		if idx := strings.IndexByte(xff, ','); idx > 0 {
 			return strings.TrimSpace(xff[:idx])

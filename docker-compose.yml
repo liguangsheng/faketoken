@@ -14,10 +14,16 @@ services:
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-faketoken}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-faketoken}
+      # No default: the role is a superuser, and a default is public by
+      # definition. Read only when the volume is first initialised; changing it
+      # later also takes an ALTER ROLE inside the database.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-faketoken}
+    # Loopback only. The port is for tools on the host (psql, make run);
+    # containers reach the database over the compose network, and nothing on
+    # the LAN has any business with it.
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
       # Postgres 18 images expect the mount one level above PGDATA so that
       # future pg_upgrade --link runs stay inside a single mount point.
@@ -41,10 +47,10 @@ services:
     profiles: ["test"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-faketoken}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-faketoken}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: faketoken_test
     ports:
-      - "${TEST_POSTGRES_PORT:-5434}:5432"
+      - "127.0.0.1:${TEST_POSTGRES_PORT:-5434}:5432"
     # cluster_name is the marker newHarness reads back to confirm which
     # instance it reached — a database name alone can be recreated anywhere,
     # including on the deployment cluster. The rest trades crash safety for
@@ -81,7 +87,7 @@ services:
       # Escaped line breaks: a double-quoted scalar folds them away, so the
       # value is still one unbroken URL.
       DATABASE_URL: "postgres://${POSTGRES_USER:-faketoken}:\
-        ${POSTGRES_PASSWORD:-faketoken}@postgres:5432/\
+        ${POSTGRES_PASSWORD}@postgres:5432/\
         ${POSTGRES_DB:-faketoken}?sslmode=disable"
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
@@ -133,7 +139,7 @@ services:
     environment:
       PGHOST: postgres
       PGUSER: ${POSTGRES_USER:-faketoken}
-      PGPASSWORD: ${POSTGRES_PASSWORD:-faketoken}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
       PGDATABASE: ${POSTGRES_DB:-faketoken}
       # BACKUP_AT is read in this zone, not UTC.
       TZ: ${TZ:-Asia/Singapore}

@@ -28,12 +28,14 @@ type Server struct {
 	prober   *probe.Prober
 	stream   *logstream.Broker
 	importer *billing.Importer
+	// guard locks out password guessing on login, signup and password change.
+	guard *attemptGuard
 }
 
 func NewServer(cfg *config.Config, st *store.Store, jwt *auth.JWTManager,
 	pricer *billing.Pricer, rl *relay.Relay, prober *probe.Prober, importer *billing.Importer) *Server {
 	s := &Server{cfg: cfg, store: st, jwt: jwt, pricer: pricer, relay: rl,
-		prober: prober, stream: logstream.New(), importer: importer}
+		prober: prober, stream: logstream.New(), importer: importer, guard: newAttemptGuard()}
 	// The relay produces the events this server hands out.
 	rl.SetLogStream(s.stream)
 	return s

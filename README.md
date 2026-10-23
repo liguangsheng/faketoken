@@ -30,9 +30,10 @@ Go + React + Postgres 实现的多用户 LLM API 网关。核心目标是**尽�
 
 ```bash
 cp .env.example .env
-# 必填两个密钥
+# 必填三项，都没有默认值
 sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" .env
 sed -i "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=$(openssl rand -hex 32)|" .env
+sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(openssl rand -hex 32)|" .env
 
 docker compose up -d --build
 ```
@@ -44,9 +45,9 @@ docker compose up -d --build
 ### 本地开发
 
 ```bash
-make db-up        # 只起 Postgres（映射到宿主机 5433）
+make db-up        # 只起 Postgres（映射到宿主机 127.0.0.1:5433）
 make web          # 构建前端到 web/dist
-make run          # 编译并运行后端，读取 .env
+make run          # 编译并运行后端，读取 .env（DATABASE_URL 里的口令要与 POSTGRES_PASSWORD 一致）
 
 make dev          # 另开终端跑 Vite，热更新，自动代理 /api 与 /v1 到 :3200
 ```
@@ -255,10 +256,11 @@ GROUP BY model ORDER BY 3 DESC;
 | --- | --- | --- |
 | `JWT_SECRET` | 必填 | 会话签名密钥 |
 | `ENCRYPTION_KEY` | 必填 | 渠道密钥加密主密钥，**更换会导致已存密钥无法解密** |
+| `POSTGRES_PASSWORD` | 必填 | 数据库口令，该角色是超级用户。只在数据卷首次初始化时生效，之后要改还得在库里 `ALTER ROLE` |
 | `DATABASE_URL` | localhost:5433 | Postgres 连接串 |
 | `LISTEN` | `:3200` | 进程监听地址（容器内） |
 | `SERVER_PORT` | `3200` | docker-compose 发布到宿主机的端口 |
-| `POSTGRES_PORT` | `5433` | Postgres 发布到宿主机的端口 |
+| `POSTGRES_PORT` | `5433` | Postgres 发布到宿主机的端口，只绑 `127.0.0.1` |
 | `RELAY_TIMEOUT` | `10m` | 单次上游请求总超时 |
 | `STREAM_IDLE_TIMEOUT` | `120s` | 流式响应静默多久判定为卡死 |
 | `MAX_RETRIES` | `3` | 单次请求最多尝试的渠道数 |
@@ -277,6 +279,8 @@ GROUP BY model ORDER BY 3 DESC;
 ## 安全说明
 
 - 用户密码用 bcrypt 存储，不可逆
+- 登录、注册、改密按来源 IP 和用户名分别计失败次数：第 5 次失败起锁定 1 分钟，之后每次失败翻倍，最长 15 分钟，锁定期间连正确密码也拒绝（`429` + `Retry-After`）。不存在的用户名同样计数、同样跑一次 bcrypt，响应和耗时都分不出用户名是否存在。注册时只有不存在的邀请码算猜测
+- Postgres 端口只绑 `127.0.0.1`，口令没有默认值
 - API 密钥用 sha256 索引（转发热路径只比对哈希，不做解密），同时用 AES-256-GCM 加密留存一份，便于在密钥页重新复制。这是一个取舍：数据库单独泄露拿不到可用密钥，但泄露叠加 `ENCRYPTION_KEY` 就可以——与渠道上游密钥同样的假设。不想要这一层的话，删掉 `tokens.key_enc` 即可退回只存哈希
 - 取回密钥是独立接口 `GET /api/tokens/{id}/key`，只有密钥所有者和管理员可调用；列表接口永远不返回明文
 - 渠道上游密钥用 AES-256-GCM 加密落库，API 返回时脱敏为 `sk-abc...wxyz`

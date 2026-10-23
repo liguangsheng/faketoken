@@ -23,8 +23,8 @@ DSN=$(
 	set -a
 	[ -f .env ] && . ./.env
 	set +a
-	printf 'postgres://%s:%s@localhost:%s/faketoken_test?sslmode=disable' \
-		"${POSTGRES_USER:-faketoken}" "${POSTGRES_PASSWORD:-faketoken}" \
+	printf 'postgres://%s:%s@127.0.0.1:%s/faketoken_test?sslmode=disable' \
+		"${POSTGRES_USER:-faketoken}" "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}" \
 		"${TEST_POSTGRES_PORT:-5434}"
 )
 
