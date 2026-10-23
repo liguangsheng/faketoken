@@ -62,6 +62,32 @@ func TestConsoleSettingsRoundTripAndAuthority(t *testing.T) {
 	}
 }
 
+// The capture cap reaches 128 MiB, for conversations that carry many images,
+// and stops there: past it, sanitising a body costs too much memory.
+func TestLogBodyLimitCeiling(t *testing.T) {
+	h := newHarness(t)
+
+	for _, tc := range []struct {
+		limit int
+		want  int
+	}{
+		{128 << 20, http.StatusOK},
+		{128<<20 + 1, http.StatusBadRequest},
+		{64<<10 - 1, http.StatusBadRequest},
+	} {
+		settings := h.settings(t)
+		settings.LogBodyLimit = tc.limit
+		resp := h.do(http.MethodPut, "/api/admin/settings", h.admin, settings, nil)
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Fatalf("limit %d: HTTP %d, want %d", tc.limit, resp.StatusCode, tc.want)
+		}
+	}
+	if got := h.settings(t).LogBodyLimit; got != 128<<20 {
+		t.Fatalf("stored limit %d, want 128 MiB", got)
+	}
+}
+
 // The import defaults are what the channel form starts from, so they have to
 // be readable before anything is configured and survive being changed.
 func TestImportDefaultsRoundTrip(t *testing.T) {

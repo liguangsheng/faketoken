@@ -51,8 +51,11 @@ const (
 	minDefaultPageSize = 5
 
 	// A million-token context runs to several megabytes of JSON, so the cap
-	// has to be in that range for a log to be worth reading at all.
-	maxLogBodyLimit = 64 << 20
+	// has to be in that range for a log to be worth reading at all. A
+	// conversation carrying images resends them as base64 every turn and runs
+	// far larger; chunking stores each image once, so what bounds the ceiling
+	// is sanitising, which peaks at about six times the body in memory.
+	maxLogBodyLimit = 128 << 20
 	minLogBodyLimit = 64 << 10
 
 	// Imported channels land above hand-made ones by default, and carry enough
@@ -365,7 +368,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validLogBodyLimit(in.LogBodyLimit) {
-		fail(w, http.StatusBadRequest, "the log body limit must be between 64 KiB and 64 MiB")
+		fail(w, http.StatusBadRequest, "the log body limit must be between 64 KiB and 128 MiB")
 		return
 	}
 	if !validImportPriority(in.ImportPriority) {

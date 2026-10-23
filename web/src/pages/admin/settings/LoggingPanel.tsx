@@ -31,7 +31,7 @@ export default function LoggingPanel({ draft, patch }: PanelProps) {
 
         <Form.Item
           label="单条上限"
-          help="单条请求或响应保留的最大字节数，超出部分截断。"
+          help="单条请求或响应保留的最大字节数。超过时 JSON 正文整条不保存，流式和文本正文截断。请求在网关入口另有 100 MiB 上限。"
           className="settings-form__last"
         >
           <Select
