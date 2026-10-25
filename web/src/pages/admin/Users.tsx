@@ -466,7 +466,7 @@ export default function Users() {
         onOk={submit}
         okText={editing ? '保存' : '创建'}
         confirmLoading={saving}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }} onFinish={() => void submit()}>
           {!editing && (
@@ -553,7 +553,7 @@ export default function Users() {
         okButtonProps={
           typeof quotaAmount === 'number' && quotaAmount < 0 ? { danger: true } : undefined
         }
-        destroyOnClose
+        destroyOnHidden
       >
         <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
           当前余额 {formatMoney(quotaTarget?.quota ?? 0)}，充值金额会累加到余额上；填负数表示扣减。
@@ -606,7 +606,7 @@ export default function Users() {
         onOk={resetPassword}
         confirmLoading={saving}
         okText="确认重置"
-        destroyOnClose
+        destroyOnHidden
       >
         <Form
           form={passwordForm}

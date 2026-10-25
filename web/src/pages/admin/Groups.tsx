@@ -283,7 +283,7 @@ export default function Groups() {
         onOk={submit}
         okText="保存"
         confirmLoading={saving}
-        destroyOnClose
+        destroyOnHidden
       >
         {editing && (
           <Alert

@@ -625,7 +625,7 @@ export default function Prices() {
         onOk={submit}
         okText={editing ? '保存' : '创建'}
         confirmLoading={saving}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }} onFinish={() => void submit()}>
           <Form.Item
@@ -692,7 +692,7 @@ export default function Prices() {
         onOk={submitPolicy}
         okText="保存"
         confirmLoading={savingPolicy}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={policyForm} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item

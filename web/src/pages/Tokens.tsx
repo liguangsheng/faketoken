@@ -642,7 +642,7 @@ export default function Tokens() {
         onOk={submit}
         confirmLoading={saving}
         okText={editing ? '保存' : '创建'}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form
           form={form}
