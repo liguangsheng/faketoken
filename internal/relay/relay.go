@@ -1203,9 +1203,18 @@ func (rl *Relay) settle(c *call, ch *model.Channel, out attemptOutcome) {
 	entry.DurationMS = int32(time.Since(c.started).Milliseconds())
 	entry.Error = out.message
 
+	// A call that failed before producing any output delivered nothing: the
+	// upstream refused or broke, and the caller has to send it again. It keeps
+	// the counts the upstream reported and is billed for none of them. The
+	// status alone cannot tell: a stream that dies after its 200 still reads
+	// 200, and an estimated prompt then billed it like one that answered.
+	deliveredNothing := (out.kind == outcomeAborted || out.streamFailed) &&
+		out.usage.CompletionTokens == 0
+	billable := out.status < 400 && out.hasUsage && !deliveredNothing
+
 	// Some upstreams report output but leave input at zero; estimate it so
 	// the input side is still logged and billed.
-	if out.status < 400 && out.hasUsage {
+	if billable {
 		out.usage, entry.PromptEstimated = estimateMissingPrompt(out.usage, c.protocol, c.body)
 	}
 
@@ -1215,7 +1224,7 @@ func (rl *Relay) settle(c *call, ch *model.Channel, out attemptOutcome) {
 	entry.CacheCreationTokens = int32(out.usage.CacheCreationTokens)
 	entry.TotalTokens = int32(out.usage.TotalTokens)
 
-	if out.status < 400 && out.hasUsage {
+	if billable {
 		var status billing.PriceStatus
 		// The same group that chose the channel has to price the request;
 		// routing by one group and billing by another would let a key reach a

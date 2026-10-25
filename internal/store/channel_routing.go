@@ -100,10 +100,12 @@ func (s *Store) GroupModels(ctx context.Context, group string) ([]string, error)
 	return models, rows.Err()
 }
 
-// AllModels lists every model any channel serves, in any group. It backs the
-// audit that tells administrators which models are still missing a price.
+// AllModels lists every model a routable channel serves, in any group. It
+// backs the audit that tells administrators which models are still missing a
+// price; a disabled or archived channel serves nothing, so its models would
+// only bury the ones that matter.
 func (s *Store) AllModels(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT DISTINCT model FROM abilities ORDER BY model`)
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT model FROM abilities WHERE enabled ORDER BY model`)
 	if err != nil {
 		return nil, err
 	}

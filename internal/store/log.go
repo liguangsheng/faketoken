@@ -580,7 +580,9 @@ func (s *Store) TimeSeries(ctx context.Context, f LogFilter, interval string) ([
 }
 
 // TopBy aggregates spend grouped by "model", "upstream_model", "channel_name"
-// or "username". Rows with the column empty are skipped.
+// or "username", ranked by spend and then by calls. Rows with the column empty
+// are skipped, and so are groups that cost nothing and used no tokens: calls
+// that only failed would otherwise take places in a ranking of spend.
 func (s *Store) TopBy(ctx context.Context, f LogFilter, column string, limit int) ([]NamedStat, error) {
 	switch column {
 	case "model", "upstream_model", "channel_name", "username":
@@ -594,7 +596,9 @@ func (s *Store) TopBy(ctx context.Context, f LogFilter, column string, limit int
 	query := fmt.Sprintf(`SELECT %s, count(*),
 		coalesce(sum(cost),0), coalesce(sum(total_tokens),0)
 		FROM request_logs WHERE %s AND %s <> ''
-		GROUP BY %s ORDER BY count(*) DESC LIMIT $%d`,
+		GROUP BY %s
+		HAVING coalesce(sum(cost),0) > 0 OR coalesce(sum(total_tokens),0) > 0
+		ORDER BY coalesce(sum(cost),0) DESC, count(*) DESC LIMIT $%d`,
 		column, where, column, column, len(args))
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {

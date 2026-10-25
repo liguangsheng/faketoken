@@ -1,13 +1,17 @@
 .PHONY: help dev build web run test test-db test-db-down test-integration lint fmt db-up db-down up down logs backup backups clean
 
 BIN := bin/server
+# Shown in the console sidebar. -dirty marks uncommitted changes, which `make up`
+# deploys along with everything else.
+VERSION := $(shell git describe --always --dirty --abbrev=7 2>/dev/null || echo dev)
+LDFLAGS := -X github.com/faketoken/faketoken/internal/api.version=$(VERSION)
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 build: ## Compile the server binary
-	go build -trimpath -o $(BIN) ./cmd/server
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/server
 
 web: ## Build the React console into web/dist
 	cd web && npm install && npm run build
@@ -21,10 +25,11 @@ dev: ## Run the Vite dev server against a local backend
 test: ## Run the Go test suite
 	go test ./... -count=1
 
-lint: ## Vet, format-check and confirm go.mod is tidy
+lint: ## Vet, format-check, confirm go.mod is tidy, and lint the console
 	go vet ./...
 	go mod tidy -diff
 	@[ -z "$$(gofmt -l ./cmd ./internal)" ] || (gofmt -l ./cmd ./internal; exit 1)
+	cd web && npm run --silent lint
 
 fmt: ## Format Go sources
 	gofmt -w ./cmd ./internal
@@ -48,7 +53,7 @@ db-down: ## Stop Postgres
 	docker compose stop postgres
 
 up: ## Build and start the whole stack
-	docker compose up -d --build
+	VERSION=$(VERSION) docker compose up -d --build
 
 down: ## Stop the stack
 	docker compose down

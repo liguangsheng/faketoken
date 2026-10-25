@@ -88,7 +88,11 @@ services:
       retries: 30
 
   server:
-    build: .
+    build:
+      context: .
+      # Set by `make up`; a bare `docker compose build` labels the build "dev".
+      args:
+        VERSION: ${VERSION:-dev}
     container_name: faketoken
     restart: always
     depends_on:

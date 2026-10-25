@@ -816,8 +816,10 @@ func TestStatsRankMappedModel(t *testing.T) {
 	if got := ranked("/api/admin/stats"); !slices.Equal(got, []string{"secret-upstream-model"}) {
 		t.Errorf("operator ranking = %v, want the mapped model only", got)
 	}
-	if got := ranked("/api/stats"); !slices.Equal(got, []string{"gpt-4o", "no-such-model"}) {
-		t.Errorf("own ranking = %v, want the requested names", got)
+	// The refused call cost nothing and used no tokens, so it holds no place in
+	// a ranking of spend; the one that answered ranks under the name asked for.
+	if got := ranked("/api/stats"); !slices.Equal(got, []string{"gpt-4o"}) {
+		t.Errorf("own ranking = %v, want the requested name only", got)
 	}
 }
 

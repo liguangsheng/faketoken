@@ -213,6 +213,18 @@ func mask(ch *model.Channel) *model.Channel {
 	return &clone
 }
 
+// handleChannelHealth reports every channel's last hour and day, keyed by id.
+// Separate from the listing so the page can show the table without waiting on
+// an aggregate over the log.
+func (s *Server) handleChannelHealth(w http.ResponseWriter, r *http.Request) {
+	health, err := s.store.RecentChannelHealth(r.Context(), time.Now())
+	if err != nil {
+		failErr(w, err)
+		return
+	}
+	ok(w, map[string]any{"data": health})
+}
+
 func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	offset, limit := pagination(r)
 	channels, total, err := s.store.ListChannels(r.Context(), store.ChannelFilter{

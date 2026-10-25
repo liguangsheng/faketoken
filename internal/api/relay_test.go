@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/faketoken/faketoken/internal/model"
@@ -1216,5 +1217,68 @@ func TestRegularUserCannotPinAChannel(t *testing.T) {
 	}
 	if up.requests.Load() != 0 {
 		t.Fatalf("a regular user's pin reached the upstream: %d calls", up.requests.Load())
+	}
+}
+
+// An upstream behind a shared gateway answers 200, sends message_start with
+// zero usage, then gives up. The caller got nothing and will send it again;
+// estimating the prompt here used to bill it like a call that answered.
+func TestFailedStreamWithNoOutputIsNotBilled(t *testing.T) {
+	h := newHarness(t)
+
+	// Read by the upstream goroutine, flipped by the test between calls.
+	var answer atomic.Bool
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		events := []string{
+			"event: message_start\ndata: " + `{"type":"message_start","message":{"id":"msg_1","type":"message",` +
+				`"role":"assistant","model":"claude-sonnet-4-5","content":[],"usage":{"input_tokens":0,"output_tokens":0}}}`,
+		}
+		if answer.Load() {
+			events = append(events,
+				"event: content_block_delta\ndata: "+`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+				"event: message_delta\ndata: "+`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+				"event: message_stop\ndata: "+`{"type":"message_stop"}`)
+		} else {
+			events = append(events,
+				"event: error\ndata: "+`{"type":"error","error":{"type":"overloaded_error","message":"Could not reach the provider."}}`)
+		}
+		for _, event := range events {
+			fmt.Fprint(w, event+"\n\n")
+			flusher.Flush()
+		}
+	})
+	h.createChannel(channelInput{
+		Name: "overloaded-gateway", Type: "anthropic", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"claude-sonnet-4-5"}, Groups: []string{"default"},
+	})
+	key := h.createKey()
+	send := func() {
+		resp := h.relayRequest(http.MethodPost, "/v1/messages", key,
+			`{"model":"claude-sonnet-4-5","stream":true,"max_tokens":16,`+
+				`"messages":[{"role":"user","content":"a prompt long enough to estimate"}]}`)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+
+	send()
+	failed := h.waitForLog(t, 1)
+	if !strings.Contains(failed.Error, "overloaded_error") {
+		t.Fatalf("the in-stream failure was not logged: %q", failed.Error)
+	}
+	if failed.Cost != 0 || failed.PromptEstimated || failed.PromptTokens != 0 {
+		t.Fatalf("a call that delivered nothing was billed: cost %d, prompt %d, estimated %v",
+			failed.Cost, failed.PromptTokens, failed.PromptEstimated)
+	}
+
+	// The estimate itself still applies to a call that answered.
+	answer.Store(true)
+	send()
+	answered := h.waitForLog(t, 2)
+	if !answered.PromptEstimated || answered.PromptTokens == 0 || answered.Cost == 0 {
+		t.Fatalf("a successful call lost its estimated prompt: cost %d, prompt %d, estimated %v",
+			answered.Cost, answered.PromptTokens, answered.PromptEstimated)
 	}
 }

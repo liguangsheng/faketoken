@@ -15,7 +15,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+# The build context carries no .git, so the version comes in as an argument.
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w -X github.com/faketoken/faketoken/internal/api.version=${VERSION}" \
+    -o /out/server ./cmd/server
 
 # ---- runtime -----------------------------------------------------------
 FROM alpine:3.21

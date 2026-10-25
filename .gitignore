@@ -12,6 +12,7 @@
 # database dumps
 /.backup/
 
-# agent task logs
+# agent task logs and working plans
+/.agents/
 /.pi/
 /.pi-lens.json

@@ -253,8 +253,15 @@ func (s *Server) writeStats(w http.ResponseWriter, r *http.Request, f store.LogF
 		if users, err := s.store.CountUsers(ctx); err == nil {
 			payload["user_count"] = users
 		}
-		if _, channels, err := s.store.ListChannels(ctx, store.ChannelFilter{Limit: 1}); err == nil {
+		// Archived channels are retired configuration, not part of the fleet.
+		current := false
+		if _, channels, err := s.store.ListChannels(ctx,
+			store.ChannelFilter{Limit: 1, Archived: &current}); err == nil {
 			payload["channel_count"] = channels
+		}
+		if _, enabled, err := s.store.ListChannels(ctx,
+			store.ChannelFilter{Limit: 1, Archived: &current, Status: int(model.StatusEnabled)}); err == nil {
+			payload["channel_enabled"] = enabled
 		}
 	}
 	ok(w, payload)

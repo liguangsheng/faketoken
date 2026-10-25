@@ -95,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/admin/users/{id}/password", s.requireAdmin(s.handleResetPassword))
 
 	mux.HandleFunc("GET /api/admin/channels", s.requireAdmin(s.handleListChannels))
+	mux.HandleFunc("GET /api/admin/channels/health", s.requireAdmin(s.handleChannelHealth))
 	mux.HandleFunc("POST /api/admin/channels", s.requireAdmin(s.handleCreateChannel))
 	mux.HandleFunc("GET /api/admin/channels/{id}", s.requireAdmin(s.handleGetChannel))
 	mux.HandleFunc("PUT /api/admin/channels/{id}", s.requireAdmin(s.handleUpdateChannel))
@@ -173,7 +174,10 @@ func (s *Server) Handler() http.Handler {
 	return recoverPanic(requestLogger(withCORS(securityHeaders(consolePolicy(s.cfg.WebDir), mux))))
 }
 
-const version = "1.0.0"
+// version names the build: git describe output, set by the build through
+// -ldflags "-X github.com/faketoken/faketoken/internal/api.version=...".
+// "-dirty" marks a build from a working tree with uncommitted changes.
+var version = "dev"
 
 // handleStatus is the only endpoint an anonymous visitor can reach, so it says
 // the bare minimum: whether the login page should offer a register tab. Build
