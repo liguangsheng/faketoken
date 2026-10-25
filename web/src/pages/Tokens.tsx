@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   App,
   Alert,
@@ -26,9 +26,10 @@ import type { Dayjs } from 'dayjs'
 
 import { api, type Token, type UserGroup } from '../api/client'
 import EmptyState from '../components/EmptyState'
+import LoadError from '../components/LoadError'
 import PageHeader from '../components/PageHeader'
+import usePagedList from '../hooks/usePagedList'
 import { useTableScrollX, type TableGeometry } from '../hooks/useTableScrollX'
-import { useSettings } from '../settings/SettingsContext'
 import { copyTextToClipboard } from '../utils/clipboard'
 import {
   formatDateMinute,
@@ -109,17 +110,10 @@ const ENDPOINTS = [
 export default function Tokens() {
   const { message, modal } = App.useApp()
   const scrollX = useTableScrollX(COLUMN_GEOMETRY)
-  const [rows, setRows] = useState<Token[]>([])
-  const [total, setTotal] = useState(0)
-  const { defaultPageSize } = useSettings()
   // Offered by the server, which is also the thing that enforces the choice.
   const [groups, setGroups] = useState<UserGroup[]>([])
   const [ownGroup, setOwnGroup] = useState('default')
   const [copyingId, setCopyingId] = useState<number | null>(null)
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(defaultPageSize)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [togglingId, setTogglingId] = useState<number | null>(null)
   // The endpoint examples are onboarding; regulars fold them away for good.
   const [endpointsCollapsed, setEndpointsCollapsed] = useState(
@@ -134,27 +128,19 @@ export default function Tokens() {
 
   const origin = window.location.origin
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const result = await api.listTokens({ page, page_size: pageSize })
-      setRows(result.data ?? [])
-      setTotal(result.total)
-      setLoadError(null)
-    } catch (error) {
-      // Both surfaces on purpose: the empty-state branch is invisible while
-      // stale rows are still on screen, and the toast alone evaporates.
-      const text = error instanceof Error ? error.message : '加载失败'
-      setLoadError(text)
-      message.error(text)
-    } finally {
-      setLoading(false)
-    }
-  }, [message, page, pageSize])
-
-  useEffect(() => {
-    void load()
-  }, [load])
+  const {
+    rows,
+    loading,
+    error: loadError,
+    reload: load,
+    pagination,
+  } = usePagedList<Token>({
+    fetcher: ({ page, pageSize }) => api.listTokens({ page, page_size: pageSize }),
+    unit: '密钥',
+    // Both surfaces on purpose: the empty-state branch is invisible while
+    // stale rows are still on screen, and the toast alone evaporates.
+    onError: (text) => message.error(text),
+  })
 
   useEffect(() => {
     api
@@ -413,15 +399,7 @@ export default function Tokens() {
         scroll={{ x: scrollX }}
         locale={{
           emptyText: loadError ? (
-            <EmptyState
-              title="加载失败"
-              description={loadError}
-              action={
-                <Button type="primary" icon={<ReloadOutlined />} onClick={() => void load()}>
-                  重试
-                </Button>
-              }
-            />
+            <LoadError error={loadError} onRetry={() => void load()} />
           ) : (
             <EmptyState
               title="还没有 API 密钥"
@@ -434,18 +412,7 @@ export default function Tokens() {
             />
           ),
         }}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          hideOnSinglePage: total <= 10,
-          showTotal: (count) => `共 ${count} 个密钥`,
-          onChange: (nextPage, nextSize) => {
-            setPage(nextPage)
-            setPageSize(nextSize)
-          },
-        }}
+        pagination={pagination}
         columns={[
           {
             ...COLUMN_GEOMETRY.name,
@@ -650,13 +617,9 @@ export default function Tokens() {
                     try {
                       await api.deleteToken(row.id)
                       message.success('已删除')
-                      // Deleting the page's last row must not strand the view
-                      // on an empty page while the pager still shows a total.
-                      if (rows.length === 1 && page > 1) {
-                        setPage(page - 1)
-                      } else {
-                        await load()
-                      }
+                      // Deleting the page's last row is handled by usePagedList:
+                      // the smaller total walks the pager back and reloads.
+                      await load()
                     } catch (error) {
                       message.error(error instanceof Error ? error.message : '删除失败')
                     }

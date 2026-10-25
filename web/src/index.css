@@ -1,72 +1,8 @@
 /* ===========================================================================
-   Design tokens. antd owns its own component colours through the theme
-   config in src/theme; these variables cover everything we paint ourselves.
+   Design tokens live in src/theme/palette.ts. A vite plugin injects them as
+   `:root` / `[data-theme='dark']` custom properties ahead of this file, so the
+   names below are only ever read here, never defined.
    =========================================================================== */
-
-:root {
-  --app-brand: #4f46e5;
-  --app-brand-soft: rgba(79, 70, 229, 0.1);
-  --app-bg: #f5f6f8;
-  --app-surface: #ffffff;
-  --app-surface-sunken: #fafbfc;
-  --app-border: #e8eaef;
-  --app-border-strong: #d8dbe3;
-  --app-text: #1a1d26;
-  --app-text-muted: #6b7280;
-  --app-text-faint: #9ca3af;
-  --app-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
-  --app-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 6px 16px -6px rgba(16, 24, 40, 0.08);
-  --app-shadow-lg: 0 12px 32px -8px rgba(16, 24, 40, 0.16);
-  --app-success: #16a34a;
-  --app-warning: #d97706;
-  --app-danger: #dc2626;
-  --app-success-soft: rgba(22, 163, 74, 0.12);
-  --app-warning-soft: rgba(217, 119, 6, 0.12);
-  --app-danger-soft: rgba(220, 38, 38, 0.12);
-  /* Secondary data colour (cost lines, rank bars); brand stays for primary. */
-  --app-accent: #0ea5e9;
-  /* Heatmap ramp, light to dark in the brand hue. Step 1 still clears 2:1
-     against the card surface, so the faintest day reads as a mark. */
-  --app-heat-0: #eef0f3;
-  --app-heat-1: #9ba6fb;
-  --app-heat-2: #6f73f0;
-  --app-heat-3: #4f46e5;
-  --app-heat-4: #332b9e;
-  --app-header-h: 56px;
-
-  color-scheme: light;
-}
-
-[data-theme='dark'] {
-  --app-brand: #8b87f5;
-  --app-brand-soft: rgba(139, 135, 245, 0.16);
-  --app-bg: #0c0e13;
-  --app-surface: #14171f;
-  --app-surface-sunken: #101319;
-  --app-border: #242833;
-  --app-border-strong: #333846;
-  --app-text: #e6e8ee;
-  --app-text-muted: #98a0b0;
-  --app-text-faint: #6b7385;
-  --app-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --app-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px -6px rgba(0, 0, 0, 0.5);
-  --app-shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.6);
-  --app-success: #4ade80;
-  --app-warning: #fbbf24;
-  --app-danger: #f87171;
-  --app-success-soft: rgba(74, 222, 128, 0.16);
-  --app-warning-soft: rgba(251, 191, 36, 0.16);
-  --app-danger-soft: rgba(248, 113, 113, 0.16);
-  --app-accent: #38bdf8;
-  /* Reversed on dark: more usage is lighter, further from the surface. */
-  --app-heat-0: #1d212b;
-  --app-heat-1: #4840c4;
-  --app-heat-2: #6763ea;
-  --app-heat-3: #8b87f5;
-  --app-heat-4: #bcbafb;
-
-  color-scheme: dark;
-}
 
 /* ===========================================================================
    Base
@@ -82,6 +18,12 @@ html,
 body,
 #root {
   height: 100%;
+}
+
+html {
+  /* Carries the theme colour past the content box, for the edges the document
+     never paints — and it is what a mode switch repaints. */
+  background: var(--app-bg);
 }
 
 body {
@@ -364,6 +306,28 @@ body {
   overflow-x: auto;
 }
 
+/* The price page carries five controls. They stay on one line until the
+   window is too narrow for them, instead of folding into three rows under a
+   long description. */
+.prices-header__actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  max-width: 100%;
+}
+
+@media (max-width: 900px) {
+  .prices-header__actions {
+    flex-wrap: wrap;
+  }
+}
+
+.prices-header__source {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  margin: -8px 0 12px;
+}
+
 /* On a phone a header search box keeps its desktop width and leaves the row
    half empty; let it take the full width and drop the buttons below it. */
 @media (max-width: 575px) {
@@ -441,6 +405,22 @@ body {
 
 .text-muted {
   color: var(--app-text-muted);
+}
+
+/* A body can be megabytes long. The text is cut into blocks so the browser
+   can skip the ones below the fold instead of laying the whole thing out;
+   every character stays in the DOM, so find-in-page still reaches it. */
+.code-chunk {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 2000px;
+  display: block;
+}
+
+/* A tail without a line break in it: kept inline, so the text is not broken
+   where the author did not break it. */
+.code-chunk--inline {
+  content-visibility: visible;
+  display: inline;
 }
 
 .code-block {
@@ -624,6 +604,16 @@ body {
   padding: 9px 0;
 }
 
+/* A rank row is a link to the log lines behind that name. */
+a.rank-row {
+  color: inherit;
+  text-decoration: none;
+}
+
+a.rank-row:hover .rank-row__name {
+  color: var(--app-brand);
+}
+
 .rank-row + .rank-row {
   border-block-start: 1px dashed var(--app-border);
 }
@@ -709,6 +699,21 @@ body {
 /* ===========================================================================
    Playground
    =========================================================================== */
+
+/* The send button belongs to the top of the screen, not to the bottom of a
+   form that is longer than the window: while the request card is in view the
+   row stays pinned to the bottom of the viewport, and the card's own colour
+   keeps the fields behind it from showing through. */
+.playground-actions {
+  background: var(--app-surface);
+  border-block-start: 1px solid var(--app-border);
+  bottom: 0;
+  margin-block-end: -24px;
+  margin-block-start: 4px;
+  padding-block: 10px 24px;
+  position: sticky;
+  z-index: 2;
+}
 
 .playground-output {
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
@@ -877,6 +882,94 @@ body {
 /* A disabled channel should read as parked before the eye reaches the switch. */
 .row-disabled > td {
   opacity: 0.55;
+}
+
+/* On a phone a channel row is read for its name, its switch and its menu; the
+   card puts those on the first line and the rest underneath, so nothing has
+   to be found by swiping sideways. */
+/* Five stat cards share the row evenly: antd's grid has no 4.8 span. */
+@media (min-width: 1200px) {
+  .dashboard-stats--five > .ant-col {
+    flex: 0 0 20%;
+    max-width: 20%;
+  }
+}
+
+.channels-table--phone .ant-table-thead {
+  /* The card has no column headings, and the header's select-all checkbox
+     would float above the cards on its own. */
+  display: none;
+}
+
+.channels-table--phone .ant-table-tbody > tr > td {
+  padding: 10px 8px;
+}
+
+.channels-table--phone .ant-table-tbody > tr > td.ant-table-selection-column {
+  /* The checkbox belongs to the card's first line, not to its middle. */
+  vertical-align: top;
+}
+
+.channels-table--phone .ant-table-tbody > tr > td:first-child {
+  padding-inline-end: 4px;
+}
+
+.channels-table--phone .ant-table-tbody > tr > td:last-child {
+  padding-inline-start: 4px;
+}
+
+.channel-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.channel-card__top {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.channel-card__title {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.channel-card__name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-card__id {
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+
+.channel-card__url {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-card__meta {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 6px 12px;
+}
+
+.channel-card__health--bad {
+  color: var(--app-danger);
 }
 
 /* The old rows are moved down with a FLIP animation in LogTable. The incoming
@@ -1404,8 +1497,12 @@ body {
   gap: 10px;
 }
 
+/* Same trick for a long transcript: a turn that is not on screen is not laid
+   out. */
 .chat-turn {
   background: var(--app-surface-sunken);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 2000px;
   border: 1px solid var(--app-border);
   /* The role stripe is the fastest way to scan who is speaking. */
   border-inline-start: 3px solid var(--app-border-strong);
@@ -1552,6 +1649,14 @@ body {
   border-block-start: 1px solid var(--app-border);
   margin-block-start: 18px;
   padding-block-start: 18px;
+}
+
+/* The help text of the last field in a section was sitting on the divider of
+   the next one. The item's own margin collapses out of the section and
+   cancels the next section's top margin, so the room has to be made inside
+   the item. */
+.settings-section > .ant-form-item:last-child .ant-form-item-explain {
+  margin-bottom: 10px;
 }
 
 .settings-section__title {

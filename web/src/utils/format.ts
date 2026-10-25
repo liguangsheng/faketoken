@@ -15,6 +15,17 @@ export const formatUSD = (micro: number, digits = 4) => {
   const sign = value < 0 ? '-' : ''
   const abs = Math.abs(value)
   if (abs !== 0 && abs < 0.0001) return `${sign}$${abs.toExponential(2)}`
+  // A dollar or more: two decimals and a thousands separator. The third
+  // decimal of a cost is noise, and the separator is what makes $1419.2758
+  // readable at a glance.
+  if (abs >= 1) {
+    return `${sign}$${abs.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`
+  }
+  // Below a dollar the cents are not the point: four decimals keep a
+  // $0.098 call from reading as $0.10.
   return `${sign}$${abs.toFixed(digits)}`
 }
 
@@ -34,6 +45,22 @@ export const formatPrice = (value: number) => {
 }
 
 export const formatMoney = (micro: number) => formatUSD(micro, 2)
+
+/**
+ * "$99.96M" · "$12.3k" — a balance that has to fit a card.
+ *
+ * Only the magnitude: the exact amount is one hover away, and a card that
+ * has to fit "$1,419.2758" ends up shrinking the number that matters.
+ */
+export const formatMoneyCompact = (micro: number) => {
+  const value = toUSD(micro)
+  const sign = value < 0 ? '-' : ''
+  const abs = Math.abs(value)
+  if (!abs) return '$0.00'
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}k`
+  return formatUSD(micro)
+}
 
 export const formatNumber = (value: number) => value.toLocaleString('en-US')
 

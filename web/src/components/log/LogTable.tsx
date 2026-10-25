@@ -8,57 +8,23 @@ import {
 import type { ReactNode } from "react";
 import {
   App,
-  Badge,
   Button,
-  DatePicker,
-  Drawer,
-  Input,
-  Popconfirm,
-  Select,
-  Space,
-  Switch,
   Table,
-  Tabs,
-  Tag,
-  Tooltip,
-  Typography,
 } from "antd";
-import {
-  ApiOutlined,
-  ClockCircleOutlined,
-  FieldTimeOutlined,
-  KeyOutlined,
-  LoadingOutlined,
-  NumberOutlined,
-  ReloadOutlined,
-  RobotOutlined,
-  SearchOutlined,
-  StopOutlined,
-  UserOutlined,
-} from "@ant-design/icons";
-import dayjs from "dayjs";
-import type { Dayjs } from "dayjs";
+import { ReloadOutlined } from "@ant-design/icons";
 
-import {
-  api,
-  type Page,
-  type RequestLog,
-  type RequestLogDetail,
-} from "../../api/client";
-import { useDebouncedValue } from "../../hooks/useDebouncedValue";
-import { useLiveRate } from "../../hooks/useLiveRate";
+import { api, type Page, type RequestLog } from "../../api/client";
+import { createLiveRateStore } from "../../hooks/useLiveRate";
 import { useLogStream } from "../../hooks/useLogStream";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import {
-  useTableScrollX,
-  type TableGeometry,
-} from "../../hooks/useTableScrollX";
+import { useTableScrollX } from "../../hooks/useTableScrollX";
 import { useSettings } from "../../settings/SettingsContext";
 import EmptyState from "../EmptyState";
-import RateCard from "../RateCard";
-import Elapsed from "./Elapsed";
-import LogBody from "./LogBody";
-import LogMeta from "./LogMeta";
+import LogDetailDrawer, { type LogDetailHandle } from "./LogDetailDrawer";
+import LogFilterBar from "./LogFilterBar";
+import { useUrlParams } from "./useUrlParams";
+import LiveRateMeter from "./LiveRateMeter";
+import LiveToggle from "./LiveToggle";
 import { useLiveRowAnimation } from "./useLiveRowAnimation";
 import {
   isLive,
@@ -66,17 +32,14 @@ import {
   useInflightCalls,
   type LogRow,
 } from "./useInflightCalls";
-import { REASONING_TONE, rowTone } from "./tone";
+import { useLogFilters } from "./useLogFilters";
 import {
-  formatCompact,
-  formatDuration,
-  formatNumber,
-  formatTime,
-  formatTimeShort,
-  formatUSD,
-} from "../../utils/format";
-
-type RangeValue = [Dayjs | null, Dayjs | null] | null;
+  COLUMN_GEOMETRY,
+  OWNER_GEOMETRY,
+  logColumns,
+  phoneColumns,
+} from "./logColumns";
+import { formatNumber } from "../../utils/format";
 
 interface Props {
   admin?: boolean;
@@ -88,71 +51,9 @@ interface Props {
   reloadToken?: number;
 }
 
-// Past this, a call that is still running is worth a second look rather than
-// just being slow. Deliberately generous: a long agentic completion legitimately
-// runs this long, so it colours the number instead of flagging an error.
-const SLOW_CALL_MS = 60_000;
-
-// "429→503" when a channel rule rewrote the upstream's code: the operator reads
-// both, the caller only ever saw the second. Owner rows carry 0 and show one.
-const statusText = (row: LogRow) =>
-  row.upstream_status > 0
-    ? `${row.upstream_status}→${row.status_code}`
-    : String(row.status_code);
-
 // A stable empty list, so the table memo does not recompute on every render
 // when nothing live is being drawn.
 const EMPTY_ROWS: LogRow[] = [];
-
-// The card's left stripe reads pass/fail down a phone list without parsing any
-// number. Maps the same tone the status tag uses to a card modifier class.
-const cardTone = (row: LogRow): string => {
-  if (isLive(row)) return "live";
-  const tone = rowTone(row);
-  return tone === "green" ? "ok" : tone === "orange" ? "warn" : "err";
-};
-
-/**
- * A log is read to find out what happened and when, so the timestamp, the
- * status and the error text hold their place at every width. The model and
- * the channel answer "to whom", which is the next question, not the first.
- *
- * 错误 declares no width and takes whatever is left over; the floor here is
- * what the hand-tuned scroll.x used to leave it (1670 less the 1440 of fixed
- * columns), so a wide window looks exactly as it did before.
- */
-/**
- * Column widths and their reveal breakpoints, for the desktop/tablet table.
- * On a phone the table drops to a single full-width column (see phoneColumns),
- * so this geometry only drives the md+ layout and its scroll width.
- */
-const COLUMN_GEOMETRY = {
-  createdAt: { width: 150 },
-  // Sized for the widest run of tags the cell can hold at once:
-  // "进行中" (icon + 3 characters) · "流" · "×3". The in-flight tag is the
-  // long one and it co-occurs with the other two — a streaming call that
-  // switched channels shows all three while it is still running.
-  status: { width: 172 },
-  error: { flexMin: 230 },
-  model: { width: 210, responsive: ["md"] },
-  channel: { width: 140, responsive: ["md"] },
-  duration: { width: 120, responsive: ["md"] },
-  cost: { width: 100, responsive: ["md"] },
-  token: { width: 130, responsive: ["lg"] },
-  client: { width: 110, responsive: ["lg"] },
-  // Two compact numbers stacked ("↑1.2M" over "↓845"), so the header is the
-  // widest thing in the column. The slack goes to status and to the error
-  // text, which is the column that actually runs out of room.
-  tokens: { width: 80, responsive: ["lg"] },
-  reasoning: { width: 110, responsive: ["xl"] },
-  clientIP: { width: 130, responsive: ["xl"] },
-} satisfies TableGeometry;
-
-// An account's own view has no source address (the server withholds it), so
-// its scroll width must not reserve that column either.
-const OWNER_GEOMETRY: TableGeometry = Object.fromEntries(
-  Object.entries(COLUMN_GEOMETRY).filter(([name]) => name !== "clientIP"),
-);
 
 export default function LogTable({
   admin,
@@ -177,31 +78,41 @@ export default function LogTable({
   const hoveringRef = useRef(false);
   const hoverBuffer = useRef<RequestLog[]>([]);
   const [hoverPending, setHoverPending] = useState(0);
-  const [page, setPage] = useState(1);
+  // The page and its size are part of the address too (附录 A), so a reload
+  // lands on the same slice of the list.
+  const { params: searchParams, write: writeUrl } = useUrlParams();
+  const [page, setPage] = useState(() => {
+    const value = Number(searchParams.get("page"));
+    return Number.isFinite(value) && value > 0 ? value : 1;
+  });
   const { defaultPageSize } = useSettings();
-  const [pageSize, setPageSize] = useState(defaultPageSize);
-  const [keywordInput, setKeywordInput] = useState("");
-  const [modelInput, setModelInput] = useState("");
-  const [tokenInput, setTokenInput] = useState("");
-  const [usernameInput, setUsernameInput] = useState("");
-  const [channelInput, setChannelInput] = useState("");
-  const [onlyError, setOnlyError] = useState(false);
-  const [range, setRange] = useState<RangeValue>(null);
+  const [pageSize, setPageSize] = useState(() => {
+    const value = Number(searchParams.get("size"));
+    return Number.isFinite(value) && value > 0 ? value : defaultPageSize;
+  });
   const [live, setLive] = useState(true);
-  const [detail, setDetail] = useState<RequestLog | null>(null);
-  // The bodies live in a separate table with its own retention window, so they
-  // are fetched when a row is opened and may legitimately be gone.
-  const [bodies, setBodies] = useState<RequestLogDetail | null>(null);
-  const [bodiesState, setBodiesState] = useState<
-    "idle" | "loading" | "expired" | "failed"
-  >("idle");
-
+  const filters = useLogFilters(Boolean(admin));
+  const {
+    keyword,
+    model,
+    tokenName,
+    username,
+    channelID,
+    onlyError,
+    range,
+    dirty,
+    // The filter row reads and writes the whole hook result.
+  } = filters;
+  const detailRef = useRef<LogDetailHandle>(null);
 
   // The rate pulse only makes sense on page 1, in the live window, on the
   // admin surface — for a regular user it would reflect their own traffic
   // only and read as a low, useless number.
   const rateActive = Boolean(showRate && admin && page === 1 && live && !range);
-  const rate = useLiveRate(rateActive);
+  // The samples live outside React: the feed writes on every arrival, the
+  // meter reads once a second, and the table in between never re-renders for
+  // either.
+  const rateStore = useMemo(() => createLiveRateStore(), []);
   // Why the meter is parked, so a zero never reads as "no traffic".
   const idleHint = live
     ? range
@@ -211,46 +122,49 @@ export default function LogTable({
   // Seed whenever the first page finishes loading; the SSE additions pile on
   // top. Not seeded on other pages — the bar is hidden there anyway.
   useEffect(() => {
-    if (rateActive) rate.seed(rows);
-    // rows is intentional: re-seed on every load. rate.seed is stable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rateActive, rows]);
+    if (rateActive) rateStore.seed(rows);
+  }, [rateActive, rateStore, rows]);
 
-  const openDetail = (row: RequestLog) => {
-    setDetail(row);
-    setBodies(null);
-    // Only the administrator surface serves them; asking as a regular user
-    // would just draw a 403.
-    if (!admin) {
-      setBodiesState("idle");
-      return;
-    }
-    setBodiesState("loading");
-    api.admin
-      .logDetail(row.id)
-      .then((result) => {
-        setBodies(result);
-        setBodiesState("idle");
-      })
-      .catch((error: unknown) => {
-        // 410 is the ordinary outcome for anything past the window, so it is
-        // reported as a state rather than as an error.
-        const gone =
-          error instanceof Error && error.message.includes("保留范围");
-        setBodiesState(gone ? "expired" : "failed");
-      });
-  };
-
-  const keyword = useDebouncedValue(keywordInput);
-  const model = useDebouncedValue(modelInput);
-  const tokenName = useDebouncedValue(tokenInput);
-  const username = useDebouncedValue(usernameInput);
-  const channelID = useDebouncedValue(channelInput);
-
-  // Any filter change invalidates the current page number.
+  // Any filter change invalidates the current page number. Compared as a
+  // signature rather than by effect count, so the first run — the one that
+  // arrives with the address already carrying page=3 — does not reset it.
+  const filterSignature = JSON.stringify([
+    keyword,
+    model,
+    tokenName,
+    username,
+    channelID,
+    onlyError,
+    range && [range[0]?.toISOString() ?? null, range[1]?.toISOString() ?? null],
+  ]);
+  const lastSignature = useRef(filterSignature);
   useEffect(() => {
+    if (lastSignature.current === filterSignature) return;
+    lastSignature.current = filterSignature;
     setPage(1);
-  }, [keyword, model, tokenName, username, channelID, onlyError, range]);
+  }, [filterSignature]);
+
+  // Page and size go into the address as well; defaults are left out.
+  const writtenPage = useRef<string | null>(null);
+  useEffect(() => {
+    writeUrl((next) => {
+      if (page > 1) next.set("page", String(page));
+      else next.delete("page");
+      if (pageSize !== defaultPageSize) next.set("size", String(pageSize));
+      else next.delete("size");
+    });
+    writtenPage.current = searchParams.toString();
+  }, [defaultPageSize, page, pageSize, searchParams, writeUrl]);
+
+  // Somebody else changed the address: follow it.
+  useEffect(() => {
+    const current = searchParams.toString();
+    if (writtenPage.current === null || current === writtenPage.current) return;
+    const nextPage = Number(searchParams.get("page"));
+    const nextSize = Number(searchParams.get("size"));
+    if (Number.isFinite(nextPage) && nextPage > 0) setPage(nextPage);
+    if (Number.isFinite(nextSize) && nextSize > 0) setPageSize(nextSize);
+  }, [searchParams]);
 
   // silent: refresh the data without the table-wide loading veil — used by
   // stream reconnects, where a periodic grey flash reads as something broken.
@@ -406,8 +320,11 @@ export default function LogTable({
     enter: animateLiveRow,
   } = useLiveRowAnimation(Boolean(admin), [rows, inflight.liveCalls]);
 
+  // Stable references: the hook memoises each of them.
+  const { publish: publishInflight, reset: resetInflight } = inflight;
+
   const flushHoverBuffer = useCallback(() => {
-    inflight.publish();
+    publishInflight();
     const buffered = hoverBuffer.current;
     if (!buffered.length) return;
     hoverBuffer.current = [];
@@ -422,7 +339,7 @@ export default function LogTable({
       }
       return next.slice(0, pageSize);
     });
-  }, [inflight.publish, page, pageSize]);
+  }, [publishInflight, page, pageSize]);
 
   const streamState = useLogStream({
     url: streamURL,
@@ -438,7 +355,7 @@ export default function LogTable({
         return;
       }
       setTotal((count) => count + 1);
-      rate.add(entry);
+      rateStore.add(entry);
       if (admin && hoveringRef.current) {
         if (!hoverBuffer.current.some((row) => row.id === entry.id)) {
           hoverBuffer.current.push(entry);
@@ -481,8 +398,8 @@ export default function LogTable({
   // Keyed to the feed rather than to the page, so paging away and back keeps
   // the set that is still on the wire.
   useEffect(() => {
-    inflight.reset();
-  }, [inflight.reset, streamURL, streamEnabled]);
+    resetInflight();
+  }, [resetInflight, streamURL, streamEnabled]);
 
   // Drawn only where showLive says so; the set itself is tracked regardless.
   const liveRows = showLive ? inflight.liveRows : EMPTY_ROWS;
@@ -497,347 +414,68 @@ export default function LogTable({
     [hasLive, liveRows, pageSize, rows],
   );
 
-  const dirty = Boolean(
-    keywordInput ||
-      modelInput ||
-      tokenInput ||
-      usernameInput ||
-      channelInput ||
-      onlyError ||
-      range,
-  );
-
-  const presets = useMemo(
-    () => [
-      {
-        label: "最近 1 小时",
-        value: [dayjs().subtract(1, "hour"), dayjs()] as [Dayjs, Dayjs],
-      },
-      {
-        label: "今天",
-        value: [dayjs().startOf("day"), dayjs()] as [Dayjs, Dayjs],
-      },
-      {
-        label: "最近 7 天",
-        value: [dayjs().subtract(7, "day"), dayjs()] as [Dayjs, Dayjs],
-      },
-      {
-        label: "最近 30 天",
-        value: [dayjs().subtract(30, "day"), dayjs()] as [Dayjs, Dayjs],
-      },
-    ],
-    [],
+  // Column definitions are the table's most expensive prop: rebuilt every
+  // render, rc-table re-derives the whole grid from them. `cancelling` is a Set
+  // held in state, so its identity is the signal that they really changed.
+  const columns = useMemo(
+    () =>
+      narrow
+        ? phoneColumns({ admin })
+        : logColumns({ admin, cancelling, cancelCall }),
+    [admin, cancelCall, cancelling, narrow],
   );
 
   // The toggle belongs next to the meters it governs, but those only render on
   // the admin board; elsewhere it falls back into the filter row.
-  const liveToggle = (
-    <Tooltip
-      title={
-        range
-          ? "选择了时间范围，实时推送已暂停"
-          : "由服务端推送新记录，无需轮询"
-      }
-    >
-      {/* The label element makes the caption part of the toggle's hit area. */}
-      <label
-        style={{
-          alignItems: "center",
-          cursor: range ? "not-allowed" : "pointer",
-          display: "inline-flex",
-        }}
-      >
-        <Space size={6}>
-          <Switch
-            size="small"
-            checked={live}
-            disabled={Boolean(range)}
-            aria-label="实时推送"
-            onChange={(value) => {
-              setLive(value);
-              // Re-enabling reconnects a fresh stream, which cannot know
-              // what it missed; reload the first page to close the gap.
-              if (value && page === 1) void load();
-            }}
-          />
-          <Badge
-            status={
-              !live || range
-                ? "default"
-                : streamState === "live"
-                  ? "processing"
-                  : streamState === "connecting"
-                    ? "warning"
-                    : "error"
-            }
-            text={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {!live || range
-                  ? "实时推送"
-                  : streamState === "live"
-                    ? canStream
-                      ? "实时推送中"
-                      : "已暂停（非首页）"
-                    : streamState === "connecting"
-                      ? "连接中…"
-                      : "已断开，重试中"}
-              </Typography.Text>
-            }
-          />
-        </Space>
-      </label>
-    </Tooltip>
-  );
-
-  // On a phone a horizontally scrolling table can only ever show a slice of a
-  // row at once. Collapse it instead to one full-width column whose cell packs
-  // every field a log is read for — model, status, cost, timing, tokens,
-  // channel, error — into a compact card. Nothing is hidden behind a swipe.
-  const phoneColumns = [
-    {
-      title: "调用记录",
-      key: "row",
-      render: (_: unknown, row: LogRow) => {
-        const live = isLive(row);
-        const mapped = row.upstream_model && row.upstream_model !== row.model;
-        return (
-          <div className={`log-card log-card--${cardTone(row)}`}>
-            <div className="log-card__top">
-              <span className="log-card__model mono">{row.model}</span>
-              <span className="log-card__cost mono">
-                {live ? "" : formatUSD(row.cost)}
-              </span>
-            </div>
-
-            {mapped && (
-              <div className="log-card__mapped mono text-muted">
-                → {row.upstream_model}
-              </div>
-            )}
-
-            <div className="log-card__tags">
-              {live ? (
-                <Tag color="processing" icon={<LoadingOutlined />}>
-                  进行中
-                </Tag>
-              ) : (
-                <Tag color={rowTone(row)} style={{ marginInlineEnd: 0 }}>
-                  {statusText(row)}
-                </Tag>
-              )}
-              {row.stream && <Tag color="blue">流</Tag>}
-              {row.retries > 0 && <Tag color="gold">×{row.retries + 1}</Tag>}
-              {row.reasoning_effort && (
-                <Tag color={REASONING_TONE[row.reasoning_effort] ?? "default"}>
-                  {row.reasoning_effort}
-                </Tag>
-              )}
-              {row.client_type && row.client_type !== "unknown" && (
-                <Tag>{row.client_type}</Tag>
-              )}
-            </div>
-
-            <div className="log-card__meta">
-              <span className="log-card__meta-item">
-                <ClockCircleOutlined />
-                <span className="log-card__meta-text">
-                  {formatTimeShort(row.created_at)}
-                </span>
-              </span>
-              {!live && (
-                <span className="log-card__meta-item log-card__meta-item--end">
-                  <span className="log-card__meta-text log-card__meta-id">
-                    #{row.id}
-                  </span>
-                </span>
-              )}
-              <span className="log-card__meta-item">
-                <FieldTimeOutlined />
-                <span className="log-card__meta-text">
-                  {live ? (
-                    <Elapsed since={row.created_at} />
-                  ) : (
-                    formatDuration(row.duration_ms)
-                  )}
-                </span>
-              </span>
-              {!live && (
-                <span className="log-card__meta-item log-card__meta-item--end">
-                  <NumberOutlined />
-                  <span className="log-card__meta-text">
-                    {formatCompact(row.prompt_tokens)}/
-                    {formatCompact(row.completion_tokens)}
-                  </span>
-                </span>
-              )}
-              {row.channel_id > 0 && (
-                <span className="log-card__meta-item log-card__meta-item--wide">
-                  <ApiOutlined />
-                  <span className="log-card__meta-text">
-                    #{row.channel_id}
-                    {row.channel_name ? ` ${row.channel_name}` : ""}
-                  </span>
-                </span>
-              )}
-              <span className="log-card__meta-item log-card__meta-item--wide">
-                <KeyOutlined />
-                <span className="log-card__meta-text">
-                  {admin && row.username ? `${row.username} · ` : ""}
-                  {row.token_name || "-"}
-                </span>
-              </span>
-            </div>
-
-            {row.error && (
-              <div className="log-card__error">{row.error}</div>
-            )}
-          </div>
-        );
-      },
-    },
-  ];
+  // Re-enabling reconnects a fresh stream, which cannot know what it missed;
+  // reload the first page to close the gap.
+  const toggleLive = (value: boolean) => {
+    setLive(value);
+    if (value && page === 1) void load();
+  };
 
   return (
     <>
       {showRate && admin && (
-        <Space size={8} style={{ marginBottom: 12 }}>
-          <RateCard
-            label="RPM"
-            value={rate.rpm}
-            active={rateActive}
-            idleHint={idleHint}
-          />
-          <RateCard
-            label="TPM"
-            value={rate.tpm}
-            format={formatCompact}
-            active={rateActive}
-            idleHint={idleHint}
-          />
-          {/* Not a sample of the page like the two beside it: the feed states
-              the whole running set, so this stays right on page four, where a
-              meter drawn from the visible rows cannot. Hence its own active
-              condition — the feed being connected, not the first page. */}
-          <RateCard
-            label="并发"
-            value={liveCalls.size}
-            active={concurrencyActive}
-            idleHint={concurrencyIdleHint}
-            activeHint="此刻已转发给上游、尚未结束的调用数 · 跟随筛选条件"
-          />
-          {liveToggle}
-        </Space>
-      )}
-      <Space wrap className="filter-bar" style={{ marginBottom: 12 }} size={8}>
-        <Input
-          allowClear
-          prefix={<SearchOutlined className="text-muted" />}
-          placeholder={
-            admin
-              ? "搜索 ID、用户、密钥、模型、渠道、IP、错误"
-              : "搜索 ID、密钥、模型、接口、错误"
-          }
-          aria-label="搜索日志"
-          style={{ width: 300 }}
-          value={keywordInput}
-          onChange={(event) => setKeywordInput(event.target.value)}
-        />
-        {/* Prefix icons keep the filters tellable-apart once they hold text
-            and the placeholder is gone. */}
-        <Input
-          allowClear
-          prefix={<RobotOutlined className="text-muted" />}
-          placeholder="模型"
-          aria-label="按模型过滤"
-          style={{ width: 160 }}
-          value={modelInput}
-          onChange={(event) => setModelInput(event.target.value)}
-        />
-        <Input
-          allowClear
-          prefix={<KeyOutlined className="text-muted" />}
-          placeholder="令牌"
-          aria-label="按令牌名过滤"
-          style={{ width: 140 }}
-          value={tokenInput}
-          onChange={(event) => setTokenInput(event.target.value)}
-        />
-        {admin && (
-          <Input
-            allowClear
-            prefix={<UserOutlined className="text-muted" />}
-            placeholder="用户名"
-            aria-label="按用户名过滤"
-            style={{ width: 150 }}
-            value={usernameInput}
-            onChange={(event) => setUsernameInput(event.target.value)}
-          />
-        )}
-        <Input
-          allowClear
-          prefix={<span className="text-muted">#</span>}
-          placeholder="渠道 ID"
-          aria-label="按渠道 ID 过滤，仅支持数字"
-          style={{ width: 110 }}
-          value={channelInput}
-          onChange={(event) =>
-            setChannelInput(event.target.value.replace(/\D/g, ""))
-          }
-        />
-        <Select
-          value={onlyError}
-          style={{ width: 110 }}
-          aria-label="按结果过滤"
-          onChange={setOnlyError}
-          options={[
-            { value: false, label: "全部请求" },
-            { value: true, label: "仅失败" },
-          ]}
-        />
-        <DatePicker.RangePicker
-          showTime={{ format: "HH:mm" }}
-          format="MM-DD HH:mm"
-          value={range}
-          presets={presets}
-          onChange={(value) => setRange(value as RangeValue)}
-          style={{ width: 300 }}
-        />
-        {dirty && (
-          <Button
-            type="link"
-            onClick={() => {
-              setKeywordInput("");
-              setModelInput("");
-              setTokenInput("");
-              setUsernameInput("");
-              setChannelInput("");
-              setOnlyError(false);
-              setRange(null);
-            }}
-          >
-            重置
-          </Button>
-        )}
-        <Button
-          icon={<ReloadOutlined />}
-          loading={loading}
-          onClick={() => void load()}
+        <LiveRateMeter
+          store={rateStore}
+          rateActive={rateActive}
+          idleHint={idleHint}
+          concurrencyActive={concurrencyActive}
+          concurrencyIdleHint={concurrencyIdleHint}
+          liveCalls={liveCalls.size}
         >
-          刷新
-        </Button>
-        {!(showRate && admin) && liveToggle}
-        {pending > 0 && (
-          <Button type="link" size="small" onClick={() => setPage(1)}>
-            有 {pending} 条新记录
-          </Button>
-        )}
-        {hoverPending > 0 && (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {hoverPending} 条新记录待插入（悬停时暂停）
-          </Typography.Text>
-        )}
-        {extra}
-      </Space>
+          <LiveToggle
+            live={live}
+            range={Boolean(range)}
+            streamState={streamState}
+            canStream={canStream}
+            onChange={toggleLive}
+          />
+        </LiveRateMeter>
+      )}
+      <LogFilterBar
+        admin={admin}
+        narrow={narrow}
+        filters={filters}
+        loading={loading}
+        onReload={() => void load()}
+        liveToggle={
+          !(showRate && admin) ? (
+            <LiveToggle
+              live={live}
+              range={Boolean(range)}
+              streamState={streamState}
+              canStream={canStream}
+              onChange={toggleLive}
+            />
+          ) : undefined
+        }
+        pending={pending}
+        hoverPending={hoverPending}
+        onBackToFirstPage={() => setPage(1)}
+        extra={extra}
+      />
 
       <div
         // Pointer events, filtered to mice: a touch tap synthesizes mouseenter
@@ -866,6 +504,11 @@ export default function LogTable({
                 : ""
           }
           scroll={narrow ? undefined : { x: scrollX }}
+          // The header stays under the app bar while the page scrolls: columns
+          // are wide, and reading a value out of view of its heading is the
+          // main way this table gets misread. Cards carry their own labels, so
+          // phones get nothing here.
+          sticky={narrow ? undefined : { offsetHeader: 56 }}
           onRow={(row) => {
             // A call that has not finished has no stored exchange to read, so
             // it is not a click target: the drawer would open on nothing.
@@ -885,14 +528,14 @@ export default function LogTable({
                 ].some((node) => node !== null && rowElement.contains(node));
                 if (touchesRow) return;
               }
-              openDetail(row);
+              detailRef.current?.open(row);
             },
             // Rows are the only way into the detail drawer, so they must be
             // reachable without a mouse.
             tabIndex: 0,
             "aria-label": `查看调用 #${row.id} 详情`,
             onKeyDown: (event) => {
-              if (event.key === "Enter") openDetail(row);
+              if (event.key === "Enter") detailRef.current?.open(row);
             },
             };
           }}
@@ -933,425 +576,17 @@ export default function LogTable({
               setPageSize(nextSize);
             },
           }}
-          columns={narrow ? phoneColumns : [
-            {
-              // The id identifies the row and the timestamp places it; they are
-              // read together and neither needs a column of its own.
-              //
-              // Absolute time, not relative: a log is read to line events up
-              // against an incident, and "3 分钟前" cannot be compared with
-              // anything.
-              ...COLUMN_GEOMETRY.createdAt,
-              title: "时间 / ID",
-              dataIndex: "created_at",
-              render: (value: string, row: LogRow) => (
-                <Tooltip
-                  title={
-                    isLive(row)
-                      ? `开始于 ${formatTime(value)}，尚未结束`
-                      : formatTime(value)
-                  }
-                >
-                  <div className="cell-stack">
-                    <span className="mono">{formatTimeShort(value)}</span>
-                    {/* A running call has no id yet — the row number is minted
-                        by the database when the call settles. */}
-                    <span className="mono text-muted cell-stack__sub">
-                      {isLive(row) ? "在途" : `#${row.id}`}
-                    </span>
-                  </div>
-                </Tooltip>
-              ),
-            },
-            {
-              // Id above (stable, matches other admin surfaces), name below —
-              // reading traffic distribution should not require hovering every
-              // row to learn which upstream #12 is.
-              ...COLUMN_GEOMETRY.channel,
-              title: "渠道",
-              dataIndex: "channel_id",
-              render: (id: number, row: RequestLog) =>
-                id > 0 ? (
-                  <div className="cell-stack" style={{ minWidth: 0 }}>
-                    <span>
-                      <Tag className="mono" style={{ marginInlineEnd: 0 }}>
-                        #{id}
-                      </Tag>
-                    </span>
-                    {row.channel_name && (
-                      <Tooltip title={row.channel_name}>
-                        <span
-                          className="text-muted cell-stack__sub"
-                          style={{
-                            maxWidth: 120,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                          }}
-                        >
-                          {row.channel_name}
-                        </span>
-                      </Tooltip>
-                    )}
-                  </div>
-                ) : (
-                  <span className="text-muted">-</span>
-                ),
-            },
-            {
-              // Who called, and with which of their keys. On the user's own page
-              // the account is implied, so only the key is worth the space.
-              ...COLUMN_GEOMETRY.token,
-              title: admin ? "用户 / 密钥" : "密钥",
-              dataIndex: "token_name",
-              render: (tokenName: string, row: RequestLog) => (
-                <div className="cell-stack">
-                  {admin && <span>{row.username || "-"}</span>}
-                  <span
-                    className={admin ? "text-muted cell-stack__sub" : undefined}
-                  >
-                    {tokenName || "-"}
-                  </span>
-                </div>
-              ),
-            },
-            {
-              ...COLUMN_GEOMETRY.client,
-              title: "客户端",
-              dataIndex: "client_type",
-              ellipsis: true,
-              render: (type: string) =>
-                type && type !== "unknown" ? (
-                  <Tag>{type}</Tag>
-                ) : (
-                  <span className="text-muted">未知</span>
-                ),
-            },
-            {
-              // A mapped model puts the requested name on top and the forwarded
-              // one under it. Collapsing the two into one name hides the rewrite,
-              // which is exactly the thing you are looking for when a model
-              // behaves unlike its name; side by side on one line, the pair also
-              // truncated exactly where it mattered on the busy admin table.
-              // Only the administrator's rows carry the forwarded name.
-              ...COLUMN_GEOMETRY.model,
-              title: "模型",
-              dataIndex: "model",
-              render: (value: string, row: RequestLog) => {
-                const mapped =
-                  row.upstream_model && row.upstream_model !== value;
-                return (
-                  <Tooltip
-                    title={
-                      mapped
-                        ? `客户端请求 ${value}，实际转发 ${row.upstream_model}`
-                        : value
-                    }
-                  >
-                    {/* nowrap is deliberate: a model name broken across lines
-                      cannot be compared against its neighbours at a glance. */}
-                    <div className="cell-stack" style={{ minWidth: 0 }}>
-                      <span className="mono cell-stack__clip">{value}</span>
-                      {mapped && (
-                        <span className="mono text-muted cell-stack__sub cell-stack__clip">
-                          → {row.upstream_model}
-                        </span>
-                      )}
-                    </div>
-                  </Tooltip>
-                );
-              },
-            },
-            {
-              ...COLUMN_GEOMETRY.reasoning,
-              title: "思考强度",
-              dataIndex: "reasoning_effort",
-              render: (value: string) =>
-                value ? (
-                  <Tag
-                    color={REASONING_TONE[value] ?? "default"}
-                    style={{ marginInlineEnd: 0 }}
-                  >
-                    {value}
-                  </Tag>
-                ) : admin ? null : (
-                  <span className="text-muted">未指定</span>
-                ),
-            },
-            ...(admin
-              ? [
-                  {
-                    ...COLUMN_GEOMETRY.clientIP,
-                    title: "来源 IP",
-                    dataIndex: "client_ip",
-                    ellipsis: true,
-                    render: (value: string) =>
-                      value ? (
-                        <Tooltip title={value}>
-                          <span className="mono">{value}</span>
-                        </Tooltip>
-                      ) : (
-                        <span className="text-muted">-</span>
-                      ),
-                  },
-                ]
-              : []),
-            {
-              ...COLUMN_GEOMETRY.status,
-              title: "状态",
-              dataIndex: "status_code",
-              render: (code: number, row: LogRow) => (
-                <Space size={4}>
-                  {isLive(row) ? (
-                    <Tooltip title="已转发给上游，还在等待回应">
-                      <Tag color="processing" icon={<LoadingOutlined />}>
-                        进行中
-                      </Tag>
-                    </Tooltip>
-                  ) : (
-                  <Tooltip
-                    title={
-                      row.upstream_status > 0
-                        ? `上游返回 ${row.upstream_status}，按渠道状态码映射返回调用方 ${code}`
-                        : row.error && code < 400
-                          ? "上游返回 200，但响应体中带有错误"
-                          : undefined
-                    }
-                  >
-                    <Tag color={rowTone(row)}>{statusText(row)}</Tag>
-                  </Tooltip>
-                  )}
-                  {/* Streaming used to be its own column; it is one bit, so it
-                    rides along with the status it qualifies. */}
-                  {row.stream && (
-                    <Tooltip title="流式响应">
-                      <Tag color="blue">流</Tag>
-                    </Tooltip>
-                  )}
-                  {row.retries > 0 && (
-                    <Tooltip
-                      title={`共尝试 ${row.retries + 1} 次（切换 ${row.retries} 次渠道）`}
-                    >
-                      <Tag color="gold">×{row.retries + 1}</Tag>
-                    </Tooltip>
-                  )}
-                </Space>
-              ),
-            },
-            {
-              // Total above, first-byte below, with a vertical progress bar that
-              // fills with the fraction of time-to-first-byte of the total — the
-              // longer the bar, the more the caller waited before anything came
-              // back. Clamped to a 30s ceiling so a single slow outlier does
-              // not flatten everyone else into a sliver.
-              title: (
-                <Tooltip title="总耗时 / 首字时间">
-                  <span>耗时 / 首字</span>
-                </Tooltip>
-              ),
-              ...COLUMN_GEOMETRY.duration,
-              dataIndex: "duration_ms",
-              align: "left",
-              render: (value: number, row: LogRow) => {
-                if (isLive(row)) {
-                  return (
-                    <Tooltip
-                      title={
-                        <>
-                          已运行 <Elapsed since={row.created_at} />
-                        </>
-                      }
-                    >
-                      <div className="duration-cell">
-                        <span className="duration-bar duration-bar--running" aria-hidden />
-                        <div className="cell-stack">
-                          <Elapsed
-                            since={row.created_at}
-                            className="mono"
-                            warnAfter={SLOW_CALL_MS}
-                          />
-                          <span className="text-muted cell-stack__sub">…</span>
-                        </div>
-                      </div>
-                    </Tooltip>
-                  );
-                }
-                const ratio =
-                  value > 0 && row.ttfb_ms > 0
-                    ? Math.min(row.ttfb_ms / value, 1)
-                    : 0;
-                return (
-                  <Tooltip
-                    title={
-                      row.ttfb_ms > 0
-                        ? `总耗时 ${formatDuration(value)} · 首字 ${formatDuration(row.ttfb_ms)}`
-                        : `总耗时 ${formatDuration(value)}`
-                    }
-                  >
-                    <div className="duration-cell">
-                      <span
-                        className="duration-bar"
-                        style={{
-                          // Brand = waiting for the first byte, neutral = the
-                          // stream itself. Warning orange here made every slow
-                          // stream look like an incident.
-                          background: `linear-gradient(to top, var(--app-brand) ${ratio * 100}%, var(--app-border-strong) ${ratio * 100}%)`,
-                        }}
-                        aria-hidden
-                      />
-                      <div className="cell-stack">
-                        <span className="mono">{formatDuration(value)}</span>
-                        {row.ttfb_ms > 0 ? (
-                          <span className="mono text-muted cell-stack__sub">
-                            {formatDuration(row.ttfb_ms)}
-                          </span>
-                        ) : (
-                          <span className="text-muted cell-stack__sub">-</span>
-                        )}
-                      </div>
-                    </div>
-                  </Tooltip>
-                );
-              },
-            },
-            {
-              // Stacked, not side by side: on one line the column had to fit
-              // "1.2M→128k" and cost the 错误 column the width it needed more.
-              // Stacked, the widest thing in the cell is one compact number, so
-              // both directions remain readable without making this column
-              // compete with the error text for the table's spare width.
-              // ↑ input, ↓ output; the total is their sum and lives in the cell
-              // tooltip, with the cache split in the detail drawer.
-              ...COLUMN_GEOMETRY.tokens,
-              title: (
-                <Tooltip title="Tokens：↑ 输入 · ↓ 输出，合计悬停单元格可见">
-                  <span>Tokens</span>
-                </Tooltip>
-              ),
-              align: "right",
-              render: (_: unknown, row: LogRow) =>
-                // Usage is only known once the upstream has answered, and a
-                // running call showing 0 would read as a call that used none.
-                isLive(row) ? (
-                  <span className="text-muted">-</span>
-                ) : (
-                <Tooltip
-                  title={`输入 ${formatNumber(row.prompt_tokens)} · 输出 ${formatNumber(
-                    row.completion_tokens,
-                  )} · 合计 ${formatNumber(row.total_tokens)}`}
-                >
-                  <div className="cell-stack">
-                    <span className="mono">
-                      <span className="text-muted">↑</span>
-                      {formatCompact(row.prompt_tokens)}
-                    </span>
-                    <span className="mono text-muted cell-stack__sub">
-                      ↓{formatCompact(row.completion_tokens)}
-                    </span>
-                  </div>
-                </Tooltip>
-                ),
-            },
-            {
-              ...COLUMN_GEOMETRY.cost,
-              title: "费用",
-              dataIndex: "cost",
-              align: "right",
-              render: (value: number, row: LogRow) =>
-                isLive(row) ? (
-                  <span className="text-muted">-</span>
-                ) : (
-                  formatUSD(value)
-                ),
-            },
-            {
-              ...COLUMN_GEOMETRY.error,
-              title: "错误",
-              dataIndex: "error",
-              ellipsis: true,
-              // A running call has no error yet, and it is the only kind of row
-              // that can still be acted on — so the column that would otherwise
-              // show a dash carries the stop button instead of costing the
-              // table a whole column that is empty on every settled row.
-              render: (value: string, row: LogRow) =>
-                isLive(row) ? (
-                  <Popconfirm
-                    title="取消这次调用？"
-                    description="只停掉本网关的等待与转发。上游可能继续生成并照常计费。"
-                    okText="取消调用"
-                    okButtonProps={{ danger: true }}
-                    cancelText="再等等"
-                    onConfirm={() => cancelCall(row.live_key)}
-                  >
-                    <Button
-                      size="small"
-                      type="text"
-                      danger
-                      icon={<StopOutlined />}
-                      loading={cancelling.has(row.live_key)}
-                    >
-                      取消
-                    </Button>
-                  </Popconfirm>
-                ) : value ? (
-                  <Tooltip title={value}>
-                    <span style={{ color: "var(--app-danger)" }}>{value}</span>
-                  </Tooltip>
-                ) : (
-                  <span className="text-muted">-</span>
-                ),
-            },
-          ]}
+          columns={columns}
         />
       </div>
 
-      <Drawer
-        className="detail-drawer"
-        open={Boolean(detail)}
-        // Wider than the metadata alone needs: request bodies are the reason
-        // this drawer is opened, and they read badly in a narrow column.
-        // min() guards the 769–860px window, where a fixed 860 overflows.
-        width={
-          narrow ? "100%" : admin ? "min(860px, 100vw)" : "min(560px, 100vw)"
-        }
-        title={
-          detail ? (
-            <Space size={8}>
-              <span>调用详情 #{detail.id}</span>
-              <Tag color={rowTone(detail)} style={{ marginInlineEnd: 0 }}>
-                {detail.status_code}
-              </Tag>
-            </Space>
-          ) : (
-            "调用详情"
-          )
-        }
-        onClose={() => setDetail(null)}
-      >
-        {detail && admin && (
-          <Tabs
-            style={{ marginBottom: 16 }}
-            items={[
-              { key: "meta", label: "概览" },
-              { key: "request", label: "请求正文" },
-              { key: "response", label: "响应正文" },
-            ].map((tab) => ({
-              ...tab,
-              children:
-                tab.key === "meta" ? (
-                  <LogMeta detail={detail} admin={admin} />
-                ) : (
-                  <LogBody
-                    kind={tab.key === "request" ? "request" : "response"}
-                    state={bodiesState}
-                    bodies={bodies}
-                    entry={detail}
-                  />
-                ),
-            }))}
-          />
-        )}
-        {detail && !admin && <LogMeta detail={detail} admin={admin} />}
-      </Drawer>
+      <LogDetailDrawer
+        ref={detailRef}
+        admin={admin}
+        narrow={narrow}
+        // The page's settled rows: what the drawer's ← and → walk through.
+        siblings={rows}
+      />
     </>
   );
 }

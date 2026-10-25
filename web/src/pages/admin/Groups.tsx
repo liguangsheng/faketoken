@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
 import {
   App,
   Alert,
@@ -19,7 +19,9 @@ import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 
 import { api, type UserGroup } from '../../api/client'
 import EmptyState from '../../components/EmptyState'
+import LoadError from '../../components/LoadError'
 import PageHeader from '../../components/PageHeader'
+import usePagedList from '../../hooks/usePagedList'
 import { useTableScrollX, type TableGeometry } from '../../hooks/useTableScrollX'
 import { formatRelative, formatTime } from '../../utils/format'
 
@@ -40,8 +42,6 @@ const COLUMN_GEOMETRY = {
 export default function Groups() {
   const { message, modal } = App.useApp()
   const scrollX = useTableScrollX(COLUMN_GEOMETRY)
-  const [rows, setRows] = useState<UserGroup[]>([])
-  const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<UserGroup | null>(null)
   const [saving, setSaving] = useState(false)
@@ -49,21 +49,21 @@ export default function Groups() {
   const [form] = Form.useForm<UserGroup>()
   const rateValue = Form.useWatch('rate', form)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
+  // Groups are a short list; the pager is off, but loading, the error and the
+  // retry are the same concerns as anywhere else.
+  const {
+    rows,
+    loading,
+    error,
+    reload: load,
+  } = usePagedList<UserGroup>({
+    fetcher: async () => {
       const result = await api.admin.listGroups()
-      setRows(result.data ?? [])
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [message])
-
-  useEffect(() => {
-    void load()
-  }, [load])
+      return { data: result.data ?? [], total: result.data?.length ?? 0 }
+    },
+    unit: '分组',
+    onError: (text) => message.error(text),
+  })
 
   const openModal = (group?: UserGroup) => {
     setEditing(group ?? null)
@@ -156,7 +156,9 @@ export default function Groups() {
         pagination={false}
         scroll={{ x: scrollX }}
         locale={{
-          emptyText: (
+          emptyText: error ? (
+            <LoadError error={error} onRetry={() => void load()} />
+          ) : (
             <EmptyState
               title="还没有分组"
               description="系统至少需要一个 default 分组。"

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   Alert,
   App,
@@ -84,19 +84,53 @@ const httpMessage = (
   return `${[startLine, ...lines].join("\n")}\n\n${body ?? ""}`;
 };
 
+// About 64 KB per chunk. Big enough that the per-chunk bookkeeping is
+// negligible, small enough that the browser can skip most of a multi-megabyte
+// body without giving up on the text.
+const CHUNK_CHARS = 64 * 1024;
+
+/**
+ * Splits a text into chunks that each end on a line boundary.
+ *
+ * The chunks are drawn as blocks, so the boundary must be a newline: the text
+ * that follows has to start on its own line, exactly as it did in the single
+ * block. A tail with no line break at all stays inline — breaking it would
+ * put a line break where the text had none. The text itself is untouched:
+ * every character stays in the DOM, so find-in-page still reaches it.
+ */
+const chunkText = (text: string): { text: string; block: boolean }[] => {
+  if (!text) return [];
+  const chunks: { text: string; block: boolean }[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + CHUNK_CHARS, text.length);
+    if (end < text.length) {
+      const newline = text.indexOf("\n", end);
+      if (newline === -1) {
+        chunks.push({ text: text.slice(start), block: false });
+        break;
+      }
+      end = newline + 1;
+    }
+    chunks.push({ text: text.slice(start, end), block: true });
+    start = end;
+  }
+  return chunks;
+};
+
 // LogBody shows one side of a call. The bodies are held for a limited number
 // of recent calls, so "not here" is a normal outcome and is spelled out rather
 // than shown as an empty panel.
 type BodyView = "raw" | "chat";
 
-export default function LogBody({
+function LogBody({
   kind,
   state,
   bodies,
   entry,
 }: {
   kind: "request" | "response";
-  state: "idle" | "loading" | "expired" | "failed";
+  state: "idle" | "loading" | "expired" | "missing" | "failed";
   bodies: RequestLogDetail | null;
   entry: RequestLog;
 }) {
@@ -116,6 +150,14 @@ export default function LogBody({
     [kind, rawBody],
   );
 
+  // The raw message, and the blocks it is drawn in. Both are computed before
+  // the early returns below, so the hooks keep their order.
+  const headers =
+    kind === "request" ? bodies?.request_headers : bodies?.response_headers;
+  const body = kind === "request" ? bodies?.request_body : bodies?.response_body;
+  const httpText = httpMessage(kind, entry, headers, body);
+  const chunks = useMemo(() => chunkText(httpText), [httpText]);
+
   if (state === "loading") return <Skeleton active paragraph={{ rows: 6 }} />;
   if (state === "expired") {
     return (
@@ -127,6 +169,15 @@ export default function LogBody({
       />
     );
   }
+  if (state === "missing")
+    return (
+      <Alert
+        type="info"
+        showIcon
+        message="这次调用已经结束，正文不再可读"
+        description="行还在列表里，但服务端已没有它的记录（常见的是一次还没落库就被取消的调用）。"
+      />
+    );
   if (state === "failed")
     return <Alert type="error" showIcon message="加载正文失败" />;
   if (!bodies) {
@@ -140,12 +191,8 @@ export default function LogBody({
     );
   }
 
-  const headers =
-    kind === "request" ? bodies.request_headers : bodies.response_headers;
-  const body = kind === "request" ? bodies.request_body : bodies.response_body;
   const truncated =
     kind === "request" ? bodies.request_truncated : bodies.response_truncated;
-  const httpText = httpMessage(kind, entry, headers, body);
 
   // Non-chat calls (embeddings, audio, …) have nothing to show in the chat
   // view; land them on the raw message instead of an apology.
@@ -197,8 +244,19 @@ export default function LogBody({
         )}
       </Space>
       {effectiveView === "raw" ? (
-        // No inner max-height: the drawer body is the scroll container.
-        <pre className="code-block">{httpText}</pre>
+        // No inner max-height: the drawer body is the scroll container. The
+        // chunks are blocks so the browser can skip the ones below the fold;
+        // the text stays whole in the DOM either way.
+        <pre className="code-block">
+          {chunks.map((chunk, index) => (
+            <span
+              key={index}
+              className={chunk.block ? "code-chunk" : "code-chunk code-chunk--inline"}
+            >
+              {chunk.text}
+            </span>
+          ))}
+        </pre>
       ) : (
         <Conversation turns={turns ?? []} />
       )}
@@ -270,6 +328,8 @@ function ChatPart({ part }: { part: ConversationPart }) {
           <Image
             src={part.src}
             alt="图片"
+            loading="lazy"
+            decoding="async"
             preview={{ rootClassName: "checkerboard" }}
           />
         </div>
@@ -289,3 +349,6 @@ function ChatPart({ part }: { part: ConversationPart }) {
     </div>
   );
 }
+
+// The body is rebuilt only when the opened row or its text changes.
+export default memo(LogBody);

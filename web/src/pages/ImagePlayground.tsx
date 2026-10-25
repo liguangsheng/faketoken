@@ -355,13 +355,14 @@ export default function ImagePlayground() {
                 id="img-key"
                 siteTokens={!manual}
                 hint={
-                  manual ? (
-                    '填上游签发的密钥，本站的密钥它不认。'
-                  ) : (
-                    <>
-                      还没有密钥？<Link to="/tokens">去创建</Link>
-                    </>
-                  )
+                  manual
+                    ? '填上游签发的密钥，本站的密钥它不认。'
+                    : '从下拉里选一个我的密钥，或直接粘贴别的。'
+                }
+                emptyTokensHint={
+                  <>
+                    还没有密钥？<Link to="/tokens">去创建</Link>
+                  </>
                 }
               />
 
@@ -520,16 +521,6 @@ export default function ImagePlayground() {
               </div>
 
               <div>
-                <Space style={{ width: '100%' }}>
-                  <Button type="primary" icon={<PictureOutlined />} onClick={send}>
-                    生成
-                  </Button>
-                  <Tooltip title={`快捷键 ${IS_MAC ? '⌘' : 'Ctrl'} + Enter`}>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {IS_MAC ? '⌘↵' : 'Ctrl↵'}
-                    </Typography.Text>
-                  </Tooltip>
-                </Space>
                 <Typography.Text
                   type="secondary"
                   style={{ display: 'block', fontSize: 12, marginTop: 8 }}
@@ -542,6 +533,19 @@ export default function ImagePlayground() {
                       : path}
                 </Typography.Text>
               </div>
+            </Space>
+
+            {/* Outside the vertical Space: a flex item cannot leave its own
+                wrapper, so the sticky row needs a block parent. */}
+            <Space className="playground-actions" style={{ width: '100%' }}>
+              <Button type="primary" icon={<PictureOutlined />} onClick={send}>
+                生成
+              </Button>
+              <Tooltip title={`快捷键 ${IS_MAC ? '⌘' : 'Ctrl'} + Enter`}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {IS_MAC ? '⌘↵' : 'Ctrl↵'}
+                </Typography.Text>
+              </Tooltip>
             </Space>
           </Card>
         </Col>

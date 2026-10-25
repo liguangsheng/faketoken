@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   App,
   Button,
@@ -21,10 +21,11 @@ import type { Dayjs } from 'dayjs'
 
 import { api, type Redemption } from '../../api/client'
 import EmptyState from '../../components/EmptyState'
+import LoadError from '../../components/LoadError'
 import PageHeader from '../../components/PageHeader'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
+import usePagedList from '../../hooks/usePagedList'
 import { useTableScrollX, type TableGeometry } from '../../hooks/useTableScrollX'
-import { useSettings } from '../../settings/SettingsContext'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import { formatDateMinute, formatMoney, formatRelative, formatTime } from '../../utils/format'
 
@@ -60,12 +61,6 @@ const COLUMN_GEOMETRY = {
 export default function Redemptions() {
   const { message, modal } = App.useApp()
   const scrollX = useTableScrollX(COLUMN_GEOMETRY)
-  const { defaultPageSize } = useSettings()
-  const [rows, setRows] = useState<Redemption[]>([])
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(defaultPageSize)
   const [keywordInput, setKeywordInput] = useState('')
   const [statusFilter, setStatusFilter] = useState<number>()
   const [selectedIds, setSelectedIds] = useState<number[]>([])
@@ -79,33 +74,25 @@ export default function Redemptions() {
 
   const keyword = useDebouncedValue(keywordInput)
 
-  useEffect(() => {
-    setPage(1)
-  }, [keyword, statusFilter])
+  const {
+    rows,
+    loading,
+    error,
+    reload: load,
+    pagination,
+  } = usePagedList<Redemption>({
+    fetcher: ({ page, pageSize }) =>
+      api.admin.listRedemptions({ page, page_size: pageSize, keyword, status: statusFilter }),
+    unit: '兑换码',
+    deps: [keyword, statusFilter],
+    onError: (text) => message.error(text),
+  })
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const result = await api.admin.listRedemptions({
-        page,
-        page_size: pageSize,
-        keyword,
-        status: statusFilter,
-      })
-      setRows(result.data ?? [])
-      setTotal(result.total)
-      const visible = new Set((result.data ?? []).map((row) => row.id))
-      setSelectedIds((current) => current.filter((id) => visible.has(id)))
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [keyword, message, page, pageSize, statusFilter])
-
+  // A bulk action can never touch a code that scrolled out of view.
   useEffect(() => {
-    void load()
-  }, [load])
+    const visible = new Set(rows.map((row) => row.id))
+    setSelectedIds((current) => current.filter((id) => visible.has(id)))
+  }, [rows])
 
   const openCreate = () => {
     form.setFieldsValue({ name: '', group: '', amount_usd: 5, count: 1, expires_at: null })
@@ -273,7 +260,9 @@ export default function Redemptions() {
             ),
         }}
         locale={{
-          emptyText: (
+          emptyText: error ? (
+            <LoadError error={error} onRetry={() => void load()} />
+          ) : (
             <EmptyState
               title="还没有兑换码"
               description="生成一批兑换码，发给用户用于充值。"
@@ -285,18 +274,7 @@ export default function Redemptions() {
             />
           ),
         }}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          hideOnSinglePage: total <= 10,
-          showTotal: (count) => `共 ${count} 个兑换码`,
-          onChange: (nextPage, nextSize) => {
-            setPage(nextPage)
-            setPageSize(nextSize)
-          },
-        }}
+        pagination={pagination}
         columns={[
           {
             ...COLUMN_GEOMETRY.code,

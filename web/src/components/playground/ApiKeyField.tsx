@@ -127,19 +127,26 @@ export type SavedKeys = ReturnType<typeof useSavedKeys>
 /** The signed-in account's own keys, for picking instead of pasting. */
 const useSiteTokens = (enabled: boolean) => {
   const [tokens, setTokens] = useState<Token[]>([])
+  // Only a finished request can say "this account has no keys": a failed one
+  // says nothing about them.
+  const [loaded, setLoaded] = useState(false)
   useEffect(() => {
     if (!enabled) return
     let live = true
     api
       .listTokens({ page_size: 200 })
-      .then((page) => live && setTokens(page.data ?? []))
+      .then((page) => {
+        if (!live) return
+        setTokens(page.data ?? [])
+        setLoaded(true)
+      })
       // The menu just goes without them; pasting still works.
       .catch(() => undefined)
     return () => {
       live = false
     }
   }, [enabled])
-  return enabled ? tokens : []
+  return enabled ? { tokens, loaded } : { tokens: [] as Token[], loaded: false }
 }
 
 const TOKEN_PREFIX = 'token:'
@@ -152,17 +159,20 @@ export default function ApiKeyField({
   keys,
   id,
   hint,
+  emptyTokensHint,
   siteTokens = false,
 }: {
   keys: SavedKeys
   id: string
   /** Where the key comes from, under the input. */
   hint: ReactNode
+  /** Shown instead of the hint when the account has no keys at all. */
+  emptyTokensHint?: ReactNode
   /** Offer the account's own keys; only meaningful when calling this site. */
   siteTokens?: boolean
 }) {
   const { message } = App.useApp()
-  const tokens = useSiteTokens(siteTokens)
+  const { tokens, loaded } = useSiteTokens(siteTokens)
 
   const tokenItems = tokens.map((token) => {
     const expired = token.expires_at !== null && dayjs(token.expires_at).isBefore(dayjs())
@@ -216,7 +226,7 @@ export default function ApiKeyField({
             menu={{
               items: [
                 ...(tokenItems.length
-                  ? [{ type: 'group' as const, label: '本站密钥', children: tokenItems }]
+                  ? [{ type: 'group' as const, label: '我的密钥', children: tokenItems }]
                   : []),
                 ...(savedKeyItems.length
                   ? [
@@ -245,7 +255,7 @@ export default function ApiKeyField({
         )}
       </Space.Compact>
       <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 6 }}>
-        {hint}
+        {siteTokens && loaded && tokens.length === 0 && emptyTokensHint ? emptyTokensHint : hint}
       </Typography.Text>
       <label
         style={{

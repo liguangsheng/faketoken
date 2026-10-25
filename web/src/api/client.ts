@@ -3,6 +3,7 @@ import type {
   Token,
   TokenKeyInput,
   Channel,
+  ChannelHealthMap,
   RequestLog,
   InviteCode,
   ChannelTestResult,
@@ -174,6 +175,9 @@ export const api = {
 
     listChannels: (params: Record<string, unknown>) =>
       request<Page<Channel>>('GET', `/api/admin/channels${qs(params)}`),
+    /** Recent failures per channel, by id. Channels without calls are absent. */
+    channelHealth: () =>
+      request<{ data: ChannelHealthMap }>('GET', '/api/admin/channels/health'),
     getChannel: (id: number) => request<Channel>('GET', `/api/admin/channels/${id}`),
     /** The upstream connection in the clear. Its own call, never in a listing. */
     channelCredential: (id: number) =>

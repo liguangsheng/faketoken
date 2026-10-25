@@ -49,6 +49,12 @@ interface Options {
 // sleeps, proxy recycles); reconnecting immediately in a tight loop is not.
 const RETRY_MS = [1000, 2000, 5000, 10000]
 
+// The server sends a heartbeat every 20 seconds. A connection that goes quiet
+// for much longer than that is dead without saying so — a half-open socket
+// reads as "still connected" forever, and the operator keeps looking at a
+// board that stopped updating.
+const IDLE_TIMEOUT_MS = 45_000
+
 export function useLogStream({
   url,
   enabled,
@@ -80,6 +86,7 @@ export function useLogStream({
     let wasLive = false
     let stopped = false
     let retryTimer: number | undefined
+    let idleTimer: number | undefined
 
     const connect = async () => {
       setState('connecting')
@@ -109,9 +116,23 @@ export function useLogStream({
         const decoder = new TextDecoder()
         let buffer = ''
 
+        // Cancelling the reader ends the read below, which lands in the same
+        // retry path a closed connection does — the outer controller stays
+        // usable, so the reconnect is a normal one.
+        const armIdleTimer = () => {
+          if (idleTimer !== undefined) window.clearTimeout(idleTimer)
+          idleTimer = window.setTimeout(() => {
+            void reader.cancel()
+          }, IDLE_TIMEOUT_MS)
+        }
+        armIdleTimer()
+
         for (;;) {
           const { done, value } = await reader.read()
           if (done) break
+          // Any byte counts as life: heartbeats are comments, but they arrive
+          // as chunks too.
+          armIdleTimer()
 
           buffer += decoder.decode(value, { stream: true })
           // Events are separated by a blank line; anything after the last one
@@ -150,6 +171,7 @@ export function useLogStream({
         }
         throw new Error('stream ended')
       } catch (error) {
+        if (idleTimer !== undefined) window.clearTimeout(idleTimer)
         if (stopped || controller.signal.aborted) return
         setState('offline')
         const delay = RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)]
@@ -165,6 +187,7 @@ export function useLogStream({
       stopped = true
       controller.abort()
       if (retryTimer) window.clearTimeout(retryTimer)
+      if (idleTimer !== undefined) window.clearTimeout(idleTimer)
     }
   }, [url, enabled])
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   App,
   Button,
@@ -27,10 +27,11 @@ import {
 import { api, type User, type UserGroup } from '../../api/client'
 import { useAuth } from '../../auth/AuthContext'
 import EmptyState from '../../components/EmptyState'
+import LoadError from '../../components/LoadError'
 import PageHeader from '../../components/PageHeader'
+import usePagedList from '../../hooks/usePagedList'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { useTableScrollX, type TableGeometry } from '../../hooks/useTableScrollX'
-import { useSettings } from '../../settings/SettingsContext'
 import { formatMoney, formatNumber, formatRelative, formatTime, STATUS, toUSD } from '../../utils/format'
 
 const QUICK_AMOUNTS = [5, 10, 50, 100]
@@ -56,13 +57,7 @@ export default function Users() {
   const { message, modal } = App.useApp()
   const scrollX = useTableScrollX(COLUMN_GEOMETRY)
   const { user: me, refresh: refreshMe } = useAuth()
-  const [rows, setRows] = useState<User[]>([])
-  const [total, setTotal] = useState(0)
-  const { defaultPageSize } = useSettings()
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(defaultPageSize)
   const [keywordInput, setKeywordInput] = useState('')
-  const [loading, setLoading] = useState(true)
   const [groups, setGroups] = useState<UserGroup[]>([])
 
   const [open, setOpen] = useState(false)
@@ -79,26 +74,18 @@ export default function Users() {
 
   const keyword = useDebouncedValue(keywordInput)
 
-  useEffect(() => {
-    setPage(1)
-  }, [keyword])
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const result = await api.admin.listUsers({ page, page_size: pageSize, keyword })
-      setRows(result.data ?? [])
-      setTotal(result.total)
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [keyword, message, page, pageSize])
-
-  useEffect(() => {
-    void load()
-  }, [load])
+  const {
+    rows,
+    loading,
+    error,
+    reload: load,
+    pagination,
+  } = usePagedList<User>({
+    fetcher: ({ page, pageSize }) => api.admin.listUsers({ page, page_size: pageSize, keyword }),
+    unit: '用户',
+    deps: [keyword],
+    onError: (text) => message.error(text),
+  })
 
   useEffect(() => {
     api.admin
@@ -300,7 +287,9 @@ export default function Users() {
         dataSource={rows}
         scroll={{ x: scrollX }}
         locale={{
-          emptyText: keyword ? (
+          emptyText: error ? (
+            <LoadError error={error} onRetry={() => void load()} />
+          ) : keyword ? (
             <EmptyState title="没有匹配的用户" description="换个关键词试试。" />
           ) : (
             <EmptyState
@@ -314,18 +303,7 @@ export default function Users() {
             />
           ),
         }}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          hideOnSinglePage: total <= 10,
-          showTotal: (count) => `共 ${count} 个用户`,
-          onChange: (nextPage, nextSize) => {
-            setPage(nextPage)
-            setPageSize(nextSize)
-          },
-        }}
+        pagination={pagination}
         columns={[
           {
             ...COLUMN_GEOMETRY.username,

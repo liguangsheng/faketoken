@@ -48,6 +48,21 @@ export interface TokenKeyInput {
   confirm_weak_key?: boolean
 }
 
+/** How a channel fared over one window. */
+export interface ChannelHealthCount {
+  requests: number
+  failures: number
+}
+
+/** A channel's last hour and last day. */
+export interface ChannelHealth {
+  hour: ChannelHealthCount
+  day: ChannelHealthCount
+}
+
+/** Keyed by channel id. Channels without calls in the window are absent. */
+export type ChannelHealthMap = Record<string, ChannelHealth>
+
 export interface Channel {
   id: number
   name: string
@@ -433,4 +448,6 @@ export interface Stats {
   }[]
   user_count?: number
   channel_count?: number
+  /** Unarchived channels that are enabled. */
+  channel_enabled?: number
 }

@@ -21,7 +21,6 @@
             stored === 'dark' ||
             (stored === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
           document.documentElement.dataset.theme = dark ? 'dark' : 'light'
-          document.documentElement.style.backgroundColor = dark ? '#0c0e13' : '#f5f6f8'
         } catch (error) {
           document.documentElement.dataset.theme = 'light'
         }

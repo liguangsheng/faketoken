@@ -585,13 +585,14 @@ export default function Playground() {
                 id="pg-key"
                 siteTokens={hostBase === ''}
                 hint={
-                  hostBase ? (
-                    '请填那个服务签发的密钥，本站的密钥它不认。'
-                  ) : (
-                    <>
-                      还没有密钥？<Link to="/tokens">去创建</Link>
-                    </>
-                  )
+                  hostBase
+                    ? '请填那个服务签发的密钥，本站的密钥它不认。'
+                    : '从下拉里选一个我的密钥，或直接粘贴别的。'
+                }
+                emptyTokensHint={
+                  <>
+                    还没有密钥？<Link to="/tokens">去创建</Link>
+                  </>
                 }
               />
 
@@ -693,32 +694,34 @@ export default function Playground() {
                 <Switch checked={stream} onChange={setStream} size="small" aria-label="流式输出" />
                 <Typography.Text style={{ fontSize: 13 }}>流式输出</Typography.Text>
               </label>
+            </Space>
 
-              <Space style={{ width: '100%' }}>
-                <Button
-                  type="primary"
-                  icon={<SendOutlined />}
-                  loading={running}
-                  onClick={() => void send()}
-                >
-                  发送
-                </Button>
-                <Tooltip title={running ? '中止本次请求' : '仅在请求进行中可用'}>
-                  {/* The span keeps the tooltip working while the button is
-                      disabled, and the constant footprint stops the row from
-                      reflowing when a request starts. */}
-                  <span style={{ display: 'inline-flex' }}>
-                    <Button danger icon={<StopOutlined />} disabled={!running} onClick={stop}>
-                      停止
-                    </Button>
-                  </span>
-                </Tooltip>
-                <Tooltip title={`快捷键 ${IS_MAC ? '⌘' : 'Ctrl'} + Enter`}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {IS_MAC ? '⌘↵' : 'Ctrl↵'}
-                  </Typography.Text>
-                </Tooltip>
-              </Space>
+            {/* Outside the vertical Space: a flex item cannot leave its own
+                wrapper, so the sticky row needs a block parent. */}
+            <Space className="playground-actions" style={{ width: '100%' }}>
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                loading={running}
+                onClick={() => void send()}
+              >
+                发送
+              </Button>
+              <Tooltip title={running ? '中止本次请求' : '仅在请求进行中可用'}>
+                {/* The span keeps the tooltip working while the button is
+                    disabled, and the constant footprint stops the row from
+                    reflowing when a request starts. */}
+                <span style={{ display: 'inline-flex' }}>
+                  <Button danger icon={<StopOutlined />} disabled={!running} onClick={stop}>
+                    停止
+                  </Button>
+                </span>
+              </Tooltip>
+              <Tooltip title={`快捷键 ${IS_MAC ? '⌘' : 'Ctrl'} + Enter`}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {IS_MAC ? '⌘↵' : 'Ctrl↵'}
+                </Typography.Text>
+              </Tooltip>
             </Space>
           </Card>
         </Col>

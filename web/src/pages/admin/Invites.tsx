@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Alert,
   App,
@@ -23,8 +23,10 @@ import { useNavigate } from 'react-router-dom'
 
 import { api, type InviteCode } from '../../api/client'
 import EmptyState from '../../components/EmptyState'
+import LoadError from '../../components/LoadError'
 import PageHeader from '../../components/PageHeader'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
+import usePagedList from '../../hooks/usePagedList'
 import { useTableScrollX, type TableGeometry } from '../../hooks/useTableScrollX'
 import { useSettings } from '../../settings/SettingsContext'
 import { copyTextToClipboard } from '../../utils/clipboard'
@@ -61,12 +63,7 @@ export default function Invites() {
   const { message, modal } = App.useApp()
   const scrollX = useTableScrollX(COLUMN_GEOMETRY)
   const navigate = useNavigate()
-  const { defaultPageSize, settings } = useSettings()
-  const [rows, setRows] = useState<InviteCode[]>([])
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(defaultPageSize)
+  const { settings } = useSettings()
   const [keywordInput, setKeywordInput] = useState('')
   const [statusFilter, setStatusFilter] = useState<number>()
   const [selectedIds, setSelectedIds] = useState<number[]>([])
@@ -78,33 +75,25 @@ export default function Invites() {
 
   const keyword = useDebouncedValue(keywordInput)
 
-  useEffect(() => {
-    setPage(1)
-  }, [keyword, statusFilter])
+  const {
+    rows,
+    loading,
+    error,
+    reload: load,
+    pagination,
+  } = usePagedList<InviteCode>({
+    fetcher: ({ page, pageSize }) =>
+      api.admin.listInvites({ page, page_size: pageSize, keyword, status: statusFilter }),
+    unit: '邀请码',
+    deps: [keyword, statusFilter],
+    onError: (text) => message.error(text),
+  })
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const result = await api.admin.listInvites({
-        page,
-        page_size: pageSize,
-        keyword,
-        status: statusFilter,
-      })
-      setRows(result.data ?? [])
-      setTotal(result.total)
-      const visible = new Set((result.data ?? []).map((row) => row.id))
-      setSelectedIds((current) => current.filter((id) => visible.has(id)))
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [keyword, message, page, pageSize, statusFilter])
-
+  // A bulk action can never touch a code that scrolled out of view.
   useEffect(() => {
-    void load()
-  }, [load])
+    const visible = new Set(rows.map((row) => row.id))
+    setSelectedIds((current) => current.filter((id) => visible.has(id)))
+  }, [rows])
 
   const openCreate = () => {
     form.setFieldsValue({ name: '', count: 1, expires_at: null })
@@ -281,7 +270,9 @@ export default function Invites() {
             ),
         }}
         locale={{
-          emptyText: (
+          emptyText: error ? (
+            <LoadError error={error} onRetry={() => void load()} />
+          ) : (
             <EmptyState
               title="还没有邀请码"
               description="生成一批邀请码，发给你想邀请的人。"
@@ -293,18 +284,7 @@ export default function Invites() {
             />
           ),
         }}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          hideOnSinglePage: total <= 10,
-          showTotal: (count) => `共 ${count} 个邀请码`,
-          onChange: (nextPage, nextSize) => {
-            setPage(nextPage)
-            setPageSize(nextSize)
-          },
-        }}
+        pagination={pagination}
         columns={[
           {
             ...COLUMN_GEOMETRY.code,

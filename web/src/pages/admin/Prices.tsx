@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   App,
   Alert,
@@ -36,9 +36,10 @@ import {
   type UnpricedReport,
 } from '../../api/client'
 import EmptyState from '../../components/EmptyState'
+import LoadError from '../../components/LoadError'
 import PageHeader from '../../components/PageHeader'
+import usePagedList from '../../hooks/usePagedList'
 import { useTableScrollX, type TableGeometry } from '../../hooks/useTableScrollX'
-import { useSettings } from '../../settings/SettingsContext'
 import { formatPrice, formatRelative, formatTime } from '../../utils/format'
 
 const POLICY_LABEL: Record<UnpricedPolicy, string> = {
@@ -164,48 +165,49 @@ function PricePlanPreview({ plan }: { plan: PriceImportPlan }) {
 export default function Prices() {
   const { message, modal } = App.useApp()
   const scrollX = useTableScrollX(COLUMN_GEOMETRY)
-  // Named apart from the billing `settings` below, which is a different thing.
-  const { defaultPageSize } = useSettings()
-  const [rows, setRows] = useState<ModelPrice[]>([])
   const [catalog, setCatalog] = useState<PriceCatalog | null>(null)
   const [settings, setSettings] = useState<BillingSettings | null>(null)
   const [unpriced, setUnpriced] = useState<UnpricedReport | null>(null)
-  const [loading, setLoading] = useState(true)
   const [importing, setImporting] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [policyOpen, setPolicyOpen] = useState(false)
   const [savingPolicy, setSavingPolicy] = useState(false)
-  const [page, setPage] = useState(1)
   const [showAllMissing, setShowAllMissing] = useState(false)
   const [editing, setEditing] = useState<ModelPrice | null>(null)
   const [form] = Form.useForm<ModelPrice>()
   const [policyForm] = Form.useForm<BillingSettings>()
   const policy = Form.useWatch('unpriced_policy', policyForm)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
+  // The whole price list arrives at once and the table pages it locally; the
+  // hook still owns loading, the error and the pager. Its page/size arguments
+  // go unused by the request.
+  const {
+    rows,
+    loading,
+    error,
+    reload: load,
+    pagination,
+  } = usePagedList<ModelPrice>({
+    fetcher: async () => {
       const [prices, billing, missing] = await Promise.all([
         api.admin.listPrices(),
         api.admin.billingSettings(),
         api.admin.unpricedModels(),
       ])
-      setRows(prices.data ?? [])
       setCatalog(prices.catalog ?? null)
       setSettings(billing)
       setUnpriced(missing)
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [message])
-
-  useEffect(() => {
-    void load()
-  }, [load])
+      return { data: prices.data ?? [], total: prices.data?.length ?? 0 }
+    },
+    unit: '模型',
+    showSizeChanger: true,
+    // Hiding the bar on a single page would also hide the size changer,
+    // leaving no way back once a page size larger than the table is picked.
+    hideOnSinglePage: false,
+    onError: (text) => message.error(text),
+  })
 
   /**
    * asNew opens the form in "create" mode while keeping whatever model name
@@ -329,36 +331,16 @@ export default function Prices() {
     <>
       <PageHeader
         title="模型价格"
-        description={
-          <>
-            单位是「美元 / 100 万 Token」，查找支持最长前缀匹配：配置了 gpt-4o
-            后，gpt-4o-2024-11-20 自动沿用该价格。
-            {catalog && (
-              <>
-                {' '}
-                价格表来自 {catalog.source}
-                {catalog.synced_at
-                  ? `（最近同步 ${formatTime(catalog.synced_at)}）`
-                  : '（尚未同步过）'}
-                。
-                {!catalog.url && '未配置 MODELS_DEV_URL，拉取功能已禁用。'}
-              </>
-            )}
-          </>
-        }
+        description="单位是「美元 / 100 万 Token」，查找支持最长前缀匹配：配置了 gpt-4o 后，gpt-4o-2024-11-20 自动沿用该价格。"
         extra={
-          <>
+          <div className="prices-header__actions">
             <Input
               allowClear
               placeholder="搜索模型"
               aria-label="搜索模型"
               style={{ width: 180, maxWidth: '100%' }}
               value={keyword}
-              onChange={(event) => {
-                setKeyword(event.target.value)
-                // 前端过滤下翻页残留会让搜索结果看起来是空的
-                setPage(1)
-              }}
+              onChange={(event) => setKeyword(event.target.value)}
             />
             <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
               刷新
@@ -382,9 +364,19 @@ export default function Prices() {
             <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
               新增价格
             </Button>
-          </>
+          </div>
         }
       />
+
+      {/* Where the price table came from is a footnote, not part of the
+          description: in the header it pushed the buttons onto three rows. */}
+      {catalog && (
+        <div className="prices-header__source">
+          价格表来自 {catalog.source}
+          {catalog.synced_at ? `（最近同步 ${formatTime(catalog.synced_at)}）` : '（尚未同步过）'}。
+          {!catalog.url && '未配置 MODELS_DEV_URL，拉取功能已禁用。'}
+        </div>
+      )}
 
       {settings && (
       <Alert
@@ -491,7 +483,9 @@ export default function Prices() {
         dataSource={filtered}
         scroll={{ x: scrollX }}
         locale={{
-          emptyText: (
+          emptyText: error ? (
+            <LoadError error={error} onRetry={() => void load()} />
+          ) : (
             <EmptyState
               title={keyword ? '没有匹配的模型' : '还没有配置任何价格'}
               description={
@@ -516,16 +510,7 @@ export default function Prices() {
             />
           ),
         }}
-        pagination={{
-          current: page,
-          defaultPageSize,
-          showSizeChanger: true,
-          // Hiding the bar on a single page would also hide the size changer,
-          // leaving no way back once a page size larger than the table is picked.
-          hideOnSinglePage: false,
-          showTotal: (count) => `共 ${count} 个模型`,
-          onChange: (nextPage) => setPage(nextPage),
-        }}
+        pagination={pagination}
         columns={[
           {
             ...COLUMN_GEOMETRY.model,
@@ -662,7 +647,7 @@ export default function Prices() {
               step={0.01}
               style={{ width: '100%' }}
               addonBefore="$"
-              addonAfter="/ 1M tokens"
+              addonAfter="/ 1M Token"
             />
           </Form.Item>
           <Form.Item name="output_price" label="输出价格">
@@ -671,7 +656,7 @@ export default function Prices() {
               step={0.01}
               style={{ width: '100%' }}
               addonBefore="$"
-              addonAfter="/ 1M tokens"
+              addonAfter="/ 1M Token"
             />
           </Form.Item>
           <Form.Item name="cached_price" label="缓存输入价格" tooltip="填 0 表示与输入价格相同">
@@ -680,7 +665,7 @@ export default function Prices() {
               step={0.01}
               style={{ width: '100%' }}
               addonBefore="$"
-              addonAfter="/ 1M tokens"
+              addonAfter="/ 1M Token"
             />
           </Form.Item>
           <Form.Item

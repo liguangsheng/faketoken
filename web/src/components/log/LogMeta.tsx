@@ -1,4 +1,5 @@
-import { Descriptions, Tag, Tooltip, Typography } from "antd";
+import { memo } from "react";
+import { Descriptions, Tag, Tooltip } from "antd";
 
 import type { RequestLog } from "../../api/types";
 import {
@@ -11,7 +12,7 @@ import {
 import { REASONING_TONE, cacheRate, rowTone } from "./tone";
 
 // LogMeta renders the metadata a log row already carries; no fetch needed.
-export default function LogMeta({ detail, admin }: { detail: RequestLog; admin?: boolean }) {
+function LogMeta({ detail, admin }: { detail: RequestLog; admin?: boolean }) {
   return (
     <Descriptions column={1} size="small" bordered>
       <Descriptions.Item label="ID">
@@ -127,22 +128,6 @@ export default function LogMeta({ detail, admin }: { detail: RequestLog; admin?:
         总计 {formatDuration(detail.duration_ms)}
         {detail.ttfb_ms > 0 && ` · 首字节 ${formatDuration(detail.ttfb_ms)}`}
       </Descriptions.Item>
-      <Descriptions.Item label="错误">
-        {detail.error ? (
-          <Typography.Paragraph
-            copyable={{ text: detail.error }}
-            style={{
-              color: "var(--app-danger)",
-              marginBottom: 0,
-              whiteSpace: "pre-wrap",
-            }}
-          >
-            {detail.error}
-          </Typography.Paragraph>
-        ) : (
-          <span className="text-muted">无</span>
-        )}
-      </Descriptions.Item>
     </Descriptions>
   );
 }
@@ -157,3 +142,7 @@ function EstimatedTag() {
     </Tooltip>
   );
 }
+
+// The metadata is a wall of numbers that only changes when the opened row
+// does; re-rendering it on every table tick is wasted work.
+export default memo(LogMeta);

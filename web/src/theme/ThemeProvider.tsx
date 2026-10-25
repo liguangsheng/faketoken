@@ -4,6 +4,8 @@ import { ConfigProvider, theme as antdTheme } from 'antd'
 import type { ThemeConfig } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 
+import { dark as darkPalette, light as lightPalette } from './palette'
+
 export type ThemeMode = 'light' | 'dark' | 'system'
 export type ResolvedMode = 'light' | 'dark'
 
@@ -32,12 +34,10 @@ const FONT_FAMILY =
 const FONT_FAMILY_CODE =
   "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace"
 
-/**
- * The two palettes are intentionally written out in full rather than derived,
- * so that a tweak to one mode can never silently shift the other.
- */
+/** antd's tokens, drawn from the palette so colours exist in one place. */
 function buildTheme(resolved: ResolvedMode): ThemeConfig {
   const dark = resolved === 'dark'
+  const palette = dark ? darkPalette : lightPalette
 
   const shared: ThemeConfig['token'] = {
     borderRadius: 8,
@@ -51,41 +51,23 @@ function buildTheme(resolved: ResolvedMode): ThemeConfig {
     motionDurationMid: '0.15s',
   }
 
-  const token: ThemeConfig['token'] = dark
-    ? {
-        ...shared,
-        colorPrimary: '#8b87f5',
-        colorInfo: '#8b87f5',
-        colorSuccess: '#4ade80',
-        colorWarning: '#fbbf24',
-        colorError: '#f87171',
-        colorBgLayout: '#0c0e13',
-        colorBgContainer: '#14171f',
-        colorBgElevated: '#1a1e28',
-        colorBorder: '#333846',
-        colorBorderSecondary: '#242833',
-        colorText: '#e6e8ee',
-        colorTextSecondary: '#b6bcc9',
-        colorTextTertiary: '#98a0b0',
-        colorTextQuaternary: '#6b7385',
-      }
-    : {
-        ...shared,
-        colorPrimary: '#4f46e5',
-        colorInfo: '#4f46e5',
-        colorSuccess: '#16a34a',
-        colorWarning: '#d97706',
-        colorError: '#dc2626',
-        colorBgLayout: '#f5f6f8',
-        colorBgContainer: '#ffffff',
-        colorBgElevated: '#ffffff',
-        colorBorder: '#d8dbe3',
-        colorBorderSecondary: '#e8eaef',
-        colorText: '#1a1d26',
-        colorTextSecondary: '#4b5262',
-        colorTextTertiary: '#6b7280',
-        colorTextQuaternary: '#9ca3af',
-      }
+  const token: ThemeConfig['token'] = {
+    ...shared,
+    colorPrimary: palette.brand,
+    colorInfo: palette.brand,
+    colorSuccess: palette.success,
+    colorWarning: palette.warning,
+    colorError: palette.danger,
+    colorBgLayout: palette.bg,
+    colorBgContainer: palette.surface,
+    colorBgElevated: palette.elevated,
+    colorBorder: palette.borderStrong,
+    colorBorderSecondary: palette.border,
+    colorText: palette.text,
+    colorTextSecondary: palette.textSecondary,
+    colorTextTertiary: palette.textMuted,
+    colorTextQuaternary: palette.textFaint,
+  }
 
   return {
     algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
@@ -94,15 +76,15 @@ function buildTheme(resolved: ResolvedMode): ThemeConfig {
       Layout: {
         headerHeight: 56,
         headerPadding: '0 16px',
-        headerBg: dark ? 'rgba(20, 23, 31, 0.82)' : 'rgba(255, 255, 255, 0.82)',
-        siderBg: dark ? '#101319' : '#ffffff',
+        headerBg: palette.headerBg,
+        siderBg: palette.siderBg,
         // The sider renders with theme="light", which reads its own tokens.
-        lightSiderBg: dark ? '#101319' : '#ffffff',
-        lightTriggerBg: dark ? '#1a1e28' : '#f2f3f6',
-        lightTriggerColor: dark ? '#e6e8ee' : '#1a1d26',
-        bodyBg: dark ? '#0c0e13' : '#f5f6f8',
-        triggerBg: dark ? '#1a1e28' : '#f2f3f6',
-        triggerColor: dark ? '#e6e8ee' : '#1a1d26',
+        lightSiderBg: palette.siderBg,
+        lightTriggerBg: palette.triggerBg,
+        lightTriggerColor: palette.triggerColor,
+        bodyBg: palette.bg,
+        triggerBg: palette.triggerBg,
+        triggerColor: palette.triggerColor,
       },
       Menu: {
         itemBg: 'transparent',
@@ -112,9 +94,9 @@ function buildTheme(resolved: ResolvedMode): ThemeConfig {
         itemMarginInline: 10,
         itemMarginBlock: 2,
         iconMarginInlineEnd: 10,
-        itemSelectedBg: dark ? 'rgba(139, 135, 245, 0.16)' : 'rgba(79, 70, 229, 0.09)',
-        itemSelectedColor: dark ? '#a9a6f8' : '#4f46e5',
-        itemHoverBg: dark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(15, 23, 42, 0.04)',
+        itemSelectedBg: palette.menuSelectedBg,
+        itemSelectedColor: palette.menuSelectedColor,
+        itemHoverBg: palette.menuHoverBg,
         activeBarWidth: 0,
         activeBarBorderWidth: 0,
       },
@@ -122,21 +104,19 @@ function buildTheme(resolved: ResolvedMode): ThemeConfig {
         headerFontSize: 15,
         headerHeight: 50,
         paddingLG: 20,
-        boxShadowTertiary: dark
-          ? '0 1px 2px rgba(0, 0, 0, 0.3)'
-          : '0 1px 2px rgba(16, 24, 40, 0.04), 0 6px 16px -6px rgba(16, 24, 40, 0.06)',
+        boxShadowTertiary: palette.cardShadow,
       },
       Table: {
-        headerBg: dark ? '#171b24' : '#fafbfc',
-        headerColor: dark ? '#98a0b0' : '#6b7280',
+        headerBg: palette.labelBg,
+        headerColor: palette.textMuted,
         headerSplitColor: 'transparent',
         // Every table in the console renders at size="small", so the SM value
         // is the one that actually applies. The default-size padding stays as
         // a sane fallback, but a new table should be small like the rest.
         cellPaddingBlock: 11,
         cellPaddingBlockSM: 8,
-        rowHoverBg: dark ? 'rgba(255, 255, 255, 0.03)' : '#f7f8fa',
-        borderColor: dark ? '#242833' : '#eef0f4',
+        rowHoverBg: palette.rowHoverBg,
+        borderColor: palette.borderFaint,
       },
       Button: {
         primaryShadow: 'none',
@@ -148,8 +128,8 @@ function buildTheme(resolved: ResolvedMode): ThemeConfig {
         borderRadiusSM: 6,
       },
       Segmented: {
-        itemSelectedBg: dark ? '#262c39' : '#ffffff',
-        trackBg: dark ? '#171b24' : '#f0f1f4',
+        itemSelectedBg: palette.tooltipBg,
+        trackBg: palette.labelBg,
       },
       Modal: {
         titleFontSize: 16,
@@ -158,14 +138,14 @@ function buildTheme(resolved: ResolvedMode): ThemeConfig {
         contentFontSize: 26,
       },
       Tooltip: {
-        colorBgSpotlight: dark ? '#262c39' : 'rgba(26, 29, 38, 0.94)',
+        colorBgSpotlight: palette.tooltipBg,
       },
       Form: {
-        labelColor: dark ? '#b6bcc9' : '#4b5262',
+        labelColor: palette.formLabel,
         itemMarginBottom: 18,
       },
       Descriptions: {
-        labelBg: dark ? '#171b24' : '#fafbfc',
+        labelBg: palette.labelBg,
       },
     },
   }
@@ -184,8 +164,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const resolved: ResolvedMode = mode === 'system' ? system : mode
 
-  // The attribute drives every custom CSS variable in index.css; the meta tag
-  // keeps browser UI (form controls, scrollbars) in sync.
+  // The attribute drives every custom CSS variable, including the page's own
+  // background, so nothing else has to be patched when the mode flips.
   useEffect(() => {
     document.documentElement.dataset.theme = resolved
   }, [resolved])

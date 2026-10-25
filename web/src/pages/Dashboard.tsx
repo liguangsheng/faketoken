@@ -10,7 +10,7 @@ import {
   WalletOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import { api, type Stats } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -22,6 +22,7 @@ import UsageHeatmap from '../components/UsageHeatmap'
 import {
   formatCompact,
   formatMoney,
+  formatMoneyCompact,
   formatNumber,
   formatPercent,
   formatUSD,
@@ -97,7 +98,16 @@ export default function Dashboard() {
   const hasData = series.some((point) => point.requests > 0 || point.costUsd > 0)
 
   const firstLoad = loading && !stats
-  const statSpan = isAdmin ? { xs: 12, sm: 12, md: 8, xl: 4 } : { xs: 12, md: 12, xl: 6 }
+  // A deployment with a single account has no user count to show, and the
+  // row it leaves behind would be a hole in the grid.
+  const singleUser = isAdmin && stats !== null && (stats.user_count ?? 0) <= 1
+  // Five cards do not divide antd's 24-column grid, and its grid only ships
+  // integer spans, so the fifth card takes its width from the stylesheet.
+  const statSpan = isAdmin
+    ? singleUser
+      ? { xs: 12, sm: 12, md: 8 }
+      : { xs: 12, sm: 12, md: 8, xl: 4 }
+    : { xs: 12, md: 12, xl: 6 }
   const quotaEmpty = (user?.quota ?? 0) <= 0
 
   return (
@@ -131,11 +141,12 @@ export default function Dashboard() {
       {/* Range switches keep the old numbers on screen; the spinner says a new
           answer is on its way. delay skips it entirely on fast responses. */}
       <Spin spinning={loading && Boolean(stats)} delay={200}>
-        <Row gutter={[12, 12]}>
+        <Row gutter={[12, 12]} className={singleUser ? 'dashboard-stats--five' : undefined}>
           <Col {...statSpan}>
             <StatCard
               label={isAdmin ? '我的余额' : '账户余额'}
-              value={formatMoney(user?.quota ?? 0)}
+              value={formatMoneyCompact(user?.quota ?? 0)}
+              tooltip={formatMoney(user?.quota ?? 0)}
               hint={
                 quotaEmpty ? (
                   <Typography.Text type="danger" style={{ fontSize: 12 }}>
@@ -154,7 +165,7 @@ export default function Dashboard() {
             <StatCard
               label="区间消费"
               value={formatUSD(cost)}
-              hint={requests ? `平均每次 ${formatUSD(cost / requests, 5)}` : '暂无调用'}
+              hint={requests ? `平均每次 ${formatUSD(cost / requests)}` : '暂无调用'}
               icon={<DollarOutlined />}
               tone="warning"
               loading={firstLoad}
@@ -189,29 +200,29 @@ export default function Dashboard() {
               loading={firstLoad}
             />
           </Col>
+          {isAdmin && !singleUser && (
+            <Col {...statSpan}>
+              <StatCard
+                label="用户数"
+                value={formatNumber(stats?.user_count ?? 0)}
+                hint="全站注册账号"
+                icon={<TeamOutlined />}
+                tone="neutral"
+                loading={firstLoad}
+              />
+            </Col>
+          )}
           {isAdmin && (
-            <>
-              <Col {...statSpan}>
-                <StatCard
-                  label="用户数"
-                  value={formatNumber(stats?.user_count ?? 0)}
-                  hint="全站注册账号"
-                  icon={<TeamOutlined />}
-                  tone="neutral"
-                  loading={firstLoad}
-                />
-              </Col>
-              <Col {...statSpan}>
-                <StatCard
-                  label="渠道数"
-                  value={formatNumber(stats?.channel_count ?? 0)}
-                  hint="已配置的上游渠道"
-                  icon={<ApiOutlined />}
-                  tone="neutral"
-                  loading={firstLoad}
-                />
-              </Col>
-            </>
+            <Col {...statSpan}>
+              <StatCard
+                label="渠道数"
+                value={formatNumber(stats?.channel_count ?? 0)}
+                hint={`其中启用 ${formatNumber(stats?.channel_enabled ?? 0)}`}
+                icon={<ApiOutlined />}
+                tone="neutral"
+                loading={firstLoad}
+              />
+            </Col>
           )}
         </Row>
 
@@ -272,17 +283,41 @@ export default function Dashboard() {
         <UsageHeatmap admin={isAdmin} version={refreshes} />
 
         <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
-          <Col xs={24} lg={isAdmin ? 8 : 24}>
-            <RankCard title="模型排行" loading={firstLoad} rows={stats?.by_model ?? []} />
+          <Col xs={24} lg={isAdmin && !singleUser ? 8 : 24}>
+            <RankCard
+              title="模型排行"
+              loading={firstLoad}
+              rows={stats?.by_model ?? []}
+              // An administrator ranks the model a call really went out as,
+              // and the log's model filter matches the name that was asked
+              // for — so the name goes in as a keyword.
+              linkFor={(row) =>
+                isAdmin
+                  ? `/admin/logs?q=${encodeURIComponent(row.name)}`
+                  : `/logs?model=${encodeURIComponent(row.name)}`
+              }
+            />
           </Col>
           {isAdmin && (
-            <Col xs={24} lg={8}>
-              <RankCard title="渠道排行" loading={firstLoad} rows={stats?.by_channel ?? []} />
+            <Col xs={24} lg={singleUser ? 12 : 8}>
+              <RankCard
+                title="渠道排行"
+                loading={firstLoad}
+                rows={stats?.by_channel ?? []}
+                // A channel name is not a key, and the ranking carries no id
+                // yet; the keyword is the closest thing to a link.
+                linkFor={(row) => `/admin/logs?q=${encodeURIComponent(row.name)}`}
+              />
             </Col>
           )}
-          {isAdmin && (
+          {isAdmin && !singleUser && (
             <Col xs={24} lg={8}>
-              <RankCard title="用户排行" loading={firstLoad} rows={stats?.by_user ?? []} />
+              <RankCard
+                title="用户排行"
+                loading={firstLoad}
+                rows={stats?.by_user ?? []}
+                linkFor={(row) => `/admin/logs?username=${encodeURIComponent(row.name)}`}
+              />
             </Col>
           )}
         </Row>
@@ -302,10 +337,13 @@ function RankCard({
   title,
   rows,
   loading,
+  linkFor,
 }: {
   title: string
   loading: boolean
   rows: RankRow[]
+  /** Where a row leads: the log lines behind that name. */
+  linkFor: (row: RankRow) => string
 }) {
   const top = [...rows].sort((a, b) => b.cost - a.cost || b.requests - a.requests).slice(0, 8)
   // Free traffic still deserves proportional bars: fall back to request counts
@@ -326,7 +364,7 @@ function RankCard({
     >
       {top.length ? (
         top.map((row) => (
-          <div className="rank-row" key={row.name}>
+          <Link className="rank-row" key={row.name} to={linkFor(row)}>
             <Typography.Text className="rank-row__name" ellipsis={{ tooltip: row.name }}>
               {row.name}
             </Typography.Text>
@@ -344,10 +382,10 @@ function RankCard({
             </span>
             <span className="rank-row__meta">
               {byCost
-                ? `${formatNumber(row.requests)} 次 · ${formatCompact(row.total_tokens)} tokens`
-                : `${formatCompact(row.total_tokens)} tokens`}
+                ? `${formatNumber(row.requests)} 次 · ${formatCompact(row.total_tokens)} Token`
+                : `${formatCompact(row.total_tokens)} Token`}
             </span>
-          </div>
+          </Link>
         ))
       ) : (
         <EmptyState title="所选时间范围内没有调用" compact />

@@ -129,6 +129,7 @@ export default function UsageHeatmap({ admin, version }: { admin: boolean; versi
   }, [load, version])
 
   // Rebuilt with each answer, so a refresh after midnight gains the new day.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- days is the trigger, not an input
   const cells = useMemo(() => buildCells(dayjs().startOf('day')), [days])
   const months = useMemo(() => monthLabels(cells), [cells])
   const byDay = useMemo(() => new Map((days ?? []).map((day) => [day.day, day])), [days])
