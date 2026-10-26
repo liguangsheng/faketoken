@@ -164,3 +164,21 @@ func TestStatusCodeMappingReadsStringKeys(t *testing.T) {
 		t.Fatalf("decoded %v, want 429=503", ch.StatusCodeMapping)
 	}
 }
+
+func TestRequestLogFailed(t *testing.T) {
+	for _, tc := range []struct {
+		log  RequestLog
+		want bool
+	}{
+		{RequestLog{StatusCode: 200}, false},
+		{RequestLog{StatusCode: 502, Error: "bad gateway"}, true},
+		{RequestLog{StatusCode: 200, Error: "rate limited inside the stream"}, true},
+		{RequestLog{StatusCode: 499, Error: "client closed request", Cancelled: true}, false},
+		{RequestLog{StatusCode: 200, Error: "stream interrupted: context canceled", Cancelled: true}, false},
+	} {
+		if got := tc.log.Failed(); got != tc.want {
+			t.Fatalf("%d %q cancelled=%v: Failed() = %v, want %v",
+				tc.log.StatusCode, tc.log.Error, tc.log.Cancelled, got, tc.want)
+		}
+	}
+}

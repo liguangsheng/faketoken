@@ -19,7 +19,13 @@ const logColumns = `id, created_at, user_id, username, token_id, token_name, cha
 	channel_name, model, upstream_model, endpoint, method, status_code, stream,
 	prompt_tokens, completion_tokens, cached_tokens, total_tokens, cost,
 	duration_ms, ttfb_ms, retries, client_ip, error, cache_creation_tokens,
-	reasoning_effort, client_type, upstream_status, prompt_estimated`
+	reasoning_effort, client_type, upstream_status, prompt_estimated, cancelled`
+
+// failedSQL is the test for a failed call, shared by the rollup, the error
+// filter and the summaries so they cannot disagree: an error status or an
+// error in the body, unless the caller or an operator ended the call.
+// model.RequestLog.Failed is the same test in Go.
+const failedSQL = `(NOT cancelled AND (status_code >= 400 OR error <> ''))`
 
 // InsertLog persists one entry and fills in the values the database
 // generates, so the caller holds a complete row — the live log stream forwards
@@ -27,19 +33,19 @@ const logColumns = `id, created_at, user_id, username, token_id, token_name, cha
 // timestamp is displayed.
 //
 // The usage_hourly rollup is bumped in the same statement, so the heatmap can
-// never drift from the log. The error test matches Summary's.
+// never drift from the log.
 func (s *Store) InsertLog(ctx context.Context, l *model.RequestLog) error {
 	return s.pool.QueryRow(ctx, `WITH row AS (INSERT INTO request_logs
 		(user_id, username, token_id, token_name, channel_id, channel_name, model,
 		 upstream_model, endpoint, method, status_code, stream, prompt_tokens,
 		 completion_tokens, cached_tokens, total_tokens, cost, duration_ms, ttfb_ms,
 		 retries, client_ip, error, cache_creation_tokens, reasoning_effort, client_type,
-		 upstream_status, prompt_estimated)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
-		RETURNING id, created_at, user_id, status_code, error, cost, total_tokens),
+		 upstream_status, prompt_estimated, cancelled)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+		RETURNING id, created_at, user_id, status_code, error, cancelled, cost, total_tokens),
 	rollup AS (INSERT INTO usage_hourly AS u (user_id, hour, requests, errors, cost, total_tokens)
 		SELECT user_id, date_trunc('hour', created_at), 1,
-		       CASE WHEN status_code >= 400 OR error <> '' THEN 1 ELSE 0 END,
+		       CASE WHEN `+failedSQL+` THEN 1 ELSE 0 END,
 		       cost, total_tokens
 		FROM row
 		ON CONFLICT (user_id, hour) DO UPDATE SET
@@ -53,7 +59,7 @@ func (s *Store) InsertLog(ctx context.Context, l *model.RequestLog) error {
 		l.CompletionTokens, l.CachedTokens, l.TotalTokens, l.Cost, l.DurationMS, l.TTFBMS,
 		l.Retries, l.ClientIP, truncate(l.Error, 2000), l.CacheCreationTokens,
 		truncate(l.ReasoningEffort, 64), truncate(l.ClientType, 64), l.UpstreamStatus,
-		l.PromptEstimated).
+		l.PromptEstimated, l.Cancelled).
 		Scan(&l.ID, &l.CreatedAt)
 }
 
@@ -155,7 +161,7 @@ func (f LogFilter) build() (string, []any) {
 		conds = append(conds, "("+strings.Join(matches, " OR ")+")")
 	}
 	if f.OnlyError {
-		conds = append(conds, "(status_code >= 400 OR error <> '')")
+		conds = append(conds, failedSQL)
 	}
 	if f.Start != nil {
 		add("created_at >= $%d", *f.Start)
@@ -199,7 +205,7 @@ func (s *Store) ListLogs(ctx context.Context, f LogFilter) ([]*model.RequestLog,
 			&l.CompletionTokens, &l.CachedTokens, &l.TotalTokens, &l.Cost,
 			&l.DurationMS, &l.TTFBMS, &l.Retries, &l.ClientIP, &l.Error,
 			&l.CacheCreationTokens, &l.ReasoningEffort, &l.ClientType, &l.UpstreamStatus,
-			&l.PromptEstimated); err != nil {
+			&l.PromptEstimated, &l.Cancelled); err != nil {
 			return nil, 0, err
 		}
 		logs = append(logs, &l)
@@ -514,8 +520,11 @@ func (s *Store) StartChunkCollector(ctx context.Context, every time.Duration) {
 // ------------------------------------------------------------------ analytics
 
 type Summary struct {
-	Requests    int64 `json:"requests"`
-	Errors      int64 `json:"errors"`
+	Requests int64 `json:"requests"`
+	Errors   int64 `json:"errors"`
+	// Cancelled calls are neither failures nor successes, so a success rate
+	// has to leave them out.
+	Cancelled   int64 `json:"cancelled"`
 	Cost        int64 `json:"cost"`
 	TotalTokens int64 `json:"total_tokens"`
 }
@@ -540,11 +549,12 @@ func (s *Store) Summary(ctx context.Context, f LogFilter) (Summary, error) {
 	var out Summary
 	err := s.pool.QueryRow(ctx, `SELECT
 		count(*),
-		count(*) FILTER (WHERE status_code >= 400 OR error <> ''),
+		count(*) FILTER (WHERE `+failedSQL+`),
+		count(*) FILTER (WHERE cancelled),
 		coalesce(sum(cost), 0),
 		coalesce(sum(total_tokens), 0)
 		FROM request_logs WHERE `+where, args...).
-		Scan(&out.Requests, &out.Errors, &out.Cost, &out.TotalTokens)
+		Scan(&out.Requests, &out.Errors, &out.Cancelled, &out.Cost, &out.TotalTokens)
 	return out, err
 }
 
@@ -558,10 +568,10 @@ func (s *Store) TimeSeries(ctx context.Context, f LogFilter, interval string) ([
 	query := fmt.Sprintf(`SELECT
 		date_trunc('%s', created_at) AS bucket,
 		count(*),
-		count(*) FILTER (WHERE status_code >= 400 OR error <> ''),
+		count(*) FILTER (WHERE %s),
 		coalesce(sum(cost), 0),
 		coalesce(sum(total_tokens), 0)
-		FROM request_logs WHERE %s GROUP BY bucket ORDER BY bucket`, interval, where)
+		FROM request_logs WHERE %s GROUP BY bucket ORDER BY bucket`, interval, failedSQL, where)
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -581,8 +591,10 @@ func (s *Store) TimeSeries(ctx context.Context, f LogFilter, interval string) ([
 
 // TopBy aggregates spend grouped by "model", "upstream_model", "channel_name"
 // or "username", ranked by spend and then by calls. Rows with the column empty
-// are skipped, and so are groups that cost nothing and used no tokens: calls
-// that only failed would otherwise take places in a ranking of spend.
+// are skipped, and so are groups whose calls all failed and cost nothing: they
+// would otherwise take places in a ranking of spend. A call that succeeded
+// keeps its group listed even with no usage reported, which is how a stream
+// without usage options arrives.
 func (s *Store) TopBy(ctx context.Context, f LogFilter, column string, limit int) ([]NamedStat, error) {
 	switch column {
 	case "model", "upstream_model", "channel_name", "username":
@@ -598,6 +610,7 @@ func (s *Store) TopBy(ctx context.Context, f LogFilter, column string, limit int
 		FROM request_logs WHERE %s AND %s <> ''
 		GROUP BY %s
 		HAVING coalesce(sum(cost),0) > 0 OR coalesce(sum(total_tokens),0) > 0
+			OR count(*) FILTER (WHERE status_code < 400 AND error = '') > 0
 		ORDER BY coalesce(sum(cost),0) DESC, count(*) DESC LIMIT $%d`,
 		column, where, column, column, len(args))
 	rows, err := s.pool.Query(ctx, query, args...)

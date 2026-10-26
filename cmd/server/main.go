@@ -113,6 +113,7 @@ func run() error {
 	// Bodies share chunks, so trimming the window leaves orphans behind.
 	// Nothing waits on them; collecting every few minutes bounds the waste.
 	st.StartChunkCollector(ctx, 10*time.Minute)
+	st.StartAttemptPruner(ctx, time.Hour)
 
 	jwt := auth.NewJWTManager(cfg.JWTSecret, cfg.SessionTTL)
 	clients := upstream.NewPool()

@@ -801,7 +801,14 @@ type attemptOutcome struct {
 	// the caller. It decides whether an abort still has a response to write:
 	// after this point the status line is spent and the only honest ending is
 	// to stop sending bytes.
-	headersSent       bool
+	headersSent bool
+	// delivered marks a call whose answer began to reach the caller: content
+	// events on a stream, or any of a plain body. Output counts cannot say,
+	// because Anthropic reports them only in the closing message_delta.
+	delivered bool
+	// cancelled marks a call that ended because its caller hung up or an
+	// operator stopped it: logged, but not held against the channel.
+	cancelled         bool
 	usage             model.Usage
 	hasUsage          bool
 	ttfb              time.Duration
@@ -868,6 +875,10 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
+	// The idle watchdog stops the read with its own cause, which is how a
+	// stalled upstream is told apart from a caller that hung up.
+	ctx, stall := context.WithCancelCause(ctx)
+	defer stall(nil)
 
 	req, err := http.NewRequestWithContext(ctx, r.Method, target, bytes.NewReader(outBody))
 	if err != nil {
@@ -955,7 +966,8 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 
 	sniff := newUsageSniffer(contentType, rl.CaptureLimit())
 
-	written, bodyTTFB, pumpErr := pump(w, resp.Body, sniff, isStream, rl.cfg.StreamIdleTimeout, cancel)
+	written, bodyTTFB, pumpErr := pump(w, resp.Body, sniff, isStream, rl.cfg.StreamIdleTimeout,
+		func() { stall(errStreamIdle) })
 
 	usage, hasUsage := sniff.Usage()
 	captured, captureTruncated := sniff.Capture()
@@ -990,15 +1002,31 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 			out.status = http.StatusTooManyRequests
 		}
 	}
+	// What reached the caller decides whether a broken call is billed. A
+	// stream that answered and then failed delivered; a body that is nothing
+	// but an error object did not.
+	out.delivered = sniff.Delivered(written) && (sniff.sse || !out.streamFailed)
 	if pumpErr != nil {
 		out.kind = outcomeAborted
-		out.message = "stream interrupted: " + pumpErr.Error()
-		// An operator killed this one; say so rather than reporting the broken
-		// pipe that killing it produced.
-		if errors.Is(context.Cause(r.Context()), ErrCancelledByOperator) {
-			out.message = cancelledMessage
+		// An error the upstream already sent is what ended the call, and its
+		// message is the one worth keeping: a client that hangs up on a rate
+		// limit has cancelled nothing.
+		if !out.streamFailed {
+			out.message = "stream interrupted: " + pumpErr.Error()
+			switch {
+			case errors.Is(context.Cause(r.Context()), ErrCancelledByOperator):
+				// An operator killed this one; say so rather than reporting the
+				// broken pipe that killing it produced.
+				out.message = cancelledMessage
+				out.cancelled = true
+			case r.Context().Err() != nil || errors.Is(pumpErr, errCallerGone):
+				out.cancelled = true
+			case errors.Is(context.Cause(ctx), errStreamIdle):
+				out.message = fmt.Sprintf("stream interrupted: upstream sent nothing for %s",
+					rl.cfg.StreamIdleTimeout)
+			}
 		}
-		// A broken pipe is the caller leaving, not the channel misbehaving.
+		// The bytes already sent cannot be retried, whoever broke the stream.
 		out.streamFailed = false
 	}
 	if (pumpErr == nil || written > 0) && resp.StatusCode >= 200 && resp.StatusCode < 300 &&
@@ -1039,7 +1067,8 @@ func abortedOutcome(ctx context.Context) attemptOutcome {
 	if errors.Is(context.Cause(ctx), ErrCancelledByOperator) {
 		message = cancelledMessage
 	}
-	return attemptOutcome{kind: outcomeAborted, status: statusClientClosedRequest, message: message}
+	return attemptOutcome{kind: outcomeAborted, status: statusClientClosedRequest, message: message,
+		cancelled: true}
 }
 
 // forwardableQuery reproduces the caller's query string minus `key`, which
@@ -1202,13 +1231,15 @@ func (rl *Relay) settle(c *call, ch *model.Channel, out attemptOutcome) {
 	entry.TTFBMS = int32(out.ttfb.Milliseconds())
 	entry.DurationMS = int32(time.Since(c.started).Milliseconds())
 	entry.Error = out.message
+	entry.Cancelled = out.cancelled
 
-	// A call that failed before producing any output delivered nothing: the
-	// upstream refused or broke, and the caller has to send it again. It keeps
-	// the counts the upstream reported and is billed for none of them. The
-	// status alone cannot tell: a stream that dies after its 200 still reads
-	// 200, and an estimated prompt then billed it like one that answered.
-	deliveredNothing := (out.kind == outcomeAborted || out.streamFailed) &&
+	// A call that failed before any of the answer reached the caller delivered
+	// nothing: the upstream refused or broke, and the caller has to send it
+	// again. It keeps the counts the upstream reported and is billed for none
+	// of them. The status alone cannot tell: a stream that dies after its 200
+	// still reads 200, and an estimated prompt then billed it like one that
+	// answered. Once content went out it is billed, however it ended.
+	deliveredNothing := (out.kind == outcomeAborted || out.streamFailed) && !out.delivered &&
 		out.usage.CompletionTokens == 0
 	billable := out.status < 400 && out.hasUsage && !deliveredNothing
 
@@ -1246,8 +1277,10 @@ func (rl *Relay) settle(c *call, ch *model.Channel, out attemptOutcome) {
 				slog.Error("quota settlement failed", "user", p.user.ID, "error", err)
 			}
 		}
+		// A stream the upstream broke is the channel's failure; one the caller
+		// or an operator ended is not, whatever status it was logged with.
 		failure := ""
-		if out.status >= 400 || out.streamFailed {
+		if !out.cancelled && (out.status >= 400 || out.streamFailed || out.kind == outcomeAborted) {
 			failure = entry.Error
 		}
 		rl.st.RecordChannelResult(ctx, ch.ID, entry.Cost, failure)

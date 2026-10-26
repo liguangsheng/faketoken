@@ -103,9 +103,13 @@ func (s *Store) GroupModels(ctx context.Context, group string) ([]string, error)
 // AllModels lists every model a routable channel serves, in any group. It
 // backs the audit that tells administrators which models are still missing a
 // price; a disabled or archived channel serves nothing, so its models would
-// only bury the ones that matter.
+// only bury the ones that matter. A disabled channel under keepalive does
+// serve, for a window every day, so it counts all day.
 func (s *Store) AllModels(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT DISTINCT model FROM abilities WHERE enabled ORDER BY model`)
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT a.model
+		FROM abilities a JOIN channels c ON c.id = a.channel_id
+		WHERE a.enabled OR (c.keepalive_enabled AND NOT c.archived)
+		ORDER BY a.model`)
 	if err != nil {
 		return nil, err
 	}

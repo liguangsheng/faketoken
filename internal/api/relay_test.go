@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/faketoken/faketoken/internal/model"
 )
@@ -1280,5 +1281,162 @@ func TestFailedStreamWithNoOutputIsNotBilled(t *testing.T) {
 	if !answered.PromptEstimated || answered.PromptTokens == 0 || answered.Cost == 0 {
 		t.Fatalf("a successful call lost its estimated prompt: cost %d, prompt %d, estimated %v",
 			answered.Cost, answered.PromptTokens, answered.PromptEstimated)
+	}
+}
+
+// The output count of an Anthropic stream arrives only with the closing
+// message_delta, so a caller that leaves before it has the answer yet zero
+// output tokens to show for it. It is billed for what it received, and the
+// channel is not blamed for a caller walking away.
+func TestCallerHangingUpAfterContentIsBilled(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		for _, event := range []string{
+			"event: message_start\ndata: " + `{"type":"message_start","message":{"id":"msg_1","type":"message",` +
+				`"role":"assistant","model":"claude-sonnet-4-5","content":[],"usage":{"input_tokens":0,"output_tokens":0}}}`,
+			"event: content_block_delta\ndata: " + `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the answer"}}`,
+		} {
+			fmt.Fprint(w, event+"\n\n")
+			flusher.Flush()
+		}
+		// The rest would follow; the caller is gone before it does.
+		<-r.Context().Done()
+	})
+	id := h.createChannel(channelInput{
+		Name: "slow-close", Type: "anthropic", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"claude-sonnet-4-5"}, Groups: []string{"default"},
+	})
+
+	resp := h.relayRequest(http.MethodPost, "/v1/messages", h.createKey(),
+		`{"model":"claude-sonnet-4-5","stream":true,"max_tokens":16,`+
+			`"messages":[{"role":"user","content":"a prompt long enough to estimate"}]}`)
+	got := make(chan bool, 1)
+	go func() {
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadString('\n')
+			if strings.Contains(line, "the answer") {
+				got <- true
+				return
+			}
+			if err != nil {
+				got <- false
+				return
+			}
+		}
+	}()
+	select {
+	case ok := <-got:
+		if !ok {
+			t.Fatal("the stream ended before the content arrived")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no content within 5s")
+	}
+	resp.Body.Close()
+
+	entry := h.waitForLog(t, 1)
+	if !entry.Cancelled {
+		t.Fatalf("a caller that hung up was not marked cancelled: error %q", entry.Error)
+	}
+	if entry.Cost == 0 || !entry.PromptEstimated {
+		t.Fatalf("delivered content went unbilled: cost %d, prompt %d, estimated %v",
+			entry.Cost, entry.PromptTokens, entry.PromptEstimated)
+	}
+
+	var report struct {
+		Data map[string]struct {
+			Hour struct {
+				Attempts int64 `json:"attempts"`
+				Failures int64 `json:"failures"`
+			} `json:"hour"`
+		} `json:"data"`
+	}
+	h.waitFor(t, "the attempt to be counted", func() bool {
+		h.do(http.MethodGet, "/api/admin/channels/health", h.admin, nil, &report)
+		return report.Data[fmt.Sprint(id)].Hour.Attempts == 1
+	})
+	if report.Data[fmt.Sprint(id)].Hour.Failures != 0 {
+		t.Fatal("a caller hanging up was counted against the channel")
+	}
+}
+
+// A client that reads an error event and hangs up before the upstream closes
+// the stream has cancelled nothing: the call failed, the upstream's message is
+// the one logged, and the channel carries the failure.
+func TestHangingUpOnAStreamErrorKeepsTheFailure(t *testing.T) {
+	h := newHarness(t)
+
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		fmt.Fprint(w, "event: ping\ndata: {\"type\":\"ping\"}\n\n")
+		fmt.Fprint(w, "event: error\ndata: "+`{"type":"error","error":{"type":"rate_limit_error",`+
+			`"message":"Concurrency limit exceeded for account"}}`+"\n\n")
+		flusher.Flush()
+		// A gateway that holds the connection open after its error event.
+		<-r.Context().Done()
+	})
+	id := h.createChannel(channelInput{
+		Name: "error-then-hold", Type: "anthropic", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"claude-sonnet-4-5"}, Groups: []string{"default"},
+	})
+
+	resp := h.relayRequest(http.MethodPost, "/v1/messages", h.createKey(),
+		`{"model":"claude-sonnet-4-5","stream":true,"max_tokens":16,`+
+			`"messages":[{"role":"user","content":"hi"}]}`)
+	got := make(chan bool, 1)
+	go func() {
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadString('\n')
+			if strings.Contains(line, "Concurrency limit exceeded") {
+				got <- true
+				return
+			}
+			if err != nil {
+				got <- false
+				return
+			}
+		}
+	}()
+	select {
+	case ok := <-got:
+		if !ok {
+			t.Fatal("the stream ended before the error event arrived")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no error event within 5s")
+	}
+	resp.Body.Close()
+
+	entry := h.waitForLog(t, 1)
+	if entry.Cancelled || !entry.Failed() {
+		t.Fatalf("hanging up on an upstream error was logged as a cancellation: %+v", entry)
+	}
+	if entry.StatusCode != http.StatusTooManyRequests ||
+		!strings.Contains(entry.Error, "Concurrency limit exceeded") {
+		t.Fatalf("logged %d %q, want the upstream's rate limit", entry.StatusCode, entry.Error)
+	}
+
+	var report struct {
+		Data map[string]struct {
+			Hour struct {
+				Attempts int64 `json:"attempts"`
+				Failures int64 `json:"failures"`
+			} `json:"hour"`
+		} `json:"data"`
+	}
+	h.waitFor(t, "the attempt to be counted", func() bool {
+		h.do(http.MethodGet, "/api/admin/channels/health", h.admin, nil, &report)
+		return report.Data[fmt.Sprint(id)].Hour.Attempts == 1
+	})
+	if report.Data[fmt.Sprint(id)].Hour.Failures != 1 {
+		t.Fatal("the upstream's error was not counted against the channel")
 	}
 }

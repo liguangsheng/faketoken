@@ -430,19 +430,29 @@ type RequestLog struct {
 	CacheCreationTokens int32 `json:"cache_creation_tokens"`
 	// PromptEstimated marks PromptTokens as estimated from the request body,
 	// because the upstream reported zero input.
-	PromptEstimated bool   `json:"prompt_estimated"`
-	TotalTokens     int32  `json:"total_tokens"`
-	Cost            int64  `json:"cost"`
-	DurationMS      int32  `json:"duration_ms"`
-	TTFBMS          int32  `json:"ttfb_ms"`
-	Retries         int32  `json:"retries"`
-	ClientIP        string `json:"client_ip"`
-	Error           string `json:"error"`
+	PromptEstimated bool `json:"prompt_estimated"`
+	// Cancelled marks a call its caller hung up on or an operator stopped:
+	// recorded with whatever error that produced, but not the channel's fault.
+	Cancelled   bool   `json:"cancelled"`
+	TotalTokens int32  `json:"total_tokens"`
+	Cost        int64  `json:"cost"`
+	DurationMS  int32  `json:"duration_ms"`
+	TTFBMS      int32  `json:"ttfb_ms"`
+	Retries     int32  `json:"retries"`
+	ClientIP    string `json:"client_ip"`
+	Error       string `json:"error"`
 	// ReasoningEffort is what the caller asked the model to spend on thinking;
 	// empty when the request said nothing about it.
 	ReasoningEffort string `json:"reasoning_effort"`
 	// ClientType is the tool that made the call, guessed from its headers.
 	ClientType string `json:"client_type"`
+}
+
+// Failed reports a call that failed: an error status, or an error inside a 2xx
+// body. One its caller or an operator ended is not, whatever it was logged
+// with. store's failedSQL is the same test, for the rows in the database.
+func (l *RequestLog) Failed() bool {
+	return !l.Cancelled && (l.StatusCode >= 400 || l.Error != "")
 }
 
 // RequestLogDetail is the full request and response for one relayed call,

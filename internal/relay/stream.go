@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -41,6 +43,9 @@ type usageSniffer struct {
 	terminated  bool
 	capture     bytes.Buffer
 	captureOver bool
+	// content records that an event carrying part of the answer went by, so
+	// a stream that breaks afterwards is known to have delivered something.
+	content bool
 }
 
 func newUsageSniffer(contentType string, captureMax int) *usageSniffer {
@@ -118,6 +123,9 @@ func (s *usageSniffer) feedSSE(p []byte) {
 		if bytes.Equal(payload, []byte("[DONE]")) {
 			s.terminated = true
 			continue
+		}
+		if !s.content {
+			s.content = provider.ContentEvent(s.event, payload)
 		}
 		s.acc.Feed(payload)
 		if !s.failure.Feed(payload) && isErrorEventName(s.event) {
@@ -199,6 +207,24 @@ func (s *usageSniffer) Body() []byte {
 // otherwise wait for, and the caller has stopped reading anyway.
 func (s *usageSniffer) Terminated() bool { return s.terminated }
 
+// Delivered reports whether the answer itself began to reach the caller. A
+// body that is not a stream counts once any of it was written: the upstream
+// produced it whole before sending the first byte.
+func (s *usageSniffer) Delivered(written int64) bool {
+	if s.sse {
+		return s.content
+	}
+	return written > 0
+}
+
+// errCallerGone marks a write to the caller that failed: the caller left, which
+// is not the upstream's doing however the stream ended.
+var errCallerGone = errors.New("caller went away")
+
+// errStreamIdle is the cause the idle watchdog cancels with, so a stalled
+// upstream is not mistaken for a caller that hung up: both end the read alike.
+var errStreamIdle = errors.New("upstream went quiet")
+
 // pump relays the upstream body to the client, flushing every chunk so that
 // SSE and other incremental formats reach the caller without added latency.
 // It reports time-to-first-byte and enforces an idle timeout by cancelling the
@@ -246,7 +272,7 @@ func pump(w http.ResponseWriter, body io.Reader, sniff *usageSniffer, flush bool
 			chunk := buf[:n]
 			_, _ = sniff.Write(chunk)
 			if _, writeErr := w.Write(chunk); writeErr != nil {
-				return written, ttfb, writeErr
+				return written, ttfb, fmt.Errorf("%w: %w", errCallerGone, writeErr)
 			}
 			written += int64(n)
 			if flush {

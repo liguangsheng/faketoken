@@ -58,7 +58,7 @@ func (f streamFilter) matches(entry *model.RequestLog, blocked bool) bool {
 		return false
 	case f.username != "" && !strings.EqualFold(entry.Username, f.username):
 		return false
-	case f.onlyError && entry.StatusCode < 400 && entry.Error == "":
+	case f.onlyError && !entry.Failed():
 		return false
 	case f.keyword != "" && !matchesKeyword(entry, f.keyword, blocked, f.redact):
 		return false

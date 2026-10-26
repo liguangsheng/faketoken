@@ -625,6 +625,8 @@ func (s *Store) channelNameTaken(ctx context.Context, name string) (bool, error)
 
 // RecordChannelResult updates the per-channel counters after a relayed request.
 func (s *Store) RecordChannelResult(ctx context.Context, id int64, cost int64, failure string) {
+	s.countAttempt(ctx, id, failure != "")
+
 	if failure == "" {
 		// The keepalive counter rides along on the write that was happening
 		// anyway. It only advances while a window is open, so a channel an
