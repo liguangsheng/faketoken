@@ -59,14 +59,14 @@ type Dict = Record<string, unknown>
 const isDict = (value: unknown): value is Dict =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
-/** Walks a path of keys, giving up quietly on anything unexpected. */
-const dig = (value: unknown, ...path: string[]): unknown => {
+/** Walks a path of keys, then parses what it finds. */
+const dig = <T,>(value: unknown, parse: (raw: unknown) => T, ...path: string[]): T => {
   let current = value
   for (const key of path) {
-    if (!isDict(current)) return undefined
+    if (!isDict(current)) return parse(undefined)
     current = current[key]
   }
-  return current
+  return parse(current)
 }
 
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
@@ -154,11 +154,12 @@ const PROTOCOLS: Record<Protocol, ProtocolSpec> = {
       stream,
       ...(stream ? { stream_options: { include_usage: true } } : {}),
     }),
-    text: (payload) => asText(dig(asArray(dig(payload, 'choices'))[0], 'message', 'content')),
-    usage: (payload) => openAIUsage(dig(payload, 'usage')),
+    text: (payload) =>
+      dig(dig(payload, asArray, 'choices')[0], asText, 'message', 'content'),
+    usage: (payload) => dig(payload, openAIUsage, 'usage'),
     event: (chunk) => ({
-      delta: asText(dig(asArray(dig(chunk, 'choices'))[0], 'delta', 'content')),
-      usage: openAIUsage(dig(chunk, 'usage')),
+      delta: dig(dig(chunk, asArray, 'choices')[0], asText, 'delta', 'content'),
+      usage: dig(chunk, openAIUsage, 'usage'),
     }),
   },
   messages: {
@@ -175,19 +176,18 @@ const PROTOCOLS: Record<Protocol, ProtocolSpec> = {
       stream,
     }),
     text: (payload) =>
-      asArray(dig(payload, 'content'))
-        .map((block) => asText(dig(block, 'text')))
+      dig(payload, asArray, 'content')
+        .map((block) => dig(block, asText, 'text'))
         .join(''),
-    usage: (payload) => nativeUsage(dig(payload, 'usage')),
+    usage: (payload) => dig(payload, nativeUsage, 'usage'),
     event: (chunk) => ({
       // Tool arguments and thinking arrive as deltas of their own; only the
       // text ones belong in the answer pane.
       delta:
-        asText(dig(chunk, 'type')) === 'content_block_delta'
-          ? asText(dig(chunk, 'delta', 'text'))
+        dig(chunk, asText, 'type') === 'content_block_delta'
+          ? dig(chunk, asText, 'delta', 'text')
           : '',
-      usage:
-        nativeUsage(dig(chunk, 'usage')) ?? nativeUsage(dig(chunk, 'message', 'usage')),
+      usage: dig(chunk, nativeUsage, 'usage') ?? dig(chunk, nativeUsage, 'message', 'usage'),
     }),
   },
   responses: {
@@ -201,18 +201,17 @@ const PROTOCOLS: Record<Protocol, ProtocolSpec> = {
     }),
     // Reasoning items carry no `content`, so flattening skips them on its own.
     text: (payload) =>
-      asArray(dig(payload, 'output'))
-        .flatMap((item) => asArray(dig(item, 'content')))
-        .map((part) => asText(dig(part, 'text')))
+      dig(payload, asArray, 'output')
+        .flatMap((item) => dig(item, asArray, 'content'))
+        .map((part) => dig(part, asText, 'text'))
         .join(''),
-    usage: (payload) => nativeUsage(dig(payload, 'usage')),
+    usage: (payload) => dig(payload, nativeUsage, 'usage'),
     event: (chunk) => ({
       delta:
-        asText(dig(chunk, 'type')) === 'response.output_text.delta'
-          ? asText(dig(chunk, 'delta'))
+        dig(chunk, asText, 'type') === 'response.output_text.delta'
+          ? dig(chunk, asText, 'delta')
           : '',
-      usage:
-        nativeUsage(dig(chunk, 'usage')) ?? nativeUsage(dig(chunk, 'response', 'usage')),
+      usage: dig(chunk, nativeUsage, 'usage') ?? dig(chunk, nativeUsage, 'response', 'usage'),
     }),
   },
 }
@@ -524,8 +523,10 @@ export default function Playground() {
 
       <Row gutter={[12, 12]}>
         <Col xs={24} lg={9}>
-          <Card title="请求">
-            <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <Card title="请求" className="request-card">
+            {/* The form scrolls inside the card, the action row sits below it:
+                a sticky row over a long form covers the fields underneath. */}
+            <Space className="request-form" direction="vertical" size={14} style={{ width: '100%' }}>
               <div>
                 <label className="field-label" htmlFor="pg-host">
                   服务地址
@@ -696,8 +697,6 @@ export default function Playground() {
               </label>
             </Space>
 
-            {/* Outside the vertical Space: a flex item cannot leave its own
-                wrapper, so the sticky row needs a block parent. */}
             <Space className="playground-actions" style={{ width: '100%' }}>
               <Button
                 type="primary"

@@ -700,19 +700,44 @@ a.rank-row:hover .rank-row__name {
    Playground
    =========================================================================== */
 
-/* The send button belongs to the top of the screen, not to the bottom of a
-   form that is longer than the window: while the request card is in view the
-   row stays pinned to the bottom of the viewport, and the card's own colour
-   keeps the fields behind it from showing through. */
+/* The request card takes only the height the viewport has left: top bar 56
+   + content padding 20 + page header 47 + bottom padding 40, plus a little
+   slack. The form scrolls inside it and the action row holds its place, so
+   the send button stays on screen without covering the fields underneath. */
+.request-card {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 165px);
+  max-height: calc(100dvh - 165px);
+}
+
+.request-card > .ant-card-head {
+  flex: none;
+}
+
+.request-card > .ant-card-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.request-form {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.request-form > .ant-space-item {
+  flex: none;
+}
+
 .playground-actions {
   background: var(--app-surface);
   border-block-start: 1px solid var(--app-border);
-  bottom: 0;
+  flex: none;
   margin-block-end: -24px;
   margin-block-start: 4px;
   padding-block: 10px 24px;
-  position: sticky;
-  z-index: 2;
 }
 
 .playground-output {

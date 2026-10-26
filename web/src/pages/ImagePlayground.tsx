@@ -337,8 +337,10 @@ export default function ImagePlayground() {
 
       <Row gutter={[12, 12]}>
         <Col xs={24} lg={9}>
-          <Card title="请求">
-            <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <Card title="请求" className="request-card">
+            {/* The form scrolls inside the card, the action row sits below it:
+                a sticky row over a long form covers the fields underneath. */}
+            <Space className="request-form" direction="vertical" size={14} style={{ width: '100%' }}>
               {isAdmin && (
                 <RouteField
                   route={route}
@@ -535,8 +537,6 @@ export default function ImagePlayground() {
               </div>
             </Space>
 
-            {/* Outside the vertical Space: a flex item cannot leave its own
-                wrapper, so the sticky row needs a block parent. */}
             <Space className="playground-actions" style={{ width: '100%' }}>
               <Button type="primary" icon={<PictureOutlined />} onClick={send}>
                 生成
