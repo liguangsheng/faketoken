@@ -23,6 +23,8 @@ const Users = lazy(() => import('./pages/admin/Users'))
 const Prices = lazy(() => import('./pages/admin/Prices'))
 const Groups = lazy(() => import('./pages/admin/Groups'))
 const AdminLogs = lazy(() => import('./pages/admin/AdminLogs'))
+const Sessions = lazy(() => import('./pages/admin/Sessions'))
+const SessionDetail = lazy(() => import('./pages/admin/SessionDetail'))
 const Settings = lazy(() => import('./pages/admin/Settings'))
 const Redemptions = lazy(() => import('./pages/admin/Redemptions'))
 const Invites = lazy(() => import('./pages/admin/Invites'))
@@ -92,6 +94,8 @@ function Console() {
             <Route path="/admin/groups" element={adminOnly(<Groups />)} />
             <Route path="/admin/prices" element={adminOnly(<Prices />)} />
             <Route path="/admin/logs" element={adminOnly(<AdminLogs />)} />
+            <Route path="/admin/sessions" element={adminOnly(<Sessions />)} />
+            <Route path="/admin/sessions/:id" element={adminOnly(<SessionDetail />)} />
             <Route path="/admin/redemptions" element={adminOnly(<Redemptions />)} />
             <Route path="/admin/invites" element={adminOnly(<Invites />)} />
             <Route path="/admin/settings" element={adminOnly(<Settings />)} />

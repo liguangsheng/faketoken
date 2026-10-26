@@ -42,7 +42,7 @@ const TABS = [
   {
     key: 'logging',
     label: '日志留存',
-    fields: ['log_detail_keep', 'log_body_limit'],
+    fields: ['log_detail_keep', 'log_failed_keep_days', 'log_body_limit'],
     Panel: LoggingPanel,
   },
   {

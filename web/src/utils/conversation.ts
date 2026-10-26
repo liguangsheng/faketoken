@@ -27,6 +27,12 @@ export interface ConversationTurn {
   /** Normalised to system / user / assistant / tool; unknown roles pass through. */
   role: string
   parts: ConversationPart[]
+  /**
+   * Position in the request's message list. Messages with nothing to show are
+   * dropped, so a turn's place in the transcript is not this; the system
+   * prompt, which lives outside the list, has none.
+   */
+  index?: number
 }
 
 type Dict = Record<string, unknown>
@@ -240,9 +246,15 @@ const turnFromMessage = (raw: unknown): ConversationTurn | null => {
 }
 
 const turnsFromList = (value: unknown): ConversationTurn[] => {
-  if (typeof value === 'string') return value ? [{ role: 'user', parts: [{ kind: 'text', text: value }] }] : []
+  if (typeof value === 'string')
+    return value ? [{ role: 'user', parts: [{ kind: 'text', text: value }], index: 0 }] : []
   if (!Array.isArray(value)) return []
-  return value.map(turnFromMessage).filter((turn): turn is ConversationTurn => turn !== null)
+  const turns: ConversationTurn[] = []
+  value.forEach((raw, index) => {
+    const turn = turnFromMessage(raw)
+    if (turn) turns.push({ ...turn, index })
+  })
+  return turns
 }
 
 // ------------------------------------------------------------------ request

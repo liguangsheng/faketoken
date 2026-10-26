@@ -166,7 +166,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const navMenu = (
     <Menu
       mode="inline"
-      selectedKeys={[location.pathname]}
+      selectedKeys={[current?.item.key ?? location.pathname]}
       items={menuItems}
       style={{ border: 'none', paddingBlock: 4 }}
       // The label anchors handle their own navigation (and modifier clicks);

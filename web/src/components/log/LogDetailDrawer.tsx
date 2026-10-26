@@ -152,6 +152,21 @@ const LogDetailDrawer = forwardRef<LogDetailHandle, Props>(function LogDetailDra
     return () => window.removeEventListener("keydown", onKey);
   }, [detail, next, prev, openDetail]);
 
+  // The parent a request repeats is named by id only; its row comes from the
+  // listing, which matches a bare id as the keyword.
+  const openById = useCallback(
+    (id: number) => {
+      api.admin
+        .logs({ keyword: String(id), page_size: 5 })
+        .then((page) => {
+          const row = page.data?.find((candidate) => candidate.id === id);
+          if (row) openDetail(row);
+        })
+        .catch(() => undefined);
+    },
+    [openDetail],
+  );
+
   useImperativeHandle(ref, () => ({ open: openDetail }));
 
   return (
@@ -241,6 +256,7 @@ const LogDetailDrawer = forwardRef<LogDetailHandle, Props>(function LogDetailDra
                   state={bodiesState}
                   bodies={bodies}
                   entry={detail}
+                  onOpenCall={openById}
                 />
               ),
           }))}

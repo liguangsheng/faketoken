@@ -21,6 +21,8 @@ import type {
   Page,
   ConsoleSettings,
   RequestLogDetail,
+  SessionDetail,
+  SessionSummary,
   Redemption,
   Stats,
   UsageDay,
@@ -333,6 +335,16 @@ export const api = {
       request<Page<RequestLog>>('GET', `/api/admin/logs${qs(params)}`),
     /** Fetched on demand: the bodies are large and the listing is polled. */
     logDetail: (id: number) => request<RequestLogDetail>('GET', `/api/admin/logs/${id}/detail`),
+    sessions: (params: Record<string, unknown>) =>
+      request<Page<SessionSummary>>('GET', `/api/admin/sessions${qs(params)}`),
+    session: (id: string) =>
+      request<SessionDetail>('GET', `/api/admin/sessions/${encodeURIComponent(id)}`),
+    /** Every call of one line, oldest first. */
+    threadCalls: (session: string, thread: number) =>
+      request<{ data: RequestLog[] }>(
+        'GET',
+        `/api/admin/sessions/${encodeURIComponent(session)}/threads/${thread}/calls`,
+      ),
     purgeLogs: (days: number) =>
       request<{ deleted: number }>('DELETE', `/api/admin/logs${qs({ days })}`),
     /** Aborts a call that is still running. Keyed by its live handle, because

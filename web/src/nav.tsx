@@ -8,6 +8,7 @@ import {
   FileTextOutlined,
   GiftOutlined,
   KeyOutlined,
+  MessageOutlined,
   PictureOutlined,
   SettingOutlined,
   SolutionOutlined,
@@ -56,6 +57,7 @@ export const NAV_SECTIONS: NavSection[] = [
     admin: true,
     items: [
       { key: '/admin/logs', label: '全局日志', icon: <FileTextOutlined />, admin: true },
+      { key: '/admin/sessions', label: '会话', icon: <MessageOutlined />, admin: true },
       { key: '/admin/channels', label: '渠道管理', icon: <ApiOutlined />, admin: true },
       { key: '/admin/playground', label: '调用测试', icon: <ExperimentOutlined />, admin: true },
       { key: '/admin/playground/images', label: '生图测试', icon: <PictureOutlined />, admin: true },
@@ -79,4 +81,6 @@ for (const section of NAV_SECTIONS) {
   for (const item of section.items) INDEX[item.key] = { item, section }
 }
 
-export const navLookup = (pathname: string) => INDEX[pathname]
+// A page below an entry takes the entry's title: /admin/sessions/abc → 会话.
+export const navLookup = (pathname: string) =>
+  INDEX[pathname] ?? INDEX[pathname.slice(0, pathname.lastIndexOf('/'))]

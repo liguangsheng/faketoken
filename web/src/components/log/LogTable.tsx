@@ -85,6 +85,7 @@ export default function LogTable({
     username,
     channelID,
     onlyError,
+    session,
     range,
     dirty,
     // The page and its size live in the address with the filters (附录 A),
@@ -129,6 +130,7 @@ export default function LogTable({
           // shows ids, it is finally useful.
           channel_id: Number(channelID) > 0 ? Number(channelID) : undefined,
           only_error: onlyError || undefined,
+          session: session || undefined,
           start: range?.[0]?.toISOString(),
           end: range?.[1]?.toISOString(),
         });
@@ -172,6 +174,7 @@ export default function LogTable({
       pageSize,
       range,
       rateStore,
+      session,
       setPage,
       tokenName,
       username,
@@ -196,9 +199,10 @@ export default function LogTable({
     if (admin && username) params.set("username", username);
     if (Number(channelID) > 0) params.set("channel_id", channelID);
     if (onlyError) params.set("only_error", "true");
+    if (session) params.set("session", session);
     const query = params.toString();
     return `${admin ? "/api/admin/logs/stream" : "/api/logs/stream"}${query ? `?${query}` : ""}`;
-  }, [admin, channelID, keyword, model, onlyError, tokenName, username]);
+  }, [admin, channelID, keyword, model, onlyError, session, tokenName, username]);
 
   // Live only makes sense on the first page of a "newest first" list: on any
   // other page every arrival would shift the rows the user is reading. Nothing

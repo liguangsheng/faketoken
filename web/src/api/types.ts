@@ -167,6 +167,16 @@ export interface RequestLog {
   /** Tool that made the call, guessed from its headers. */
   client_type: string
   /**
+   * Where the call sits in its conversation; zero until linked. The session is
+   * what the client named, or "~<id>" for a chain matched by content. The call
+   * repeats `shared_messages` of its parent's messages from the start.
+   */
+  session_id: string
+  parent_id: number
+  thread_id: number
+  shared_messages: number
+  message_count: number
+  /**
    * Address the call came from. Taken from X-Forwarded-For when a proxy sets
    * it, so a direct caller can put anything here; treat it as a hint.
    */
@@ -365,6 +375,8 @@ export interface ConsoleSettings {
   import_weight: number
   /** How many recent calls keep their full request and reply. 0 records none. */
   log_detail_keep: number
+  /** Days a failed call keeps its bodies past that window. 0 keeps them no longer. */
+  log_failed_keep_days: number
   /** Whether self-registration needs a code an administrator generated. */
   require_invite_code: boolean
   /** The default a group inherits when it sets no status of its own: 2xx
@@ -388,6 +400,50 @@ export interface RequestLogDetail {
   response_headers?: Record<string, string[]>
   response_body?: string
   response_truncated: boolean
+  /** [ms, bytes, ms, bytes, …]: by that many ms into the call, that many bytes
+   *  of the response had been relayed. */
+  response_timing?: number[]
+}
+
+/** One conversation at a glance. */
+export interface SessionSummary {
+  id: string
+  calls: number
+  threads: number
+  failures: number
+  first_at: string
+  last_at: string
+  cost: number
+  total_tokens: number
+  /** The latest call's. */
+  client_type: string
+  username: string
+  model: string
+}
+
+/** One line of a conversation: the main one, a subagent's, a side call's, or
+ *  a branch. Thread 0 holds the calls that were never linked. */
+export interface ThreadSummary {
+  id: number
+  calls: number
+  failures: number
+  first_at: string
+  last_at: string
+  cost: number
+  total_tokens: number
+  model: string
+  /** What the longest request of the line carried. */
+  messages: number
+  /** The newest call whose bodies are still kept; 0 when none are. */
+  latest_with_body: number
+  /** The call this line split from, and after how many of its messages. */
+  branch_of: number
+  branch_at: number
+}
+
+export interface SessionDetail {
+  session: SessionSummary
+  threads: ThreadSummary[]
 }
 
 /** Prepaid credit an administrator generates and a user exchanges once. */

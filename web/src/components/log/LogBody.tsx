@@ -1,27 +1,36 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import {
   Alert,
   App,
   Button,
-  Image,
+  Input,
   Segmented,
   Skeleton,
   Space,
+  Tooltip,
   Typography,
 } from "antd";
-import { CopyOutlined } from "@ant-design/icons";
+import { CopyOutlined, DownOutlined, SearchOutlined, UpOutlined } from "@ant-design/icons";
 
 import type { RequestLog, RequestLogDetail } from "../../api/types";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { useSettings } from "../../settings/SettingsContext";
 import { copyTextToClipboard } from "../../utils/clipboard";
 import {
   parseRequestConversation,
   parseResponseConversation,
-  type ConversationPart,
-  type ConversationTurn,
-  type PartKind,
 } from "../../utils/conversation";
 import { formatBytes, formatNumber } from "../../utils/format";
+import { summarizeRequest, type RequestSummary } from "../../utils/requestSummary";
+import {
+  Conversation,
+  PART_CLAMP,
+  foldedTurns,
+  partKey,
+  type ConversationFold,
+} from "./Conversation";
+import ResponseTimeline from "./ResponseTimeline";
+import { MAX_HITS, escapeRegExp, useTextSearch } from "./useTextSearch";
 
 // Standard reason phrases for the status codes a relay realistically returns.
 // Anything unlisted simply omits the phrase, which is valid HTTP.
@@ -128,15 +137,21 @@ function LogBody({
   state,
   bodies,
   entry,
+  onOpenCall,
 }: {
   kind: "request" | "response";
   state: "idle" | "loading" | "expired" | "missing" | "failed";
   bodies: RequestLogDetail | null;
   entry: RequestLog;
+  /** Opens another call in the same drawer: the parent a request repeats. */
+  onOpenCall?: (id: number) => void;
 }) {
   const { message } = App.useApp();
   const { settings } = useSettings();
   const [view, setView] = useState<BodyView>("chat");
+  const [queryInput, setQueryInput] = useState("");
+  const query = useDebouncedValue(queryInput.trim(), 250);
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   // Parsing walks the whole body, which for a streamed response is every SSE
   // frame; keep it off the render path unless the body actually changed.
@@ -149,6 +164,8 @@ function LogBody({
         : parseResponseConversation(rawBody),
     [kind, rawBody],
   );
+  // Non-chat calls (embeddings, audio, …) have nothing to show in the chat
+  // view; they land on the raw message instead of an apology.
 
   // The raw message, and the blocks it is drawn in. Both are computed before
   // the early returns below, so the hooks keep their order.
@@ -157,6 +174,55 @@ function LogBody({
   const body = kind === "request" ? bodies?.request_body : bodies?.response_body;
   const httpText = httpMessage(kind, entry, headers, body);
   const chunks = useMemo(() => chunkText(httpText), [httpText]);
+  const summary = useMemo(
+    () => (kind === "request" ? summarizeRequest(rawBody) : null),
+    [kind, rawBody],
+  );
+
+  // What the request repeats from its parent folds away in the chat view.
+  const fold = useMemo<ConversationFold | undefined>(() => {
+    if (kind !== "request" || entry.parent_id <= 0 || entry.shared_messages <= 0) return undefined;
+    return {
+      messages: entry.shared_messages,
+      label: (
+        <>
+          与上一次调用 <span className="mono">#{entry.parent_id}</span> 相同：system
+          提示和前 {formatNumber(entry.shared_messages)} 条消息
+        </>
+      ),
+      actions: onOpenCall && (
+        <Button size="small" type="link" onClick={() => onOpenCall(entry.parent_id)}>
+          打开 #{entry.parent_id}
+        </Button>
+      ),
+    };
+  }, [entry.parent_id, entry.shared_messages, kind, onOpenCall]);
+
+  // A hit inside a clamped part or the fold has to be rendered to be found.
+  const forced = useMemo(() => {
+    const parts = new Set<string>();
+    let foldOpen = false;
+    if (!query || !turns) return { parts, foldOpen };
+    const pattern = new RegExp(escapeRegExp(query), "i");
+    const folded = foldedTurns(turns, fold);
+    turns.forEach((turn, position) =>
+      turn.parts.forEach((part, index) => {
+        if (!pattern.test(part.text) && !(part.name && pattern.test(part.name))) return;
+        if (part.text.length > PART_CLAMP) parts.add(partKey(position, index));
+        if (position < folded) foldOpen = true;
+      }),
+    );
+    return { parts, foldOpen };
+  }, [fold, query, turns]);
+
+  const effectiveView: BodyView = turns ? view : "raw";
+  // A new token only when the text under the search changes: rescanning a
+  // multi-megabyte body on every render would freeze the drawer.
+  const rendered = useMemo(
+    () => [effectiveView, httpText, forced],
+    [effectiveView, httpText, forced],
+  );
+  const search = useTextSearch(bodyRef, query, rendered);
 
   if (state === "loading") return <Skeleton active paragraph={{ rows: 6 }} />;
   if (state === "expired") {
@@ -194,10 +260,6 @@ function LogBody({
   const truncated =
     kind === "request" ? bodies.request_truncated : bodies.response_truncated;
 
-  // Non-chat calls (embeddings, audio, …) have nothing to show in the chat
-  // view; land them on the raw message instead of an apology.
-  const effectiveView: BodyView = turns ? view : "raw";
-
   return (
     <Space direction="vertical" size={12} style={{ width: "100%" }}>
       {truncated && (
@@ -207,6 +269,10 @@ function LogBody({
           message={`正文超过 ${formatBytes(settings.log_body_limit)}，已截断或省略`}
           description="上限可在「全局设置 → 正文捕获」调整。"
         />
+      )}
+      {summary && <RequestShape summary={summary} />}
+      {kind === "response" && bodies.response_timing && (
+        <ResponseTimeline timing={bodies.response_timing} />
       )}
       <Space size={8} wrap>
         <Segmented
@@ -242,110 +308,100 @@ function LogBody({
             {`${turns?.length ?? 0} 条消息${truncated ? "（正文被截断，可能不完整）" : ""}`}
           </Typography.Text>
         )}
+        <Input
+          size="small"
+          allowClear
+          prefix={<SearchOutlined className="text-muted" />}
+          placeholder="在正文中查找"
+          aria-label="在正文中查找"
+          style={{ width: 200 }}
+          value={queryInput}
+          onChange={(event) => setQueryInput(event.target.value)}
+          onPressEnter={(event) => (event.shiftKey ? search.prev() : search.next())}
+          suffix={
+            query ? (
+              <span className="text-muted" style={{ fontSize: 12 }}>
+                {search.count
+                  ? `${search.current + 1}/${search.count >= MAX_HITS ? `${MAX_HITS}+` : search.count}`
+                  : "0"}
+              </span>
+            ) : undefined
+          }
+        />
+        {query && search.count > 1 && (
+          <Space.Compact>
+            <Button size="small" icon={<UpOutlined />} aria-label="上一处" onClick={search.prev} />
+            <Button size="small" icon={<DownOutlined />} aria-label="下一处" onClick={search.next} />
+          </Space.Compact>
+        )}
       </Space>
-      {effectiveView === "raw" ? (
-        // No inner max-height: the drawer body is the scroll container. The
-        // chunks are blocks so the browser can skip the ones below the fold;
-        // the text stays whole in the DOM either way.
-        <pre className="code-block">
-          {chunks.map((chunk, index) => (
-            <span
-              key={index}
-              className={chunk.block ? "code-chunk" : "code-chunk code-chunk--inline"}
-            >
-              {chunk.text}
-            </span>
-          ))}
-        </pre>
-      ) : (
-        <Conversation turns={turns ?? []} />
-      )}
+      <div ref={bodyRef}>
+        {effectiveView === "raw" ? (
+          // No inner max-height: the drawer body is the scroll container. The
+          // chunks are blocks so the browser can skip the ones below the fold;
+          // the text stays whole in the DOM either way.
+          <pre className="code-block">
+            {chunks.map((chunk, index) => (
+              <span
+                key={index}
+                className={chunk.block ? "code-chunk" : "code-chunk code-chunk--inline"}
+              >
+                {chunk.text}
+              </span>
+            ))}
+          </pre>
+        ) : (
+          <Conversation
+            turns={turns ?? []}
+            fold={fold}
+            forceFoldOpen={forced.foldOpen}
+            forceExpanded={forced.parts}
+          />
+        )}
+      </div>
     </Space>
   );
 }
 
-const ROLE_LABEL: Record<string, string> = {
-  system: "system",
-  user: "user",
-  assistant: "assistant",
-  tool: "tool",
-};
-
-const PART_LABEL: Record<PartKind, string> = {
-  text: "",
-  reasoning: "思考",
-  tool_call: "调用工具",
-  tool_result: "工具结果",
-  image: "附件",
-  other: "其他",
-};
-
-// Long system prompts dominate a transcript, so anything past this is folded
-// away behind a toggle. The threshold is generous enough that ordinary turns
-// are never clipped.
-const PART_CLAMP = 1600;
-
-function Conversation({ turns }: { turns: ConversationTurn[] }) {
+/**
+ * The request's makeup on one line: system prompt, tools, conversation,
+ * images, cache breakpoints, and the parameters that shape the answer.
+ */
+function RequestShape({ summary }: { summary: RequestSummary }) {
+  const { tools, messages, images, breakpoints, params } = summary;
+  const roles = Object.entries(messages.byRole)
+    .map(([role, n]) => `${role} ${n}`)
+    .join(" · ");
   return (
-    <div className="chat-log">
-      {turns.map((turn, index) => (
-        <div key={index} className={`chat-turn chat-turn--${turn.role}`}>
-          <div className="chat-turn__role">
-            {ROLE_LABEL[turn.role] ?? turn.role}
-          </div>
-          <div className="chat-turn__parts">
-            {turn.parts.map((part, partIndex) => (
-              <ChatPart key={partIndex} part={part} />
-            ))}
-          </div>
-        </div>
+    <div className="request-shape">
+      {summary.systemChars > 0 && <span>system {formatBytes(summary.systemChars)}</span>}
+      {tools.count > 0 && (
+        <Tooltip title={tools.names.join("、")}>
+          <span>
+            工具 {tools.count} 个 · {formatBytes(tools.chars)}
+          </span>
+        </Tooltip>
+      )}
+      <Tooltip title={roles}>
+        <span>
+          消息 {formatNumber(messages.count)} 条 · {formatBytes(messages.chars)}
+        </span>
+      </Tooltip>
+      {images.count > 0 && (
+        <span className="request-shape__heavy">
+          图片 {images.count} 张 · {formatBytes(images.bytes)}
+        </span>
+      )}
+      {breakpoints.length > 0 && (
+        <Tooltip title={breakpoints.join("、")}>
+          <span>缓存断点 {breakpoints.length} 处</span>
+        </Tooltip>
+      )}
+      {params.map((param) => (
+        <span key={param.label} className="mono">
+          {param.label} {param.value}
+        </span>
       ))}
-    </div>
-  );
-}
-
-function ChatPart({ part }: { part: ConversationPart }) {
-  const [expanded, setExpanded] = useState(false);
-  const long = part.text.length > PART_CLAMP;
-  const shown = long && !expanded ? part.text.slice(0, PART_CLAMP) : part.text;
-  // A rendered image speaks for itself; the label is for placeholders.
-  const label = part.src ? "" : PART_LABEL[part.kind];
-
-  return (
-    <div className={`chat-part chat-part--${part.kind}`}>
-      {(label || part.name) && (
-        <div className="chat-part__label">
-          {label}
-          {part.name && <span className="mono"> {part.name}</span>}
-        </div>
-      )}
-      {/* Click opens antd's viewer at full size: a data: URL cannot be
-          opened in a new tab, browsers block top-level data: navigation.
-          Wrapped rather than given rootClassName, which antd also puts on
-          the viewer's root. */}
-      {part.src && (
-        <div className="chat-part__image checkerboard">
-          <Image
-            src={part.src}
-            alt="图片"
-            loading="lazy"
-            decoding="async"
-            preview={{ rootClassName: "checkerboard" }}
-          />
-        </div>
-      )}
-      {shown && <pre className="chat-part__text">{shown}</pre>}
-      {long && (
-        <Button
-          type="link"
-          size="small"
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded
-            ? "收起"
-            : `展开剩余 ${formatNumber(part.text.length - PART_CLAMP)} 字`}
-        </Button>
-      )}
     </div>
   );
 }

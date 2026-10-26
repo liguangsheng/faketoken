@@ -30,6 +30,22 @@ export default function LoggingPanel({ draft, patch }: PanelProps) {
         </Form.Item>
 
         <Form.Item
+          label="失败调用多留"
+          help="失败的调用滚出上面的条数后，正文再保留这么多天，最多再留同样多条。设为 0 表示和其他调用一样按条数删除。"
+        >
+          <InputNumber
+            aria-label="失败调用的正文额外保留天数"
+            className="settings-control"
+            min={0}
+            max={365}
+            precision={0}
+            addonAfter="天"
+            value={draft.log_failed_keep_days}
+            onChange={(value) => patch({ log_failed_keep_days: value ?? 0 })}
+          />
+        </Form.Item>
+
+        <Form.Item
           label="单条上限"
           help="单条请求或响应保留的最大字节数。超过时 JSON 正文整条不保存，流式和文本正文截断。请求在网关入口另有 100 MiB 上限。"
           className="settings-form__last"

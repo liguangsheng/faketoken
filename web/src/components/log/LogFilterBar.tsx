@@ -7,6 +7,8 @@ import {
   Input,
   Select,
   Space,
+  Tag,
+  Tooltip,
   Typography,
 } from "antd";
 import {
@@ -20,6 +22,7 @@ import {
 import dayjs from "dayjs";
 import type { Dayjs } from "dayjs";
 
+import { shortSession } from "../../utils/format";
 import type { RangeValue, useLogFilters } from "./useLogFilters";
 
 interface Props {
@@ -69,11 +72,22 @@ export default function LogFilterBar({
     setChannelInput,
     onlyError,
     setOnlyError,
+    session,
+    setSession,
     range,
     setRange,
     dirty,
     reset,
   } = filters;
+
+  // No box to show it in, so the filter wears a tag that also removes it.
+  const sessionTag = session ? (
+    <Tooltip title={session}>
+      <Tag closable onClose={() => setSession("")} style={{ marginInlineEnd: 0 }}>
+        会话 <span className="mono">{shortSession(session)}</span>
+      </Tag>
+    </Tooltip>
+  ) : null;
 
   // The range is computed when the preset is picked, not when the bar is
   // drawn: a page left open for an hour must not hand out a range that ended
@@ -196,6 +210,7 @@ export default function LogFilterBar({
     channelInput,
     onlyError,
     range,
+    session,
   ].filter(Boolean).length
 
   if (narrow) {
@@ -216,6 +231,7 @@ export default function LogFilterBar({
           </Button>
         </Space.Compact>
         <Space wrap size={8}>
+          {sessionTag}
           <Button
             icon={<ReloadOutlined />}
             loading={loading}
@@ -258,6 +274,7 @@ export default function LogFilterBar({
 
   return (
     <Space wrap className="filter-bar" style={{ marginBottom: 12 }} size={8}>
+      {sessionTag}
       {keywordBox}
       {rest}
       <Button icon={<ReloadOutlined />} loading={loading} onClick={onReload}>

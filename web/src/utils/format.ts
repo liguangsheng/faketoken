@@ -306,3 +306,6 @@ export const stringifyMapping = (mapping: Record<string, string> | null | undefi
   Object.entries(mapping ?? {})
     .map(([from, to]) => `${from}=${to}`)
     .join('\n')
+
+/** A session id short enough for a table cell: 6f1c2a9e-1111-… → 6f1c2a9e; "~1234" stays. */
+export const shortSession = (id: string) => (id.length > 12 ? id.slice(0, 8) : id)

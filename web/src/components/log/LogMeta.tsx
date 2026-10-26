@@ -1,5 +1,6 @@
 import { memo } from "react";
-import { Descriptions, Tag, Tooltip } from "antd";
+import { Descriptions, Space, Tag, Tooltip } from "antd";
+import { Link } from "react-router-dom";
 
 import type { RequestLog } from "../../api/types";
 import {
@@ -8,6 +9,7 @@ import {
   formatPercent,
   formatTime,
   formatUSD,
+  shortSession,
 } from "../../utils/format";
 import { REASONING_TONE, cacheRate, rowTone } from "./tone";
 
@@ -128,6 +130,30 @@ function LogMeta({ detail, admin }: { detail: RequestLog; admin?: boolean }) {
         总计 {formatDuration(detail.duration_ms)}
         {detail.ttfb_ms > 0 && ` · 首字节 ${formatDuration(detail.ttfb_ms)}`}
       </Descriptions.Item>
+      {admin && detail.session_id && (
+        <Descriptions.Item label="会话">
+          <Space size={8} wrap>
+            <Tooltip title={detail.session_id}>
+              <span className="mono">{shortSession(detail.session_id)}</span>
+            </Tooltip>
+            {detail.message_count > 0 && (
+              <span className="text-muted">
+                {detail.message_count} 条消息
+                {detail.parent_id > 0 &&
+                  `，新增 ${detail.message_count - detail.shared_messages} 条`}
+              </span>
+            )}
+            <Link
+              to={`/admin/sessions/${encodeURIComponent(detail.session_id)}?thread=${detail.thread_id}&call=${detail.id}`}
+            >
+              查看会话
+            </Link>
+            <Link to={`/admin/logs?session=${encodeURIComponent(detail.session_id)}`}>
+              同会话日志
+            </Link>
+          </Space>
+        </Descriptions.Item>
+      )}
     </Descriptions>
   );
 }

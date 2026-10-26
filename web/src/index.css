@@ -1639,6 +1639,173 @@ a.rank-row:hover .rank-row__name {
   color: var(--app-text-muted);
 }
 
+/* The run a request repeats from its parent, folded into one line. */
+.chat-fold {
+  align-items: center;
+  background: var(--app-surface-sunken);
+  border: 1px dashed var(--app-border-strong);
+  border-radius: 10px;
+  color: var(--app-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  gap: 8px 12px;
+  justify-content: space-between;
+  padding: 8px 12px;
+}
+
+.chat-fold__actions {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+/* The message's place in the request, for matching against a parent. */
+.chat-turn__index {
+  color: var(--app-text-faint);
+  margin-inline-start: 8px;
+  text-transform: none;
+}
+
+/* Search hits, painted without touching the text. */
+::highlight(log-search) {
+  background-color: var(--app-search-hit);
+}
+
+::highlight(log-search-current) {
+  background-color: var(--app-search-current);
+}
+
+/* What a request is made of, on one wrapping line. */
+.request-shape {
+  color: var(--app-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 4px 14px;
+}
+
+.request-shape__heavy {
+  color: var(--app-warning);
+}
+
+/* When the response's bytes arrived. */
+.response-timeline {
+  display: grid;
+  gap: 4px;
+}
+
+.response-timeline__stats {
+  color: var(--app-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 4px 14px;
+}
+
+.response-timeline__chart {
+  background: var(--app-surface-sunken);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  display: block;
+  height: 72px;
+  width: 100%;
+}
+
+.response-timeline__wait {
+  fill: var(--app-border);
+  opacity: 0.6;
+}
+
+.response-timeline__stall {
+  fill: var(--app-warning-soft);
+}
+
+.response-timeline__curve {
+  fill: none;
+  stroke: var(--app-brand);
+  stroke-width: 1.5;
+}
+
+.response-timeline__axis {
+  color: var(--app-text-faint);
+  display: flex;
+  font-size: 11px;
+  justify-content: space-between;
+}
+
+/* ===========================================================================
+   Session page
+   =========================================================================== */
+
+.session-stats {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-block-end: 12px;
+}
+
+/* The calls beside the transcript they produced. The list stays in view while
+   the transcript scrolls, so a click on either side finds the other. */
+.session-layout {
+  align-items: start;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+}
+
+.session-layout--narrow {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Held in view and scrolled on its own: fifty rows are taller than a screen,
+   and a sticky box taller than the viewport cannot show its bottom. */
+.session-calls {
+  max-height: calc(100dvh - var(--app-header-h) - 24px);
+  overflow-y: auto;
+  position: sticky;
+  top: calc(var(--app-header-h) + 12px);
+}
+
+.session-calls__active > td {
+  background: var(--app-brand-soft) !important;
+}
+
+/* The call behind a reply, drawn as a header above it. */
+.call-marker {
+  align-items: center;
+  border-block-start: 1px solid var(--app-border);
+  color: var(--app-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 4px 12px;
+  padding-block: 8px 2px;
+  scroll-margin-top: calc(var(--app-header-h) + 24px);
+}
+
+.call-marker--muted {
+  border-block-start-style: dashed;
+  opacity: 0.75;
+}
+
+.call-marker--active {
+  background: var(--app-brand-soft);
+  border-radius: 6px;
+  padding-inline: 8px;
+}
+
+.call-marker__open {
+  background: none;
+  border: none;
+  color: var(--app-brand);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+
 /* ===========================================================================
    Settings page
    =========================================================================== */

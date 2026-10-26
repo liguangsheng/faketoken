@@ -51,6 +51,9 @@ export interface Palette {
   /** Segmented control: the selected item, and the track it sits in. */
   segmentedSelectedBg: string
   segmentedTrackBg: string
+  /** Search in a log body: every hit, and the one being looked at. */
+  searchHit: string
+  searchCurrent: string
 }
 
 export const light: Palette = {
@@ -94,6 +97,8 @@ export const light: Palette = {
   labelBg: '#fafbfc',
   segmentedSelectedBg: '#ffffff',
   segmentedTrackBg: '#f0f1f4',
+  searchHit: 'rgba(250, 204, 21, 0.45)',
+  searchCurrent: 'rgba(249, 115, 22, 0.55)',
 }
 
 export const dark: Palette = {
@@ -136,6 +141,8 @@ export const dark: Palette = {
   labelBg: '#171b24',
   segmentedSelectedBg: '#262c39',
   segmentedTrackBg: '#171b24',
+  searchHit: 'rgba(250, 204, 21, 0.32)',
+  searchCurrent: 'rgba(249, 115, 22, 0.6)',
 }
 
 /** The names `index.css` refers to, mapped onto one palette. */
@@ -166,5 +173,7 @@ export function cssVars(palette: Palette): Record<string, string> {
     '--app-heat-2': palette.heat[2],
     '--app-heat-3': palette.heat[3],
     '--app-heat-4': palette.heat[4],
+    '--app-search-hit': palette.searchHit,
+    '--app-search-current': palette.searchCurrent,
   }
 }

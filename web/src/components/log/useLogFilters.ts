@@ -17,6 +17,8 @@ const PARAM = {
   error: "error",
   start: "start",
   end: "end",
+  // Set by a link from a call or a session, never typed: there is no box.
+  session: "session",
   page: "page",
   size: "size",
 } as const;
@@ -71,6 +73,7 @@ export function useLogFilters(admin = false) {
   const username = admin ? (params.get(PARAM.username) ?? "") : "";
   const channelID = params.get(PARAM.channel) ?? "";
   const onlyError = params.get(PARAM.error) === "1";
+  const session = params.get(PARAM.session) ?? "";
   const start = params.get(PARAM.start) ?? "";
   const end = params.get(PARAM.end) ?? "";
   // Keyed on the strings: a fresh pair of dayjs objects on every address
@@ -152,6 +155,11 @@ export function useLogFilters(admin = false) {
     [writeFilters],
   );
 
+  const setSession = useCallback(
+    (value: string) => writeFilters({ [PARAM.session]: value }),
+    [writeFilters],
+  );
+
   const setRange = useCallback(
     (value: RangeValue) =>
       writeFilters({
@@ -189,6 +197,7 @@ export function useLogFilters(admin = false) {
           PARAM.error,
           PARAM.start,
           PARAM.end,
+          PARAM.session,
         ].map((name) => [name, ""]),
       ),
     );
@@ -202,7 +211,8 @@ export function useLogFilters(admin = false) {
       typed.username ||
       typed.channel ||
       onlyError ||
-      range,
+      range ||
+      session,
   );
 
   return {
@@ -214,6 +224,8 @@ export function useLogFilters(admin = false) {
     ...typeInto,
     onlyError,
     setOnlyError,
+    session,
+    setSession,
     range,
     setRange,
     keyword,
