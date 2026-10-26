@@ -23,6 +23,7 @@ const FALLBACK: ConsoleSettings = {
   max_retries: 3,
   retry_backoff_ms: 200,
   relay_timeout_secs: 600,
+  stream_idle_secs: 3600,
 }
 
 interface SettingsValue {

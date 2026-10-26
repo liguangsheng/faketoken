@@ -304,7 +304,7 @@ GROUP BY model ORDER BY 3 DESC;
 | `SERVER_PORT` | `3200` | docker-compose 发布到宿主机的端口 |
 | `POSTGRES_PORT` | `5433` | Postgres 发布到宿主机的端口，只绑 `127.0.0.1` |
 | `RELAY_TIMEOUT` | `10m` | 单次上游请求总超时的初始值；之后在「全局设置 → 转发与重试」调整，0 为不限，渠道自己的超时优先 |
-| `STREAM_IDLE_TIMEOUT` | `120s` | 流式响应静默多久判定为卡死 |
+| `STREAM_IDLE_TIMEOUT` | `1h` | 流式响应静默多久判定为卡死的初始值；之后在「全局设置 → 转发与重试」调整，0 为不限 |
 | `MAX_RETRIES` | `3` | 单次请求最多尝试的渠道数 |
 | `RETRY_BACKOFF` | `200ms` | 换渠道重试前的停顿基数，按尝试次数递增，上限 2 秒 |
 | `INIT_ADMIN_PASS` | 首次启动必填 | 首个管理员的密码，至少 12 个字符；库里已有用户后不再读取 |

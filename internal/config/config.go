@@ -78,7 +78,7 @@ func Load() (*Config, error) {
 		InitAdminUser:     env("INIT_ADMIN_USER", "admin"),
 		InitAdminPass:     env("INIT_ADMIN_PASS", ""),
 		RelayTimeout:      envDuration("RELAY_TIMEOUT", 10*time.Minute),
-		StreamIdleTimeout: envDuration("STREAM_IDLE_TIMEOUT", 120*time.Second),
+		StreamIdleTimeout: envDuration("STREAM_IDLE_TIMEOUT", time.Hour),
 		MaxRetries:        envInt("MAX_RETRIES", 3),
 		RetryBackoff:      envDuration("RETRY_BACKOFF", 200*time.Millisecond),
 		AllowRegister:     envBool("ALLOW_REGISTER", false),

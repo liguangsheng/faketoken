@@ -38,6 +38,7 @@ const (
 	optionMaxRetries   = "relay.max_retries"
 	optionRetryBackoff = "relay.retry_backoff_ms"
 	optionRelayTimeout = "relay.timeout_secs"
+	optionStreamIdle   = "relay.stream_idle_secs"
 )
 
 // maxBlockRulesJSON bounds the stored document. The per-group limits already
@@ -102,6 +103,11 @@ const (
 	// call is not slow but lost, and the idle watchdog has long since said so.
 	maxRelayTimeoutSecs = 86_400
 	minRelayTimeoutSecs = 0
+
+	// A stream may sit silent up to a day; zero turns the watchdog off and
+	// leaves a stalled stream to the request timeout.
+	maxStreamIdleSecs = 86_400
+	minStreamIdleSecs = 0
 )
 
 // consoleSettings is what the console needs before it can render a table, plus
@@ -150,6 +156,9 @@ type consoleSettings struct {
 	// RelayTimeoutSecs caps one upstream call, streamed answer included; 0 is
 	// no cap. A channel's own timeout wins over it. RELAY_TIMEOUT seeds it.
 	RelayTimeoutSecs int `json:"relay_timeout_secs"`
+	// StreamIdleSecs is how long a stream may send nothing before it is cut;
+	// 0 is no limit. STREAM_IDLE_TIMEOUT seeds it.
+	StreamIdleSecs int `json:"stream_idle_secs"`
 }
 
 func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
@@ -169,6 +178,7 @@ func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
 
 		LogFailedKeepDays: store.DefaultFailedDetailDays,
 		RelayTimeoutSecs:  int(s.cfg.RelayTimeout / time.Second),
+		StreamIdleSecs:    int(s.cfg.StreamIdleTimeout / time.Second),
 	}
 
 	options, err := s.store.AllOptions(ctx)
@@ -204,6 +214,9 @@ func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
 	}
 	if value, err := strconv.Atoi(options[optionRelayTimeout]); err == nil && validRelayTimeout(value) {
 		settings.RelayTimeoutSecs = value
+	}
+	if value, err := strconv.Atoi(options[optionStreamIdle]); err == nil && validStreamIdle(value) {
+		settings.StreamIdleSecs = value
 	}
 	if raw := options[optionBlockRules]; strings.TrimSpace(raw) != "" {
 		var rules []relay.BlockRule
@@ -308,6 +321,10 @@ func validRelayTimeout(value int) bool {
 	return value >= minRelayTimeoutSecs && value <= maxRelayTimeoutSecs
 }
 
+func validStreamIdle(value int) bool {
+	return value >= minStreamIdleSecs && value <= maxStreamIdleSecs
+}
+
 func validMaxRetries(value int) bool {
 	return value >= minMaxRetries && value <= maxMaxRetries
 }
@@ -350,6 +367,7 @@ func (s *Server) applyRuntimeOptions(settings consoleSettings) {
 	s.relay.SetBlockPolicy(settings.BlockRules, settings.BlockedStatus)
 	s.relay.SetRetryConfig(settings.MaxRetries, time.Duration(settings.RetryBackoffMS)*time.Millisecond)
 	s.relay.SetRelayTimeout(time.Duration(settings.RelayTimeoutSecs) * time.Second)
+	s.relay.SetStreamIdleTimeout(time.Duration(settings.StreamIdleSecs) * time.Second)
 }
 
 // runtimeAttrs is the log line for the in-memory knobs.
@@ -363,6 +381,7 @@ func (c consoleSettings) runtimeAttrs() []any {
 		"max_retries", c.MaxRetries,
 		"retry_backoff_ms", c.RetryBackoffMS,
 		"relay_timeout_secs", c.RelayTimeoutSecs,
+		"stream_idle_secs", c.StreamIdleSecs,
 	}
 }
 
@@ -383,6 +402,7 @@ func (c consoleSettings) options(encodedRules []byte) map[string]string {
 		optionMaxRetries:      strconv.Itoa(c.MaxRetries),
 		optionRetryBackoff:    strconv.Itoa(c.RetryBackoffMS),
 		optionRelayTimeout:    strconv.Itoa(c.RelayTimeoutSecs),
+		optionStreamIdle:      strconv.Itoa(c.StreamIdleSecs),
 	}
 }
 
@@ -488,6 +508,11 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if !validRelayTimeout(in.RelayTimeoutSecs) {
 		fail(w, http.StatusBadRequest, fmt.Sprintf(
 			"请求超时需在 %d 和 %d 秒之间，0 表示不限", minRelayTimeoutSecs, maxRelayTimeoutSecs))
+		return
+	}
+	if !validStreamIdle(in.StreamIdleSecs) {
+		fail(w, http.StatusBadRequest, fmt.Sprintf(
+			"流式空闲超时需在 %d 和 %d 秒之间，0 表示不限", minStreamIdleSecs, maxStreamIdleSecs))
 		return
 	}
 

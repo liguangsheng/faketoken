@@ -391,6 +391,9 @@ export interface ConsoleSettings {
   /** Cap on one upstream call, streamed answer included, in seconds. 0 is no
    *  cap; a channel's own timeout wins over it. */
   relay_timeout_secs: number
+  /** How long a stream may send nothing before it is cut, in seconds. 0 is
+   *  no limit. */
+  stream_idle_secs: number
 }
 
 /** The full request and reply for one call, kept only for recent ones. */

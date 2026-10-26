@@ -75,6 +75,10 @@ type Relay struct {
 	// included; 0 is no cap. A channel's own timeout_secs wins over it. Same
 	// treatment as retryBudget.
 	timeout atomic.Int64
+	// streamIdle is how long a stream may go silent before the watchdog cuts
+	// it (as nanoseconds); 0 turns the watchdog off. Same treatment as
+	// retryBudget.
+	streamIdle atomic.Int64
 	// liveSeq mints the key that ties a call's in-flight announcements to the
 	// row that finally settles it. Process-local and restart-cheap: a console
 	// drops whatever it was holding when the stream reconnects, so a key reused
@@ -101,6 +105,7 @@ func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config, clients *u
 	rl.retryBudget.Store(int64(cfg.MaxRetries))
 	rl.retryBackoff.Store(int64(cfg.RetryBackoff))
 	rl.timeout.Store(int64(cfg.RelayTimeout))
+	rl.streamIdle.Store(int64(cfg.StreamIdleTimeout))
 	return rl
 }
 
@@ -989,7 +994,9 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 		tl = newTimeline(c.started)
 		tl.add(headersAt, 0)
 	}
-	written, bodyTTFB, pumpErr := pump(w, resp.Body, sniff, isStream, rl.cfg.StreamIdleTimeout,
+	// Read once: the message below names the limit this call actually ran under.
+	streamIdle := time.Duration(rl.streamIdle.Load())
+	written, bodyTTFB, pumpErr := pump(w, resp.Body, sniff, isStream, streamIdle,
 		func() { stall(errStreamIdle) }, tl)
 
 	usage, hasUsage := sniff.Usage()
@@ -1047,7 +1054,7 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 				out.cancelled = true
 			case errors.Is(context.Cause(ctx), errStreamIdle):
 				out.message = fmt.Sprintf("stream interrupted: upstream sent nothing for %s",
-					rl.cfg.StreamIdleTimeout)
+					streamIdle)
 			}
 		}
 		// The bytes already sent cannot be retried, whoever broke the stream.
@@ -1206,6 +1213,14 @@ func (rl *Relay) SetRetryConfig(maxRetries int, backoff time.Duration) {
 func (rl *Relay) SetRelayTimeout(d time.Duration) {
 	if d >= 0 {
 		rl.timeout.Store(int64(d))
+	}
+}
+
+// SetStreamIdleTimeout updates how long a stream may stay silent without a
+// restart; 0 turns the watchdog off.
+func (rl *Relay) SetStreamIdleTimeout(d time.Duration) {
+	if d >= 0 {
+		rl.streamIdle.Store(int64(d))
 	}
 }
 

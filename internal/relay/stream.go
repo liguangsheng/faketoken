@@ -243,7 +243,9 @@ func pump(w http.ResponseWriter, body io.Reader, sniff *usageSniffer, flush bool
 
 	if idle > 0 {
 		go func() {
-			ticker := time.NewTicker(idle / 2)
+			// Check at least every second: at idle/2 alone, a one-hour limit
+			// could fire half an hour late.
+			ticker := time.NewTicker(min(idle/2, time.Second))
 			defer ticker.Stop()
 			for {
 				select {

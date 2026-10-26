@@ -4,7 +4,7 @@ import SettingsForm from './SettingsForm'
 import type { PanelProps } from './shared'
 
 /** How hard a failed request is retried, how long it waits between tries,
- *  and how long one try may take. */
+ *  how long one try may take, and how long a stream may stay silent. */
 export default function RelayPanel({ draft, patch }: PanelProps) {
   return (
     <SettingsForm>
@@ -44,8 +44,7 @@ export default function RelayPanel({ draft, patch }: PanelProps) {
 
       <Form.Item
         label="请求超时"
-        help="单次上游请求从发出到响应结束（含流式输出）的最长时间。超时即断开，还没开始响应的会换渠道重试。设为 0 表示不限制。渠道自己设了超时时以渠道为准。流式响应另有保护：连续 120 秒收不到数据就断开。"
-        className="settings-form__last"
+        help="单次上游请求从发出到响应结束（含流式输出）的最长时间。超时即断开，还没开始响应的会换渠道重试。设为 0 表示不限制。渠道自己设了超时时以渠道为准。"
       >
         <InputNumber
           aria-label="请求超时"
@@ -57,6 +56,24 @@ export default function RelayPanel({ draft, patch }: PanelProps) {
           addonAfter="秒"
           value={draft.relay_timeout_secs}
           onChange={(value) => patch({ relay_timeout_secs: value ?? 0 })}
+        />
+      </Form.Item>
+
+      <Form.Item
+        label="流式空闲超时"
+        help="流式响应连续这么久收不到任何数据，就判定上游卡死并断开。有的上游会把整个工具调用生成完才一次发出，写大文件时可能静默几分钟，设太短会误断。设为 0 表示不限制，只受请求超时约束。"
+        className="settings-form__last"
+      >
+        <InputNumber
+          aria-label="流式空闲超时"
+          className="settings-control"
+          min={0}
+          max={86400}
+          step={60}
+          precision={0}
+          addonAfter="秒"
+          value={draft.stream_idle_secs}
+          onChange={(value) => patch({ stream_idle_secs: value ?? 0 })}
         />
       </Form.Item>
     </SettingsForm>

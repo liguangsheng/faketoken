@@ -1,8 +1,10 @@
 package api
 
 import (
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -223,6 +225,72 @@ func TestRelayTimeoutFromSettings(t *testing.T) {
 	for _, bad := range []int{-1, maxRelayTimeoutSecs + 1} {
 		if got := setTimeout(bad); got != http.StatusBadRequest {
 			t.Fatalf("timeout %d accepted (HTTP %d)", bad, got)
+		}
+	}
+}
+
+// The console's stream idle limit reaches the relay without a restart: a
+// stream that pauses 3s is cut under a one-second limit and runs to [DONE]
+// once the limit is lifted.
+func TestStreamIdleFromSettings(t *testing.T) {
+	h := newHarness(t)
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"he\"}}]}\n\n")
+		flusher.Flush()
+
+		// A tool call the upstream buffers whole: silence, then the rest.
+		select {
+		case <-time.After(3 * time.Second):
+		case <-r.Context().Done():
+			return
+		}
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"llo\"}}]}\n\ndata: [DONE]\n\n")
+		flusher.Flush()
+	})
+	h.createChannel(channelInput{Name: "quiet", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"}})
+	key := h.createKey()
+
+	setIdle := func(secs int) int {
+		t.Helper()
+		settings := h.consoleSettings(t)
+		settings.StreamIdleSecs = secs
+		resp := h.do(http.MethodPut, "/api/admin/settings", h.admin, settings, nil)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	call := func() string {
+		t.Helper()
+		resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key,
+			`{"model":"gpt-4o","stream":true}`)
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return string(raw)
+	}
+
+	if setIdle(1) != http.StatusOK {
+		t.Fatal("a 1-second idle limit was refused")
+	}
+	if got := call(); strings.Contains(got, "[DONE]") {
+		t.Fatalf("a 3s pause survived a 1s idle limit: %s", got)
+	}
+	if entry := h.waitForLog(t, 1); !strings.Contains(entry.Error, "sent nothing for 1s") {
+		t.Fatalf("idle cut logged as %q", entry.Error)
+	}
+
+	if setIdle(0) != http.StatusOK || h.consoleSettings(t).StreamIdleSecs != 0 {
+		t.Fatal("0 (no idle limit) was not stored")
+	}
+	if got := call(); !strings.Contains(got, "[DONE]") {
+		t.Fatalf("with no idle limit the stream was cut: %s", got)
+	}
+
+	for _, bad := range []int{-1, maxStreamIdleSecs + 1} {
+		if got := setIdle(bad); got != http.StatusBadRequest {
+			t.Fatalf("idle limit %d accepted (HTTP %d)", bad, got)
 		}
 	}
 }
