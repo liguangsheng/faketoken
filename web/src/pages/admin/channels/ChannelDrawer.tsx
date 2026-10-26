@@ -489,7 +489,7 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
                   <>
                     <Row gutter={16}>
                       <Col xs={24} md={8}>
-                        <Form.Item name="timeout_secs" label="超时（秒）" tooltip="0 表示使用全局默认">
+                        <Form.Item name="timeout_secs" label="超时（秒）" tooltip="0 表示使用全局设置里的请求超时">
                           <InputNumber min={0} style={{ width: '100%' }} />
                         </Form.Item>
                       </Col>

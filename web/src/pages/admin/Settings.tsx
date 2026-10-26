@@ -36,7 +36,7 @@ const TABS = [
   {
     key: 'relay',
     label: '转发与重试',
-    fields: ['max_retries', 'retry_backoff_ms'],
+    fields: ['max_retries', 'retry_backoff_ms', 'relay_timeout_secs'],
     Panel: RelayPanel,
   },
   {

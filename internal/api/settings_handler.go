@@ -37,6 +37,7 @@ const (
 	optionBlockRules   = "console.block_rules"
 	optionMaxRetries   = "relay.max_retries"
 	optionRetryBackoff = "relay.retry_backoff_ms"
+	optionRelayTimeout = "relay.timeout_secs"
 )
 
 // maxBlockRulesJSON bounds the stored document. The per-group limits already
@@ -96,6 +97,11 @@ const (
 	// retries is as long as a caller will reasonably wait; zero means no pause.
 	maxRetryBackoffMS = 10_000
 	minRetryBackoffMS = 0
+
+	// One upstream call may run up to a day; zero is no limit. Past a day a
+	// call is not slow but lost, and the idle watchdog has long since said so.
+	maxRelayTimeoutSecs = 86_400
+	minRelayTimeoutSecs = 0
 )
 
 // consoleSettings is what the console needs before it can render a table, plus
@@ -141,6 +147,9 @@ type consoleSettings struct {
 	// milliseconds. It scales with the attempt number and is capped at 2
 	// seconds by the relay.
 	RetryBackoffMS int `json:"retry_backoff_ms"`
+	// RelayTimeoutSecs caps one upstream call, streamed answer included; 0 is
+	// no cap. A channel's own timeout wins over it. RELAY_TIMEOUT seeds it.
+	RelayTimeoutSecs int `json:"relay_timeout_secs"`
 }
 
 func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
@@ -159,6 +168,7 @@ func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
 		RetryBackoffMS:  int(s.cfg.RetryBackoff / time.Millisecond),
 
 		LogFailedKeepDays: store.DefaultFailedDetailDays,
+		RelayTimeoutSecs:  int(s.cfg.RelayTimeout / time.Second),
 	}
 
 	options, err := s.store.AllOptions(ctx)
@@ -191,6 +201,9 @@ func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
 	}
 	if value, err := strconv.Atoi(options[optionLogFailedDays]); err == nil && validLogFailedDays(value) {
 		settings.LogFailedKeepDays = value
+	}
+	if value, err := strconv.Atoi(options[optionRelayTimeout]); err == nil && validRelayTimeout(value) {
+		settings.RelayTimeoutSecs = value
 	}
 	if raw := options[optionBlockRules]; strings.TrimSpace(raw) != "" {
 		var rules []relay.BlockRule
@@ -291,6 +304,10 @@ func validLogFailedDays(value int) bool {
 	return value >= minLogFailedDays && value <= maxLogFailedDays
 }
 
+func validRelayTimeout(value int) bool {
+	return value >= minRelayTimeoutSecs && value <= maxRelayTimeoutSecs
+}
+
 func validMaxRetries(value int) bool {
 	return value >= minMaxRetries && value <= maxMaxRetries
 }
@@ -332,6 +349,7 @@ func (s *Server) applyRuntimeOptions(settings consoleSettings) {
 	s.store.SetFailedDetailDays(settings.LogFailedKeepDays)
 	s.relay.SetBlockPolicy(settings.BlockRules, settings.BlockedStatus)
 	s.relay.SetRetryConfig(settings.MaxRetries, time.Duration(settings.RetryBackoffMS)*time.Millisecond)
+	s.relay.SetRelayTimeout(time.Duration(settings.RelayTimeoutSecs) * time.Second)
 }
 
 // runtimeAttrs is the log line for the in-memory knobs.
@@ -344,6 +362,7 @@ func (c consoleSettings) runtimeAttrs() []any {
 		"blocked_keywords", countKeywords(c.BlockRules),
 		"max_retries", c.MaxRetries,
 		"retry_backoff_ms", c.RetryBackoffMS,
+		"relay_timeout_secs", c.RelayTimeoutSecs,
 	}
 }
 
@@ -363,6 +382,7 @@ func (c consoleSettings) options(encodedRules []byte) map[string]string {
 		optionBlockRules:      string(encodedRules),
 		optionMaxRetries:      strconv.Itoa(c.MaxRetries),
 		optionRetryBackoff:    strconv.Itoa(c.RetryBackoffMS),
+		optionRelayTimeout:    strconv.Itoa(c.RelayTimeoutSecs),
 	}
 }
 
@@ -463,6 +483,11 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if !validRetryBackoffMS(in.RetryBackoffMS) {
 		fail(w, http.StatusBadRequest, fmt.Sprintf(
 			"重试间隔需在 %d 和 %d 毫秒之间", minRetryBackoffMS, maxRetryBackoffMS))
+		return
+	}
+	if !validRelayTimeout(in.RelayTimeoutSecs) {
+		fail(w, http.StatusBadRequest, fmt.Sprintf(
+			"请求超时需在 %d 和 %d 秒之间，0 表示不限", minRelayTimeoutSecs, maxRelayTimeoutSecs))
 		return
 	}
 

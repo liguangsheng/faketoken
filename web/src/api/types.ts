@@ -388,6 +388,9 @@ export interface ConsoleSettings {
   max_retries: number
   /** Base delay between retries, in milliseconds. */
   retry_backoff_ms: number
+  /** Cap on one upstream call, streamed answer included, in seconds. 0 is no
+   *  cap; a channel's own timeout wins over it. */
+  relay_timeout_secs: number
 }
 
 /** The full request and reply for one call, kept only for recent ones. */

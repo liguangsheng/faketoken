@@ -1,8 +1,10 @@
 package api
 
 import (
+	"io"
 	"net/http"
 	"testing"
+	"time"
 )
 
 func TestConsoleSettingsRoundTripAndAuthority(t *testing.T) {
@@ -169,5 +171,58 @@ func TestImportDefaultsRejectUnusableValues(t *testing.T) {
 	h.do(http.MethodGet, "/api/settings", h.admin, nil, &after)
 	if after.ImportPriority != base.ImportPriority || after.ImportWeight != base.ImportWeight {
 		t.Fatalf("a rejected update still changed the stored value: %+v", after)
+	}
+}
+
+// The console's request timeout reaches the relay without a restart, and 0
+// lifts it: a slow upstream fails under a one-second cap and answers without
+// one. A channel's own timeout still wins over "no limit".
+func TestRelayTimeoutFromSettings(t *testing.T) {
+	h := newHarness(t)
+	up := newUpstream(t, func(u *upstream, w http.ResponseWriter, r *http.Request) {
+		time.Sleep(1500 * time.Millisecond)
+		chatResponse(w, "late", 10, 5)
+	})
+	h.createChannel(channelInput{Name: "slow", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"}})
+	h.createChannel(channelInput{Name: "slow-capped", Type: "openai", BaseURL: up.URL, APIKey: "k",
+		Models: []string{"gpt-4o-mini"}, Groups: []string{"default"}, TimeoutSecs: 1})
+	key := h.createKey()
+
+	setTimeout := func(secs int) int {
+		t.Helper()
+		settings := h.consoleSettings(t)
+		settings.RelayTimeoutSecs = secs
+		resp := h.do(http.MethodPut, "/api/admin/settings", h.admin, settings, nil)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	call := func(model string) int {
+		t.Helper()
+		resp := h.relayRequest(http.MethodPost, "/v1/chat/completions", key, `{"model":"`+model+`"}`)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if setTimeout(1) != http.StatusOK {
+		t.Fatal("a 1-second timeout was refused")
+	}
+	if got := call("gpt-4o"); got == http.StatusOK {
+		t.Fatal("a 1.5s upstream answered under a 1s timeout")
+	}
+	if setTimeout(0) != http.StatusOK || h.consoleSettings(t).RelayTimeoutSecs != 0 {
+		t.Fatal("0 (no timeout) was not stored")
+	}
+	if got := call("gpt-4o"); got != http.StatusOK {
+		t.Fatalf("with no timeout the call got HTTP %d", got)
+	}
+	if got := call("gpt-4o-mini"); got == http.StatusOK {
+		t.Fatal("the channel's own 1s timeout did not apply under a global 0")
+	}
+	for _, bad := range []int{-1, maxRelayTimeoutSecs + 1} {
+		if got := setTimeout(bad); got != http.StatusBadRequest {
+			t.Fatalf("timeout %d accepted (HTTP %d)", bad, got)
+		}
 	}
 }

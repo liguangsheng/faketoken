@@ -71,6 +71,10 @@ type Relay struct {
 	// retryBackoff is the base delay before moving to another channel (as
 	// nanoseconds), same treatment as retryBudget.
 	retryBackoff atomic.Int64
+	// timeout caps one upstream call (as nanoseconds), streamed answer
+	// included; 0 is no cap. A channel's own timeout_secs wins over it. Same
+	// treatment as retryBudget.
+	timeout atomic.Int64
 	// liveSeq mints the key that ties a call's in-flight announcements to the
 	// row that finally settles it. Process-local and restart-cheap: a console
 	// drops whatever it was holding when the stream reconnects, so a key reused
@@ -96,6 +100,7 @@ func New(st *store.Store, pricer *billing.Pricer, cfg *config.Config, clients *u
 	rl.capture.Store(redact.DefaultCaptureLimit)
 	rl.retryBudget.Store(int64(cfg.MaxRetries))
 	rl.retryBackoff.Store(int64(cfg.RetryBackoff))
+	rl.timeout.Store(int64(cfg.RelayTimeout))
 	return rl
 }
 
@@ -872,11 +877,20 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 		target += "?" + query
 	}
 
-	timeout := rl.cfg.RelayTimeout
+	// The channel's own limit, else the console's. With neither there is no
+	// deadline at all: a long answer runs as long as it runs, and a stalled
+	// stream is still caught by the idle watchdog.
+	timeout := time.Duration(rl.timeout.Load())
 	if ch.TimeoutSecs > 0 {
 		timeout = time.Duration(ch.TimeoutSecs) * time.Second
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(r.Context(), timeout)
+	} else {
+		ctx, cancel = context.WithCancel(r.Context())
+	}
 	defer cancel()
 	// The idle watchdog stops the read with its own cause, which is how a
 	// stalled upstream is told apart from a caller that hung up.
@@ -1184,6 +1198,14 @@ func (rl *Relay) SetRetryConfig(maxRetries int, backoff time.Duration) {
 	rl.retryBudget.Store(int64(maxRetries))
 	if backoff > 0 {
 		rl.retryBackoff.Store(int64(backoff))
+	}
+}
+
+// SetRelayTimeout updates the cap on one upstream call without a restart;
+// 0 removes it.
+func (rl *Relay) SetRelayTimeout(d time.Duration) {
+	if d >= 0 {
+		rl.timeout.Store(int64(d))
 	}
 }
 
