@@ -1,4 +1,4 @@
-.PHONY: help dev build web run test test-db test-db-down test-integration lint fmt db-up db-down up down logs backup backups clean
+.PHONY: help dev build web run test test-db test-db-down test-integration lint fmt db-up db-down up deploy down logs backup backups clean
 
 BIN := bin/server
 # Shown in the console sidebar. -dirty marks uncommitted changes, which `make up`
@@ -55,14 +55,19 @@ db-down: ## Stop Postgres
 up: ## Build and start the whole stack
 	VERSION=$(VERSION) docker compose up -d --build
 
+deploy: ## Ship a change: rebuild the server alone, verify, roll back on failure
+	./scripts/deploy.sh
+
 down: ## Stop the stack
 	docker compose down
 
 logs: ## Follow the server logs
 	docker compose logs -f server
 
+# --no-deps: run would otherwise bring Postgres up to date with the compose
+# file, which restarts the database whenever its configuration changed.
 backup: ## Take an on-demand dump now (the service also dumps nightly)
-	docker compose run --rm backup once
+	docker compose run --rm --no-deps backup once
 
 backups: ## List the dumps currently retained
 	@ls -lh $${BACKUP_DIR:-./.backup}/*.dump 2>/dev/null || echo "no dumps yet"

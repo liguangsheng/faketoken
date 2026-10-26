@@ -45,6 +45,19 @@ docker compose up -d --build
 
 想换端口只改 `.env` 里的 `SERVER_PORT`（宿主机映射端口），例如 `SERVER_PORT=8080` 后 `docker compose up -d` 即可，容器内部始终监听 3200。
 
+### 发布改动
+
+```bash
+make deploy              # 或 scripts/deploy.sh
+WAIT=300 make deploy     # 最多等 5 分钟，让进行中的调用先结束
+```
+
+只重建并替换 server，Postgres 和备份服务不动。换容器前先等进行中的调用结束（默认最多 90 秒，到时仍有调用也照常部署，这些调用会被中断）；换上后核对容器健康、跑的是刚构建的镜像、控制台的 CSP 头还在，任何一步不过就自动换回旧镜像。版本号取 `git describe`，工作区有未提交改动时带上时间戳。脚本需要宿主机上有 `curl`、`jq`、`python3`。
+
+改了 Postgres 或备份服务的配置（比如日志轮转），要另外 `docker compose up -d` 才生效，这会重启数据库。
+
+容器日志按服务轮转：每个服务最多保留 5 个 20 MB 的文件。
+
 ### 从旧版本升级
 
 服务改用非超级用户 `APP_DB_USER` 连库。新数据卷初始化时会自动建好这个角色；已有数据卷的部署要手动补一次：
