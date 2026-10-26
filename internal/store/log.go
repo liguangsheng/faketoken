@@ -19,13 +19,37 @@ const logColumns = `id, created_at, user_id, username, token_id, token_name, cha
 	channel_name, model, upstream_model, endpoint, method, status_code, stream,
 	prompt_tokens, completion_tokens, cached_tokens, total_tokens, cost,
 	duration_ms, ttfb_ms, retries, client_ip, error, cache_creation_tokens,
-	reasoning_effort, client_type, upstream_status, prompt_estimated, cancelled`
+	reasoning_effort, client_type, upstream_status, prompt_estimated, cancelled,
+	session_id, parent_id, thread_id, shared_messages, message_count`
+
+// scanLog reads one row selected as logColumns.
+func scanLog(row pgx.Row) (*model.RequestLog, error) {
+	var l model.RequestLog
+	err := row.Scan(&l.ID, &l.CreatedAt, &l.UserID, &l.Username, &l.TokenID,
+		&l.TokenName, &l.ChannelID, &l.ChannelName, &l.Model, &l.UpstreamModel,
+		&l.Endpoint, &l.Method, &l.StatusCode, &l.Stream, &l.PromptTokens,
+		&l.CompletionTokens, &l.CachedTokens, &l.TotalTokens, &l.Cost,
+		&l.DurationMS, &l.TTFBMS, &l.Retries, &l.ClientIP, &l.Error,
+		&l.CacheCreationTokens, &l.ReasoningEffort, &l.ClientType, &l.UpstreamStatus,
+		&l.PromptEstimated, &l.Cancelled,
+		&l.SessionID, &l.ParentID, &l.ThreadID, &l.SharedMessages, &l.MessageCount)
+	return &l, err
+}
 
 // failedSQL is the test for a failed call, shared by the rollup, the error
 // filter and the summaries so they cannot disagree: an error status or an
 // error in the body, unless the caller or an operator ended the call.
 // model.RequestLog.Failed is the same test in Go.
-const failedSQL = `(NOT cancelled AND (status_code >= 400 OR error <> ''))`
+var failedSQL = failedOn("")
+
+// failedOn is failedSQL for one alias of request_logs, for a query that joins
+// the table to itself: failedOn("l") tests l.cancelled, l.status_code, l.error.
+func failedOn(alias string) string {
+	if alias != "" {
+		alias += "."
+	}
+	return fmt.Sprintf("(NOT %[1]scancelled AND (%[1]sstatus_code >= 400 OR %[1]serror <> ''))", alias)
+}
 
 // InsertLog persists one entry and fills in the values the database
 // generates, so the caller holds a complete row — the live log stream forwards
@@ -40,8 +64,8 @@ func (s *Store) InsertLog(ctx context.Context, l *model.RequestLog) error {
 		 upstream_model, endpoint, method, status_code, stream, prompt_tokens,
 		 completion_tokens, cached_tokens, total_tokens, cost, duration_ms, ttfb_ms,
 		 retries, client_ip, error, cache_creation_tokens, reasoning_effort, client_type,
-		 upstream_status, prompt_estimated, cancelled)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+		 upstream_status, prompt_estimated, cancelled, session_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
 		RETURNING id, created_at, user_id, status_code, error, cancelled, cost, total_tokens),
 	rollup AS (INSERT INTO usage_hourly AS u (user_id, hour, requests, errors, cost, total_tokens)
 		SELECT user_id, date_trunc('hour', created_at), 1,
@@ -59,7 +83,7 @@ func (s *Store) InsertLog(ctx context.Context, l *model.RequestLog) error {
 		l.CompletionTokens, l.CachedTokens, l.TotalTokens, l.Cost, l.DurationMS, l.TTFBMS,
 		l.Retries, l.ClientIP, truncate(l.Error, 2000), l.CacheCreationTokens,
 		truncate(l.ReasoningEffort, 64), truncate(l.ClientType, 64), l.UpstreamStatus,
-		l.PromptEstimated, l.Cancelled).
+		l.PromptEstimated, l.Cancelled, l.SessionID).
 		Scan(&l.ID, &l.CreatedAt)
 }
 
@@ -74,6 +98,9 @@ type LogFilter struct {
 	// knows something about a call but not which field it was.
 	Keyword   string
 	OnlyError bool
+	// SessionID and ThreadID narrow to one conversation, or one line of it.
+	SessionID string
+	ThreadID  int64
 	// HideErrorPrefix withholds one class of error text from a keyword search:
 	// a row whose error starts with it still matches on every other column, but
 	// not on that one.
@@ -163,6 +190,12 @@ func (f LogFilter) build() (string, []any) {
 	if f.OnlyError {
 		conds = append(conds, failedSQL)
 	}
+	if f.SessionID != "" {
+		add("session_id = $%d", f.SessionID)
+	}
+	if f.ThreadID > 0 {
+		add("thread_id = $%d", f.ThreadID)
+	}
 	if f.Start != nil {
 		add("created_at >= $%d", *f.Start)
 	}
@@ -198,17 +231,11 @@ func (s *Store) ListLogs(ctx context.Context, f LogFilter) ([]*model.RequestLog,
 
 	logs := []*model.RequestLog{}
 	for rows.Next() {
-		var l model.RequestLog
-		if err := rows.Scan(&l.ID, &l.CreatedAt, &l.UserID, &l.Username, &l.TokenID,
-			&l.TokenName, &l.ChannelID, &l.ChannelName, &l.Model, &l.UpstreamModel,
-			&l.Endpoint, &l.Method, &l.StatusCode, &l.Stream, &l.PromptTokens,
-			&l.CompletionTokens, &l.CachedTokens, &l.TotalTokens, &l.Cost,
-			&l.DurationMS, &l.TTFBMS, &l.Retries, &l.ClientIP, &l.Error,
-			&l.CacheCreationTokens, &l.ReasoningEffort, &l.ClientType, &l.UpstreamStatus,
-			&l.PromptEstimated, &l.Cancelled); err != nil {
+		l, err := scanLog(rows)
+		if err != nil {
 			return nil, 0, err
 		}
-		logs = append(logs, &l)
+		logs = append(logs, l)
 	}
 	return logs, total, rows.Err()
 }
@@ -239,6 +266,19 @@ func (s *Store) SetLogDetailKeep(count int) {
 
 func (s *Store) logDetailKeep() int {
 	return int(s.detailKeep.Load())
+}
+
+// DefaultFailedDetailDays is how long a failed call keeps its bodies past the
+// window: those are the ones read back days later, and at today's traffic the
+// window rolls over in about three.
+const DefaultFailedDetailDays = 30
+
+// SetFailedDetailDays updates that span without a restart; 0 keeps failed
+// calls no longer than any other.
+func (s *Store) SetFailedDetailDays(days int) {
+	if days >= 0 {
+		s.failedDetailDays.Store(int64(days))
+	}
 }
 
 // LogDetailEnabled reports whether bodies are being retained at all, so a
@@ -286,21 +326,29 @@ func (s *Store) InsertLogDetail(ctx context.Context, d *model.RequestLogDetail) 
 		append(reqHashes, respHashes...)); err != nil {
 		return err
 	}
+	// An empty list rather than NULL: NULL is what the backfill looks for.
+	messages := d.RequestMessages
+	if messages == nil {
+		messages = []int64{}
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO request_log_details
 		(log_id, request_headers, request_chunks, request_truncated,
-		 response_headers, response_chunks, response_truncated)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		 response_headers, response_chunks, response_truncated,
+		 request_messages, response_timing)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		ON CONFLICT (log_id) DO NOTHING`,
 		d.LogID, d.RequestHeaders, reqHashes, d.RequestTruncated,
-		d.ResponseHeaders, respHashes, d.ResponseTruncated); err != nil {
+		d.ResponseHeaders, respHashes, d.ResponseTruncated,
+		messages, d.ResponseTiming); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
-	// Keep the newest `keep` rows and drop everything below them. Their chunks
-	// stay until the collector finds nothing pointing at them.
+	// Keep the newest `keep` rows and drop everything below them, except the
+	// failed calls of the last few days — at most `keep` of those too. The
+	// chunks stay until the collector finds nothing pointing at them.
 	//
 	// After the commit, so the chunk rows this call locked are released
 	// before a scan whose cost grows with the window.
@@ -310,10 +358,18 @@ func (s *Store) InsertLogDetail(ctx context.Context, d *model.RequestLogDetail) 
 	// purge has run, and subtracting from the maximum would discard rows that
 	// are still within the window. While fewer than `keep` rows exist the
 	// subquery returns the smallest id present, so nothing matches.
-	_, err = s.pool.Exec(ctx, `DELETE FROM request_log_details
-		WHERE log_id < (SELECT min(log_id) FROM
-			(SELECT log_id FROM request_log_details
-			 ORDER BY log_id DESC LIMIT $1) newest)`, keep)
+	_, err = s.pool.Exec(ctx, `WITH cutoff AS (
+			SELECT min(log_id) AS id FROM
+				(SELECT log_id FROM request_log_details ORDER BY log_id DESC LIMIT $1) newest),
+		kept AS (
+			SELECT d.log_id FROM request_log_details d
+			JOIN request_logs l ON l.id = d.log_id, cutoff
+			WHERE d.log_id < cutoff.id AND d.created_at > now() - make_interval(days => $2)
+			  AND `+failedSQL+`
+			ORDER BY d.log_id DESC LIMIT $1)
+		DELETE FROM request_log_details d USING cutoff
+		WHERE d.log_id < cutoff.id AND d.log_id NOT IN (SELECT log_id FROM kept)`,
+		keep, int(s.failedDetailDays.Load()))
 	return err
 }
 
@@ -413,10 +469,12 @@ func (s *Store) GetLogDetail(ctx context.Context, logID int64) (*model.RequestLo
 	var d model.RequestLogDetail
 	var reqHashes, respHashes [][]byte
 	err = tx.QueryRow(ctx, `SELECT log_id, created_at, request_headers, request_chunks,
-		request_truncated, response_headers, response_chunks, response_truncated
+		request_truncated, response_headers, response_chunks, response_truncated,
+		coalesce(response_timing, '{}')
 		FROM request_log_details WHERE log_id = $1`, logID).
 		Scan(&d.LogID, &d.CreatedAt, &d.RequestHeaders, &reqHashes,
-			&d.RequestTruncated, &d.ResponseHeaders, &respHashes, &d.ResponseTruncated)
+			&d.RequestTruncated, &d.ResponseHeaders, &respHashes, &d.ResponseTruncated,
+			&d.ResponseTiming)
 	if err != nil {
 		return nil, mapErr(err)
 	}

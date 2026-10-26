@@ -239,7 +239,7 @@ func TestPumpEndsOnTheStreamTerminatorWithoutACancel(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		written, ttfb, err := pump(rec, body, sniff, true, time.Hour, notifyCancel)
+		written, ttfb, err := pump(rec, body, sniff, true, time.Hour, notifyCancel, nil)
 		done <- result{written, ttfb, err}
 	}()
 
@@ -279,7 +279,7 @@ func TestPumpStillIdleTimesOutAStreamThatNeverEnds(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := pump(rec, body, sniff, true, 50*time.Millisecond, cancel)
+		_, _, err := pump(rec, body, sniff, true, 50*time.Millisecond, cancel, nil)
 		done <- err
 	}()
 
@@ -293,5 +293,39 @@ func TestPumpStillIdleTimesOutAStreamThatNeverEnds(t *testing.T) {
 	}
 	if ctx.Err() == nil {
 		t.Fatal("the idle timeout has to cancel the upstream request")
+	}
+}
+
+// A long stream stays within the bound, and a stall keeps its edges at any
+// resolution: the sample before it and the one after are both still there.
+func TestTimelineThinsButKeepsStalls(t *testing.T) {
+	start := time.Unix(0, 0)
+	tl := newTimeline(start)
+	at := func(ms int) time.Time { return start.Add(time.Duration(ms) * time.Millisecond) }
+
+	bytes := int64(0)
+	for ms := 0; ms < 600_000; ms += 7 { // ten minutes, a chunk every 7ms
+		if ms > 300_000 && ms < 330_000 {
+			continue // a 30-second stall half way through
+		}
+		bytes += 100
+		tl.add(at(ms), bytes)
+	}
+
+	s := tl.pairs()
+	if len(s) > 2*timelinePairs {
+		t.Fatalf("%d pairs, want at most %d", len(s)/2, timelinePairs)
+	}
+	if s[len(s)-1] != int32(bytes) {
+		t.Fatalf("last sample has %d bytes, want %d", s[len(s)-1], bytes)
+	}
+	stalled := false
+	for i := 2; i < len(s); i += 2 {
+		if s[i-2] <= 300_000 && s[i] >= 330_000 && s[i]-s[i-2] < 31_000 {
+			stalled = true
+		}
+	}
+	if !stalled {
+		t.Fatal("the 30-second stall did not survive thinning")
 	}
 }

@@ -161,6 +161,11 @@ func (s *Server) Handler() http.Handler {
 	// that has no row yet.
 	mux.HandleFunc("POST /api/admin/logs/inflight/{key}/cancel", s.requireAdmin(s.handleCancelInflight))
 	mux.HandleFunc("DELETE /api/admin/logs", s.requireAdmin(s.handlePurgeLogs))
+	// A session is read through its bodies, which stay with the operator.
+	mux.HandleFunc("GET /api/admin/sessions", s.requireAdmin(s.handleListSessions))
+	mux.HandleFunc("GET /api/admin/sessions/{session}", s.requireAdmin(s.handleGetSession))
+	mux.HandleFunc("GET /api/admin/sessions/{session}/threads/{thread}/calls",
+		s.requireAdmin(s.handleThreadCalls))
 	mux.HandleFunc("GET /api/admin/stats", s.requireAdmin(s.handleAdminStats))
 	mux.HandleFunc("GET /api/admin/stats/heatmap", s.requireAdmin(s.handleAdminUsageHeatmap))
 

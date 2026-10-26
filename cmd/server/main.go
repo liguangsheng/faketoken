@@ -114,6 +114,9 @@ func run() error {
 	// Nothing waits on them; collecting every few minutes bounds the waste.
 	st.StartChunkCollector(ctx, 10*time.Minute)
 	st.StartAttemptPruner(ctx, time.Hour)
+	// The bodies kept from before calls were linked get linked once, in the
+	// background; new calls link as they are logged.
+	st.StartLinkBackfill(ctx)
 
 	jwt := auth.NewJWTManager(cfg.JWTSecret, cfg.SessionTTL)
 	clients := upstream.NewPool()

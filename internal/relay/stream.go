@@ -228,9 +228,10 @@ var errStreamIdle = errors.New("upstream went quiet")
 // pump relays the upstream body to the client, flushing every chunk so that
 // SSE and other incremental formats reach the caller without added latency.
 // It reports time-to-first-byte and enforces an idle timeout by cancelling the
-// upstream request context when a stream stalls.
+// upstream request context when a stream stalls. tl, when set, records when
+// each chunk went out.
 func pump(w http.ResponseWriter, body io.Reader, sniff *usageSniffer, flush bool,
-	idle time.Duration, cancel context.CancelFunc) (written int64, ttfb time.Duration, err error) {
+	idle time.Duration, cancel context.CancelFunc, tl *timeline) (written int64, ttfb time.Duration, err error) {
 
 	rc := http.NewResponseController(w)
 	start := time.Now()
@@ -275,6 +276,7 @@ func pump(w http.ResponseWriter, body io.Reader, sniff *usageSniffer, flush bool
 				return written, ttfb, fmt.Errorf("%w: %w", errCallerGone, writeErr)
 			}
 			written += int64(n)
+			tl.add(time.Now(), written)
 			if flush {
 				// A failed Flush only means the writer does not support it.
 				_ = rc.Flush()

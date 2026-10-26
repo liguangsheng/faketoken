@@ -28,6 +28,7 @@ import (
 	"github.com/faketoken/faketoken/internal/auth"
 	"github.com/faketoken/faketoken/internal/billing"
 	"github.com/faketoken/faketoken/internal/config"
+	"github.com/faketoken/faketoken/internal/conversation"
 	"github.com/faketoken/faketoken/internal/logstream"
 	"github.com/faketoken/faketoken/internal/model"
 	"github.com/faketoken/faketoken/internal/provider"
@@ -425,6 +426,7 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// mapping rewrites this per attempt to say what the upstream received.
 		ReasoningEffort: info.Effort,
 		ClientType:      clientType(r),
+		SessionID:       conversation.SessionID(r.Header),
 	}
 	c := &call{
 		w: w, r: r, p: p, entry: entry, info: info, body: body, started: started,
@@ -816,6 +818,7 @@ type attemptOutcome struct {
 	responseHeaders   map[string][]string
 	responseBody      string
 	responseTruncated bool
+	responseTiming    []int32
 }
 
 // attempt performs one upstream call. On success it streams the response
@@ -966,8 +969,14 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 
 	sniff := newUsageSniffer(contentType, rl.CaptureLimit())
 
+	// Only worth keeping where the bodies are kept, which is where it is read.
+	var tl *timeline
+	if rl.st.LogDetailEnabled() {
+		tl = newTimeline(c.started)
+		tl.add(headersAt, 0)
+	}
 	written, bodyTTFB, pumpErr := pump(w, resp.Body, sniff, isStream, rl.cfg.StreamIdleTimeout,
-		func() { stall(errStreamIdle) })
+		func() { stall(errStreamIdle) }, tl)
 
 	usage, hasUsage := sniff.Usage()
 	captured, captureTruncated := sniff.Capture()
@@ -982,6 +991,7 @@ func (rl *Relay) attempt(c *call, ch *model.Channel) attemptOutcome {
 		ttfb:            headersAt.Sub(dialled) + bodyTTFB,
 		responseHeaders: redact.Headers(resp.Header), responseBody: responseBody,
 		responseTruncated: responseTruncated,
+		responseTiming:    tl.pairs(),
 	}
 	if resp.StatusCode >= 400 {
 		out.message = upstream.ErrorMessage(sniff.Body())
@@ -1344,14 +1354,17 @@ func (rl *Relay) PersistLog(ctx context.Context, entry *model.RequestLog, liveKe
 		slog.Error("request log insert failed", "error", err)
 		return
 	}
-	rl.recordDetail(ctx, entry.ID, detail)
+	rl.recordDetail(ctx, entry, detail)
 	rl.publishLog(liveKey, entry)
 }
 
-// recordDetail converts the captured exchange and stores it.
-func (rl *Relay) recordDetail(ctx context.Context, logID int64,
+// recordDetail converts the captured exchange, stores it, and links the call
+// to the one it continues. The link is written into entry as well, so the row
+// the consoles are told about already says where it belongs.
+func (rl *Relay) recordDetail(ctx context.Context, entry *model.RequestLog,
 	detail func(limit int) *model.RequestLogDetail) {
 
+	logID := entry.ID
 	if logID == 0 {
 		return
 	}
@@ -1381,7 +1394,18 @@ func (rl *Relay) recordDetail(ctx context.Context, logID int64,
 		// A missing diagnostic body must never surface to the caller, whose
 		// request has already been answered.
 		slog.Error("request detail insert failed", "log", logID, "error", err)
+		return
 	}
+	if len(row.RequestMessages) == 0 {
+		return
+	}
+	link, err := rl.st.LinkCall(ctx, logID, entry.SessionID, entry.TokenID, row.RequestMessages)
+	if err != nil {
+		slog.Warn("call not linked to its conversation", "log", logID, "error", err)
+		return
+	}
+	entry.SessionID, entry.ParentID, entry.ThreadID = link.SessionID, link.ParentID, link.ThreadID
+	entry.SharedMessages, entry.MessageCount = link.Shared, link.Messages
 }
 
 func applyResponseDetails(captured *capturedRequest, out attemptOutcome) {
@@ -1390,6 +1414,7 @@ func applyResponseDetails(captured *capturedRequest, out attemptOutcome) {
 	}
 	captured.responseBody = out.responseBody
 	captured.responseTruncated = out.responseTruncated
+	captured.responseTiming = out.responseTiming
 }
 
 // ----------------------------------------------------------------- headers

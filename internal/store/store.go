@@ -25,11 +25,15 @@ type Store struct {
 	// detailKeep is how many calls retain their full bodies, updated from the
 	// console without a restart and read on every logged request.
 	detailKeep atomic.Int64
+	// failedDetailDays is how long a failed call keeps its bodies past that
+	// window, set the same way.
+	failedDetailDays atomic.Int64
 }
 
 func New(pool *pgxpool.Pool, c *auth.Cipher) *Store {
 	s := &Store{pool: pool, cipher: c}
 	s.detailKeep.Store(DefaultLogDetailKeep)
+	s.failedDetailDays.Store(DefaultFailedDetailDays)
 	return s
 }
 

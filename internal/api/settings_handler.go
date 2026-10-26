@@ -28,6 +28,7 @@ const (
 	optionImportPriority  = "console.import_priority"
 	optionImportWeight    = "console.import_weight"
 	optionLogDetailKeep   = "console.log_detail_keep"
+	optionLogFailedDays   = "console.log_failed_keep_days"
 	optionRequireInvite   = "console.require_invite_code"
 	optionBlockedStatus   = "console.blocked_status"
 	// optionBlockRules holds the whole set of block groups as JSON. One row
@@ -81,6 +82,11 @@ const (
 	// Zero is meaningful: it stops recording bodies and clears what is stored.
 	minLogDetailKeep = 0
 
+	// A failed call's bodies outlive the window by up to a year; zero keeps
+	// them no longer than any other call's.
+	maxLogFailedDays = 365
+	minLogFailedDays = 0
+
 	// Retry budget bounds: at least one attempt, at most a generous ceiling
 	// so an operator cannot accidentally disable relaying entirely.
 	maxMaxRetries = 20
@@ -113,6 +119,9 @@ type consoleSettings struct {
 	// LogDetailKeep is how many of the most recent calls keep their full
 	// request and response for inspection. 0 turns the recording off.
 	LogDetailKeep int `json:"log_detail_keep"`
+	// LogFailedKeepDays keeps a failed call's bodies that many days past the
+	// window, at most as many calls again as the window holds.
+	LogFailedKeepDays int `json:"log_failed_keep_days"`
 	// RequireInviteCode makes self-registration need a code an administrator
 	// generated. Only meaningful while AllowRegister is on.
 	RequireInviteCode bool `json:"require_invite_code"`
@@ -148,6 +157,8 @@ func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
 		BlockRules:      []relay.BlockRule{},
 		MaxRetries:      s.cfg.MaxRetries,
 		RetryBackoffMS:  int(s.cfg.RetryBackoff / time.Millisecond),
+
+		LogFailedKeepDays: store.DefaultFailedDetailDays,
 	}
 
 	options, err := s.store.AllOptions(ctx)
@@ -177,6 +188,9 @@ func (s *Server) consoleSettings(ctx context.Context) consoleSettings {
 	}
 	if value, err := strconv.Atoi(options[optionLogDetailKeep]); err == nil && validLogDetailKeep(value) {
 		settings.LogDetailKeep = value
+	}
+	if value, err := strconv.Atoi(options[optionLogFailedDays]); err == nil && validLogFailedDays(value) {
+		settings.LogFailedKeepDays = value
 	}
 	if raw := options[optionBlockRules]; strings.TrimSpace(raw) != "" {
 		var rules []relay.BlockRule
@@ -273,6 +287,10 @@ func validLogDetailKeep(value int) bool {
 	return value >= minLogDetailKeep && value <= maxLogDetailKeep
 }
 
+func validLogFailedDays(value int) bool {
+	return value >= minLogFailedDays && value <= maxLogFailedDays
+}
+
 func validMaxRetries(value int) bool {
 	return value >= minMaxRetries && value <= maxMaxRetries
 }
@@ -311,6 +329,7 @@ func (s *Server) LoadRuntimeOptions(ctx context.Context) {
 func (s *Server) applyRuntimeOptions(settings consoleSettings) {
 	s.relay.SetCaptureLimit(settings.LogBodyLimit)
 	s.store.SetLogDetailKeep(settings.LogDetailKeep)
+	s.store.SetFailedDetailDays(settings.LogFailedKeepDays)
 	s.relay.SetBlockPolicy(settings.BlockRules, settings.BlockedStatus)
 	s.relay.SetRetryConfig(settings.MaxRetries, time.Duration(settings.RetryBackoffMS)*time.Millisecond)
 }
@@ -320,6 +339,7 @@ func (c consoleSettings) runtimeAttrs() []any {
 	return []any{
 		"log_body_limit", c.LogBodyLimit,
 		"log_detail_keep", c.LogDetailKeep,
+		"log_failed_keep_days", c.LogFailedKeepDays,
 		"block_rules", len(c.BlockRules),
 		"blocked_keywords", countKeywords(c.BlockRules),
 		"max_retries", c.MaxRetries,
@@ -337,6 +357,7 @@ func (c consoleSettings) options(encodedRules []byte) map[string]string {
 		optionImportPriority:  strconv.Itoa(c.ImportPriority),
 		optionImportWeight:    strconv.Itoa(c.ImportWeight),
 		optionLogDetailKeep:   strconv.Itoa(c.LogDetailKeep),
+		optionLogFailedDays:   strconv.Itoa(c.LogFailedKeepDays),
 		optionRequireInvite:   strconv.FormatBool(c.RequireInviteCode),
 		optionBlockedStatus:   strconv.Itoa(c.BlockedStatus),
 		optionBlockRules:      string(encodedRules),
@@ -427,6 +448,11 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if !validLogDetailKeep(in.LogDetailKeep) {
 		fail(w, http.StatusBadRequest, fmt.Sprintf(
 			"完整日志保留条数需在 %d 和 %d 之间", minLogDetailKeep, maxLogDetailKeep))
+		return
+	}
+	if !validLogFailedDays(in.LogFailedKeepDays) {
+		fail(w, http.StatusBadRequest, fmt.Sprintf(
+			"失败调用的正文保留天数需在 %d 和 %d 之间", minLogFailedDays, maxLogFailedDays))
 		return
 	}
 	if !validMaxRetries(in.MaxRetries) {

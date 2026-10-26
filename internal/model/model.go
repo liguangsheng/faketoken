@@ -446,6 +446,16 @@ type RequestLog struct {
 	ReasoningEffort string `json:"reasoning_effort"`
 	// ClientType is the tool that made the call, guessed from its headers.
 	ClientType string `json:"client_type"`
+	// Where the call sits in its conversation (migration 0036). SessionID is
+	// what the client named, or "~<id>" for a chain matched by content. The
+	// call repeats SharedMessages of its parent's messages from the start and
+	// carries MessageCount in all; ThreadID is the first call of its line.
+	// Zero until linked, which needs the request body.
+	SessionID      string `json:"session_id"`
+	ParentID       int64  `json:"parent_id"`
+	ThreadID       int64  `json:"thread_id"`
+	SharedMessages int32  `json:"shared_messages"`
+	MessageCount   int32  `json:"message_count"`
 }
 
 // Failed reports a call that failed: an error status, or an error inside a 2xx
@@ -469,6 +479,12 @@ type RequestLogDetail struct {
 	ResponseHeaders   map[string][]string `json:"response_headers,omitempty"`
 	ResponseBody      string              `json:"response_body,omitempty"`
 	ResponseTruncated bool                `json:"response_truncated"`
+	// RequestMessages hashes the request's messages, one each, for linking a
+	// later call to this one. Internal: nothing a reader needs.
+	RequestMessages []int64 `json:"-"`
+	// ResponseTiming is [ms, bytes, ms, bytes, …]: by that many milliseconds
+	// into the call, that many bytes of the response had been relayed.
+	ResponseTiming []int32 `json:"response_timing,omitempty"`
 }
 
 // Invite code statuses, mirroring redemptions.

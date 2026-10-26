@@ -40,6 +40,8 @@ func logFilter(r *http.Request) store.LogFilter {
 		Username:  r.URL.Query().Get("username"),
 		Keyword:   r.URL.Query().Get("keyword"),
 		OnlyError: queryBool(r, "only_error"),
+		SessionID: r.URL.Query().Get("session"),
+		ThreadID:  queryInt64(r, "thread"),
 		Start:     queryTime(r, "start"),
 		End:       queryTime(r, "end"),
 		Offset:    offset,

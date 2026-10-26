@@ -3,6 +3,7 @@ package relay
 import (
 	"net/http"
 
+	"github.com/faketoken/faketoken/internal/conversation"
 	"github.com/faketoken/faketoken/internal/model"
 	"github.com/faketoken/faketoken/internal/redact"
 )
@@ -50,6 +51,7 @@ type capturedRequest struct {
 	responseHeaders   map[string][]string
 	responseBody      string
 	responseTruncated bool
+	responseTiming    []int32
 }
 
 // captureRequest records the cheap half now. Headers are a handful of short
@@ -62,7 +64,9 @@ func captureRequest(r *http.Request, body []byte) *capturedRequest {
 	}
 }
 
-// detail does the deferred work and produces the row to store.
+// detail does the deferred work and produces the row to store. The messages
+// are hashed from the stored form, so a call linked now and one hashed back
+// from storage later compare alike.
 func (c *capturedRequest) detail(limit int) *model.RequestLogDetail {
 	requestBody, truncated := redact.Body(c.contentType, c.body, false, limit)
 	return &model.RequestLogDetail{
@@ -72,5 +76,7 @@ func (c *capturedRequest) detail(limit int) *model.RequestLogDetail {
 		ResponseHeaders:   c.responseHeaders,
 		ResponseBody:      c.responseBody,
 		ResponseTruncated: c.responseTruncated,
+		RequestMessages:   conversation.Messages([]byte(requestBody)),
+		ResponseTiming:    c.responseTiming,
 	}
 }

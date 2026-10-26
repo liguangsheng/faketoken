@@ -34,6 +34,7 @@ type streamFilter struct {
 	username  string
 	keyword   string
 	onlyError bool
+	session   string
 	// redact trims every entry to its owner's view (forOwner), in what is sent
 	// and in what a keyword may match, exactly as the list endpoint does. Set
 	// for a caller's own feed, clear for an administrator's.
@@ -59,6 +60,8 @@ func (f streamFilter) matches(entry *model.RequestLog, blocked bool) bool {
 	case f.username != "" && !strings.EqualFold(entry.Username, f.username):
 		return false
 	case f.onlyError && !entry.Failed():
+		return false
+	case f.session != "" && entry.SessionID != f.session:
 		return false
 	case f.keyword != "" && !matchesKeyword(entry, f.keyword, blocked, f.redact):
 		return false
@@ -99,6 +102,7 @@ func streamFilterFrom(r *http.Request) streamFilter {
 		username:  r.URL.Query().Get("username"),
 		keyword:   strings.TrimSpace(r.URL.Query().Get("keyword")),
 		onlyError: queryBool(r, "only_error"),
+		session:   r.URL.Query().Get("session"),
 	}
 }
 
