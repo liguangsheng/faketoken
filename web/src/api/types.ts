@@ -48,9 +48,9 @@ export interface TokenKeyInput {
   confirm_weak_key?: boolean
 }
 
-/** How a channel fared over one window. */
+/** How a channel fared over one window, counted per attempt: a request that fails over counts once for each channel it tried. */
 export interface ChannelHealthCount {
-  requests: number
+  attempts: number
   failures: number
 }
 
@@ -154,6 +154,8 @@ export interface RequestLog {
   cache_creation_tokens: number
   /** prompt_tokens was estimated from the request body; the upstream reported zero. */
   prompt_estimated: boolean
+  /** The caller hung up or an operator stopped the call: recorded, but nobody's failure. */
+  cancelled: boolean
   total_tokens: number
   cost: number
   duration_ms: number
@@ -418,6 +420,8 @@ export interface Stats {
   summary: {
     requests: number
     errors: number
+    /** Ended by the caller or an operator: neither failed nor succeeded. */
+    cancelled: number
     cost: number
     total_tokens: number
   }

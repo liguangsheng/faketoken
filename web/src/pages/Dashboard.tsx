@@ -49,6 +49,9 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null)
   // Bumped by the refresh button; the heatmap ignores the range switch.
   const [refreshes, setRefreshes] = useState(0)
+  // The window the numbers on screen were counted over, so a ranking row opens
+  // the same calls in the log rather than all of them.
+  const [span, setSpan] = useState<{ start: string; end: string } | null>(null)
   // Requests race: switching from a slow 90-day query to a fast one must not
   // let the stale answer land last and overwrite the fresh one.
   const requestSeq = useRef(0)
@@ -57,13 +60,16 @@ export default function Dashboard() {
     const seq = ++requestSeq.current
     setLoading(true)
     try {
+      const now = dayjs()
+      const start = days === 0 ? now.startOf('day') : now.subtract(days, 'day')
       const params =
         days === 0
-          ? { start: dayjs().startOf('day').toISOString(), interval: 'hour' }
+          ? { start: start.toISOString(), interval: 'hour' }
           : { days, interval: days <= 2 ? 'hour' : 'day' }
       const result = isAdmin ? await api.admin.stats(params) : await api.stats(params)
       if (seq !== requestSeq.current) return
       setStats(result)
+      setSpan({ start: start.toISOString(), end: now.toISOString() })
       setError(null)
     } catch (err) {
       if (seq !== requestSeq.current) return
@@ -92,15 +98,20 @@ export default function Dashboard() {
   const summary = stats?.summary
   const requests = summary?.requests ?? 0
   const errors = summary?.errors ?? 0
+  const cancelled = summary?.cancelled ?? 0
   const cost = summary?.cost ?? 0
   const tokens = summary?.total_tokens ?? 0
-  const successRate = requests ? (requests - errors) / requests : 1
+  // A call its caller or an operator ended neither failed nor succeeded, so
+  // the rate is over the rest: 10 calls, 2 cancelled, 2 failed → 75%.
+  const settled = requests - cancelled
+  const successRate = settled ? (settled - errors) / settled : 1
   const hasData = series.some((point) => point.requests > 0 || point.costUsd > 0)
 
   const firstLoad = loading && !stats
   // A deployment with a single account has no user count to show, and the
-  // row it leaves behind would be a hole in the grid.
-  const singleUser = isAdmin && stats !== null && (stats.user_count ?? 0) <= 1
+  // row it leaves behind would be a hole in the grid. Exactly one: a count
+  // that failed to arrive is not a single-user deployment.
+  const singleUser = isAdmin && stats?.user_count === 1
   // Five cards do not divide antd's 24-column grid, and its grid only ships
   // integer spans, so the fifth card takes its width from the stylesheet.
   const statSpan = isAdmin
@@ -109,6 +120,16 @@ export default function Dashboard() {
       : { xs: 12, sm: 12, md: 8, xl: 4 }
     : { xs: 12, md: 12, xl: 6 }
   const quotaEmpty = (user?.quota ?? 0) <= 0
+
+  // /admin/logs?q=gpt-4o&start=…&end=…
+  const logsLink = (path: string, filter: Record<string, string>) => {
+    const query = new URLSearchParams(filter)
+    if (span) {
+      query.set('start', span.start)
+      query.set('end', span.end)
+    }
+    return `${path}?${query}`
+  }
 
   return (
     <>
@@ -180,8 +201,12 @@ export default function Dashboard() {
                   <Typography.Text type="danger" style={{ fontSize: 12 }}>
                     失败 {formatNumber(errors)} 次 · 成功率 {formatPercent(successRate)}
                   </Typography.Text>
+                ) : !requests ? (
+                  '暂无调用'
+                ) : cancelled ? (
+                  `没有失败 · 中断 ${formatNumber(cancelled)} 次`
                 ) : (
-                  requests ? '全部成功' : '暂无调用'
+                  '全部成功'
                 )
               }
               icon={<ThunderboltOutlined />}
@@ -283,7 +308,9 @@ export default function Dashboard() {
         <UsageHeatmap admin={isAdmin} version={refreshes} />
 
         <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
-          <Col xs={24} lg={isAdmin && !singleUser ? 8 : 24}>
+          {/* Three cards a row for an administrator, two when the user
+              ranking is gone; a regular user has the model ranking alone. */}
+          <Col xs={24} lg={isAdmin ? (singleUser ? 12 : 8) : 24}>
             <RankCard
               title="模型排行"
               loading={firstLoad}
@@ -293,8 +320,8 @@ export default function Dashboard() {
               // for — so the name goes in as a keyword.
               linkFor={(row) =>
                 isAdmin
-                  ? `/admin/logs?q=${encodeURIComponent(row.name)}`
-                  : `/logs?model=${encodeURIComponent(row.name)}`
+                  ? logsLink('/admin/logs', { q: row.name })
+                  : logsLink('/logs', { model: row.name })
               }
             />
           </Col>
@@ -306,7 +333,7 @@ export default function Dashboard() {
                 rows={stats?.by_channel ?? []}
                 // A channel name is not a key, and the ranking carries no id
                 // yet; the keyword is the closest thing to a link.
-                linkFor={(row) => `/admin/logs?q=${encodeURIComponent(row.name)}`}
+                linkFor={(row) => logsLink('/admin/logs', { q: row.name })}
               />
             </Col>
           )}
@@ -316,7 +343,7 @@ export default function Dashboard() {
                 title="用户排行"
                 loading={firstLoad}
                 rows={stats?.by_user ?? []}
-                linkFor={(row) => `/admin/logs?username=${encodeURIComponent(row.name)}`}
+                linkFor={(row) => logsLink('/admin/logs', { username: row.name })}
               />
             </Col>
           )}

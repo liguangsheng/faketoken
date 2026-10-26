@@ -26,6 +26,23 @@ import StatusTag from "./StatusTag";
 
 const EMPTY_ROWS: RequestLog[] = [];
 
+// Widgets that move their own selection with ← and →.
+const ARROW_OWNERS = [
+  "tab",
+  "tablist",
+  "slider",
+  "radiogroup",
+  "listbox",
+  "menu",
+  "menubar",
+  "grid",
+  "tree",
+  "spinbutton",
+  "combobox",
+]
+  .map((role) => `[role="${role}"]`)
+  .join(", ");
+
 /** Opening a row is the table's business; what happens afterwards is ours. */
 export interface LogDetailHandle {
   open(row: RequestLog): void;
@@ -102,17 +119,28 @@ const LogDetailDrawer = forwardRef<LogDetailHandle, Props>(function LogDetailDra
       ? navigable[position + 1]
       : undefined;
 
-  // ← and → move through the page while the drawer is open. Text fields keep
-  // their arrows: there, the key belongs to the cursor.
+  // ← and → move through the page while the drawer is open. Arrows that belong
+  // to something else are left alone: a text cursor, a tab strip or a slider
+  // moving its own selection, and modified arrows — Alt+← is the browser's back.
   useEffect(() => {
     if (!detail) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      const target = event.target as HTMLElement | null;
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      )
+        return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
       if (
         target &&
         (target.isContentEditable ||
-          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) ||
+          target.closest(ARROW_OWNERS))
       )
         return;
       const target_row = event.key === "ArrowLeft" ? prev : next;
@@ -144,6 +172,7 @@ const LogDetailDrawer = forwardRef<LogDetailHandle, Props>(function LogDetailDra
               status={detail.status_code}
               upstream={detail.upstream_status}
               error={detail.error}
+              cancelled={detail.cancelled}
               style={{ marginInlineEnd: 0 }}
             />
             {/* Walking the page without closing the drawer: the point of
@@ -179,10 +208,11 @@ const LogDetailDrawer = forwardRef<LogDetailHandle, Props>(function LogDetailDra
           the bottom of the metadata it read as a footnote. */}
       {detail?.error && (
         <Alert
-          type="error"
+          // Hung up or stopped by an operator: worth saying, but not a failure.
+          type={detail.cancelled ? "info" : "error"}
           showIcon
           style={{ marginBottom: 16 }}
-          message="这次调用失败了"
+          message={detail.cancelled ? "调用已中断" : "这次调用失败了"}
           description={
             <Typography.Paragraph
               copyable={{ text: detail.error, tooltips: ["复制错误", "已复制"] }}

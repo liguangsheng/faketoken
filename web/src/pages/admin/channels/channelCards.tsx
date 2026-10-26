@@ -18,6 +18,7 @@ import {
 import type { Channel } from '../../../api/client'
 import type { ChannelHealth, ChannelHealthMap } from '../../../api/types'
 import { STATUS } from '../../../utils/format'
+import { keepaliveTag } from './shared'
 import type { ChannelActions } from './useChannelActions'
 
 /**
@@ -80,28 +81,33 @@ export function channelMenuButton(actions: ChannelActions, row: Channel) {
 }
 
 /**
- * Whether a channel is failing now.
+ * The window in which a channel is failing, if any.
  *
  * The lifetime counters on the row cannot answer this: a channel that failed
  * last month keeps a red rate forever, and one that started failing this
  * morning is buried under a thousand good calls. Two recent windows can:
  * an hour for the sudden outage, a day for the slow decay.
  */
-export const failingNow = (health?: ChannelHealth) => {
-  if (!health) return false
+const failingWindow = (health?: ChannelHealth): keyof ChannelHealth | undefined => {
+  if (!health) return undefined
   const { hour, day } = health
-  return (
-    (hour.requests >= 5 && hour.failures / hour.requests >= 0.5) ||
-    (day.requests >= 10 && day.failures / day.requests >= 0.2)
-  )
+  if (hour.attempts >= 5 && hour.failures / hour.attempts >= 0.5) return 'hour'
+  if (day.attempts >= 10 && day.failures / day.attempts >= 0.2) return 'day'
+  return undefined
 }
 
+export const failingNow = (health?: ChannelHealth) => failingWindow(health) !== undefined
+
+const WINDOW_LABEL = { hour: '近 1 小时', day: '近 24 小时' } as const
+
+// Quotes the window that raised the warning: "近 1 小时 0/2 失败" beside a red
+// tag set off by the day reads as a bug.
 const healthText = (health?: ChannelHealth) => {
   if (!health) return '近期没有调用'
-  const { hour, day } = health
-  if (hour.requests > 0) return `近 1 小时 ${hour.failures}/${hour.requests} 失败`
-  if (day.requests > 0) return `近 24 小时 ${day.failures}/${day.requests} 失败`
-  return '近期没有调用'
+  const span = failingWindow(health) ?? (health.hour.attempts > 0 ? 'hour' : 'day')
+  const { attempts, failures } = health[span]
+  if (attempts === 0) return '近期没有调用'
+  return `${WINDOW_LABEL[span]} ${failures}/${attempts} 失败`
 }
 
 /**
@@ -125,6 +131,7 @@ export function channelCardColumns({
       key: 'card',
       render: (_: unknown, row: Channel) => {
         const recent = health[String(row.id)]
+        const keepalive = keepaliveTag(row)
         return (
           <div className="channel-card">
             <div className="channel-card__top">
@@ -160,6 +167,12 @@ export function channelCardColumns({
                 {healthText(recent)}
               </span>
               {failingNow(recent) && <Tag color="error">近期失败率高</Tag>}
+              {/* Same reason as the table: the switch above moves on its own. */}
+              {keepalive && (
+                <Tooltip title={keepalive.hint}>
+                  <Tag color={keepalive.color}>{keepalive.text}</Tag>
+                </Tooltip>
+              )}
             </div>
           </div>
         )

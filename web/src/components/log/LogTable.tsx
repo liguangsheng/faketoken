@@ -18,11 +18,9 @@ import { createLiveRateStore } from "../../hooks/useLiveRate";
 import { useLogStream } from "../../hooks/useLogStream";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useTableScrollX } from "../../hooks/useTableScrollX";
-import { useSettings } from "../../settings/SettingsContext";
 import EmptyState from "../EmptyState";
 import LogDetailDrawer, { type LogDetailHandle } from "./LogDetailDrawer";
 import LogFilterBar from "./LogFilterBar";
-import { useUrlParams } from "./useUrlParams";
 import LiveRateMeter from "./LiveRateMeter";
 import LiveToggle from "./LiveToggle";
 import { useLiveRowAnimation } from "./useLiveRowAnimation";
@@ -78,18 +76,6 @@ export default function LogTable({
   const hoveringRef = useRef(false);
   const hoverBuffer = useRef<RequestLog[]>([]);
   const [hoverPending, setHoverPending] = useState(0);
-  // The page and its size are part of the address too (附录 A), so a reload
-  // lands on the same slice of the list.
-  const { params: searchParams, write: writeUrl } = useUrlParams();
-  const [page, setPage] = useState(() => {
-    const value = Number(searchParams.get("page"));
-    return Number.isFinite(value) && value > 0 ? value : 1;
-  });
-  const { defaultPageSize } = useSettings();
-  const [pageSize, setPageSize] = useState(() => {
-    const value = Number(searchParams.get("size"));
-    return Number.isFinite(value) && value > 0 ? value : defaultPageSize;
-  });
   const [live, setLive] = useState(true);
   const filters = useLogFilters(Boolean(admin));
   const {
@@ -101,6 +87,11 @@ export default function LogTable({
     onlyError,
     range,
     dirty,
+    // The page and its size live in the address with the filters (附录 A),
+    // so a reload lands on the same slice of the list.
+    page,
+    pageSize,
+    setPage,
     // The filter row reads and writes the whole hook result.
   } = filters;
   const detailRef = useRef<LogDetailHandle>(null);
@@ -119,52 +110,6 @@ export default function LogTable({
       ? "已选时间范围"
       : "非首页"
     : "实时推送已关闭";
-  // Seed whenever the first page finishes loading; the SSE additions pile on
-  // top. Not seeded on other pages — the bar is hidden there anyway.
-  useEffect(() => {
-    if (rateActive) rateStore.seed(rows);
-  }, [rateActive, rateStore, rows]);
-
-  // Any filter change invalidates the current page number. Compared as a
-  // signature rather than by effect count, so the first run — the one that
-  // arrives with the address already carrying page=3 — does not reset it.
-  const filterSignature = JSON.stringify([
-    keyword,
-    model,
-    tokenName,
-    username,
-    channelID,
-    onlyError,
-    range && [range[0]?.toISOString() ?? null, range[1]?.toISOString() ?? null],
-  ]);
-  const lastSignature = useRef(filterSignature);
-  useEffect(() => {
-    if (lastSignature.current === filterSignature) return;
-    lastSignature.current = filterSignature;
-    setPage(1);
-  }, [filterSignature]);
-
-  // Page and size go into the address as well; defaults are left out.
-  const writtenPage = useRef<string | null>(null);
-  useEffect(() => {
-    writeUrl((next) => {
-      if (page > 1) next.set("page", String(page));
-      else next.delete("page");
-      if (pageSize !== defaultPageSize) next.set("size", String(pageSize));
-      else next.delete("size");
-    });
-    writtenPage.current = searchParams.toString();
-  }, [defaultPageSize, page, pageSize, searchParams, writeUrl]);
-
-  // Somebody else changed the address: follow it.
-  useEffect(() => {
-    const current = searchParams.toString();
-    if (writtenPage.current === null || current === writtenPage.current) return;
-    const nextPage = Number(searchParams.get("page"));
-    const nextSize = Number(searchParams.get("size"));
-    if (Number.isFinite(nextPage) && nextPage > 0) setPage(nextPage);
-    if (Number.isFinite(nextSize) && nextSize > 0) setPageSize(nextSize);
-  }, [searchParams]);
 
   // silent: refresh the data without the table-wide loading veil — used by
   // stream reconnects, where a periodic grey flash reads as something broken.
@@ -196,9 +141,12 @@ export default function LogTable({
         setRows(data);
         setTotal(result.total);
         setLoadError(null);
-        // A purge (or anything else shrinking the data) can strand a deep page
-        // number pointing past the end; walk back to the last real page.
-        if (data.length === 0 && result.total > 0 && page > 1) {
+        // The first page is what the rate meter starts from: calls of the last
+        // minute the feed did not deliver, because it was down or not yet open.
+        if (page === 1) rateStore.merge(data);
+        // A purge, a narrower filter or an old link can strand a page number
+        // past the end; walk back to the last real page, or the first.
+        if (data.length === 0 && page > 1) {
           setPage(Math.max(1, Math.ceil(result.total / pageSize)));
         }
       } catch (error) {
@@ -223,6 +171,8 @@ export default function LogTable({
       page,
       pageSize,
       range,
+      rateStore,
+      setPage,
       tokenName,
       username,
     ],
@@ -401,6 +351,12 @@ export default function LogTable({
     resetInflight();
   }, [resetInflight, streamURL, streamEnabled]);
 
+  // Same for the rate samples: they were counted under the old filters. The
+  // next first-page load and the new feed fill them again.
+  useEffect(() => {
+    rateStore.clear();
+  }, [rateStore, streamURL]);
+
   // Drawn only where showLive says so; the set itself is tracked regardless.
   const liveRows = showLive ? inflight.liveRows : EMPTY_ROWS;
   const hasLive = liveRows.length > 0;
@@ -571,10 +527,7 @@ export default function LogTable({
             total,
             showSizeChanger: true,
             showTotal: (count) => `共 ${formatNumber(count)} 条`,
-            onChange: (nextPage, nextSize) => {
-              setPage(nextPage);
-              setPageSize(nextSize);
-            },
+            onChange: (nextPage, nextSize) => setPage(nextPage, nextSize),
           }}
           columns={columns}
         />

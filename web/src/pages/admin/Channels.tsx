@@ -118,11 +118,17 @@ export default function Channels() {
     void loadHealth()
   }, [loadHealth])
 
+  // Every reload of the listing brings the health report along: the warning
+  // is about now, and a page left open goes stale under it.
+  const reload = useCallback(async () => {
+    await Promise.all([load(), loadHealth()])
+  }, [load, loadHealth])
+
   // Anything that can move a channel across the fold has to refresh both sides,
   // or one of the two lists keeps showing a row that is no longer its own.
   const reloadAll = useCallback(async () => {
-    await Promise.all([load(), loadHealth(), archivedRef.current?.reload()])
-  }, [load, loadHealth])
+    await Promise.all([reload(), archivedRef.current?.reload()])
+  }, [reload])
 
   useEffect(() => {
     api.admin
@@ -151,7 +157,7 @@ export default function Channels() {
   const actions = useChannelActions({
     message,
     modal,
-    load,
+    load: reload,
     reloadAll,
     setRows,
     setSelectedIds,
@@ -199,7 +205,7 @@ export default function Channels() {
         description="优先级高的渠道先被选中，同优先级内按权重随机；失败会自动切换到下一个渠道。"
         extra={
           <>
-            <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
+            <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void reload()}>
               刷新
             </Button>
             <Tooltip title="按当前渠道配置重建 (分组 × 模型) 路由表">
@@ -315,7 +321,7 @@ export default function Channels() {
         }}
         locale={{
           emptyText: error ? (
-            <LoadError error={error} onRetry={() => void load()} />
+            <LoadError error={error} onRetry={() => void reload()} />
           ) : (
             <EmptyState
               // Any active filter counts — a status/group filter with zero hits
@@ -342,6 +348,9 @@ export default function Channels() {
           narrow
             ? undefined
             : {
+                // Placed after the pinned 操作 column, so it is pinned too: a
+                // loose column behind a fixed one takes the fixed one's shadow away.
+                fixed: 'right',
                 expandedRowRender: (row) => (
                   <ChannelExpandedRow row={row} onClearUserAgent={actions.clearUserAgent} />
                 ),
@@ -371,7 +380,7 @@ export default function Channels() {
         }
       />
 
-      <TestChannelModal channel={testTarget} onClose={() => setTestTarget(null)} onTested={load} />
+      <TestChannelModal channel={testTarget} onClose={() => setTestTarget(null)} onTested={reload} />
 
       <QuickImportModal
         open={importOpen}

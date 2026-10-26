@@ -48,6 +48,9 @@ export interface Palette {
   tooltipBg: string
   formLabel: string
   labelBg: string
+  /** Segmented control: the selected item, and the track it sits in. */
+  segmentedSelectedBg: string
+  segmentedTrackBg: string
 }
 
 export const light: Palette = {
@@ -89,6 +92,8 @@ export const light: Palette = {
   tooltipBg: 'rgba(26, 29, 38, 0.94)',
   formLabel: '#4b5262',
   labelBg: '#fafbfc',
+  segmentedSelectedBg: '#ffffff',
+  segmentedTrackBg: '#f0f1f4',
 }
 
 export const dark: Palette = {
@@ -129,6 +134,8 @@ export const dark: Palette = {
   tooltipBg: '#262c39',
   formLabel: '#b6bcc9',
   labelBg: '#171b24',
+  segmentedSelectedBg: '#262c39',
+  segmentedTrackBg: '#171b24',
 }
 
 /** The names `index.css` refers to, mapped onto one palette. */

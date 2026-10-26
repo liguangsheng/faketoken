@@ -9,6 +9,11 @@ import { useLocation, useNavigate } from "react-router-dom";
  * nothing still pushes a history entry. This writes the address directly
  * instead: the same path, a new search, and no navigation at all when the
  * result is what the address already says.
+ *
+ * A write starts from the address bar, not from the rendered location: two
+ * writes in one tick would otherwise both start from the same old search, and
+ * the second would undo the first. It also keeps `write` stable, so an effect
+ * that writes does not run again just because the address moved.
  */
 export function useUrlParams() {
   const location = useLocation();
@@ -21,19 +26,20 @@ export function useUrlParams() {
 
   const write = useCallback(
     (mutate: (next: URLSearchParams) => void) => {
-      const next = new URLSearchParams(location.search);
+      const next = new URLSearchParams(window.location.search);
+      const before = next.toString();
       mutate(next);
       const search = next.toString();
-      if (search === location.search.replace(/^\?/, "")) return;
+      if (search === before) return;
       navigate(
         {
-          pathname: location.pathname,
+          pathname: window.location.pathname,
           search: search ? `?${search}` : "",
         },
         { replace: true },
       );
     },
-    [location.pathname, location.search, navigate],
+    [navigate],
   );
 
   return { params, write };

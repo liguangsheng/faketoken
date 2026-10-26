@@ -16,39 +16,51 @@ interface Sample {
  * tick would re-render the whole log table.
  */
 export interface LiveRateStore {
-  seed(entries: RequestLog[]): void
+  /** Folds in rows a list load returned; rows already counted are skipped. */
+  merge(entries: RequestLog[]): void
   add(entry: RequestLog): void
+  /** Forgets every sample: the filters changed, or the meter was parked. */
+  clear(): void
   snapshot(): { rpm: number; tpm: number }
 }
 
 export function createLiveRateStore(): LiveRateStore {
-  const samples: Sample[] = []
+  // By log id: the same call arrives over the feed and again in the next page
+  // load, and counts once.
+  const samples = new Map<number, Sample>()
 
+  // Not a queue: a page load comes newest first, so arrival order says nothing
+  // about age.
   const prune = () => {
     const cutoff = Date.now() - WINDOW_MS
-    while (samples.length && samples[0].ts < cutoff) {
-      samples.shift()
+    for (const [id, sample] of samples) {
+      if (sample.ts < cutoff) samples.delete(id)
+    }
+  }
+
+  const add = (entry: RequestLog) => {
+    if (!samples.has(entry.id)) {
+      samples.set(entry.id, { ts: new Date(entry.created_at).getTime(), tokens: entry.total_tokens })
     }
   }
 
   return {
-    seed(entries) {
-      const cutoff = Date.now() - WINDOW_MS
-      samples.length = 0
-      for (const entry of entries) {
-        const ts = new Date(entry.created_at).getTime()
-        if (ts >= cutoff) samples.push({ ts, tokens: entry.total_tokens })
-      }
+    merge(entries) {
+      for (const entry of entries) add(entry)
+      prune()
     },
     add(entry) {
-      samples.push({ ts: new Date(entry.created_at).getTime(), tokens: entry.total_tokens })
+      add(entry)
       prune()
+    },
+    clear() {
+      samples.clear()
     },
     snapshot() {
       prune()
       let tpm = 0
-      for (const sample of samples) tpm += sample.tokens
-      return { rpm: samples.length, tpm }
+      for (const sample of samples.values()) tpm += sample.tokens
+      return { rpm: samples.size, tpm }
     },
   }
 }
@@ -63,7 +75,7 @@ export function useLiveRate(store: LiveRateStore, enabled: boolean) {
 
   useEffect(() => {
     if (!enabled) {
-      store.seed([])
+      store.clear()
       setTick((t) => t + 1)
       return
     }

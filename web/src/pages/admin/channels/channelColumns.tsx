@@ -68,9 +68,11 @@ interface ChannelColumnsOptions {
   health: ChannelHealthMap
 }
 
+// Counted per attempt: a request that fails here and succeeds on a backup
+// still counts against this channel.
 const healthHint = (health?: ChannelHealth) =>
   health
-    ? `近 1 小时 ${health.hour.failures}/${health.hour.requests} 失败，近 24 小时 ${health.day.failures}/${health.day.requests} 失败`
+    ? `近 1 小时 ${health.hour.failures}/${health.hour.attempts} 次尝试失败，近 24 小时 ${health.day.failures}/${health.day.attempts} 次尝试失败`
     : '近期没有调用记录'
 
 export function channelColumns({

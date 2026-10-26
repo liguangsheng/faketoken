@@ -1,8 +1,15 @@
 /* ===========================================================================
-   Design tokens live in src/theme/palette.ts. A vite plugin injects them as
+   Colour tokens live in src/theme/palette.ts. A vite plugin injects them as
    `:root` / `[data-theme='dark']` custom properties ahead of this file, so the
-   names below are only ever read here, never defined.
+   colour names below are only ever read here. Layout constants, which do not
+   change with the theme, are the one thing defined in this file.
    =========================================================================== */
+
+:root {
+  /* The header row and the brand row beside it; the log table's sticky
+     header sits right under it. */
+  --app-header-h: 56px;
+}
 
 /* ===========================================================================
    Base
@@ -731,13 +738,15 @@ a.rank-row:hover .rank-row__name {
   flex: none;
 }
 
+/* Pulled down over the card body's bottom padding, which is the theme's Card
+   paddingLG (20px, ThemeProvider): any more and the row hangs past the card. */
 .playground-actions {
   background: var(--app-surface);
   border-block-start: 1px solid var(--app-border);
   flex: none;
-  margin-block-end: -24px;
+  margin-block-end: -20px;
   margin-block-start: 4px;
-  padding-block: 10px 24px;
+  padding-block: 10px 20px;
 }
 
 .playground-output {
@@ -1384,6 +1393,11 @@ a.rank-row:hover .rank-row__name {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+/* The caller hung up or an operator stopped it: a reason, not a failure. */
+.log-card__error--muted {
+  color: var(--app-text-muted);
 }
 
 /* 折叠分区嵌在抽屉表单里时，与相邻的 Divider 分区左缘对齐。 */

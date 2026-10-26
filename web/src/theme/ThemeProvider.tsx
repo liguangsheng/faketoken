@@ -128,8 +128,8 @@ function buildTheme(resolved: ResolvedMode): ThemeConfig {
         borderRadiusSM: 6,
       },
       Segmented: {
-        itemSelectedBg: palette.tooltipBg,
-        trackBg: palette.labelBg,
+        itemSelectedBg: palette.segmentedSelectedBg,
+        trackBg: palette.segmentedTrackBg,
       },
       Modal: {
         titleFontSize: 16,

@@ -10,27 +10,31 @@ const MICRO_USD = 1_000_000
 /** Balances and costs are stored as integer micro-USD. */
 export const toUSD = (micro: number) => micro / MICRO_USD
 
-export const formatUSD = (micro: number, digits = 4) => {
+/**
+ * A micro-USD amount for reading. Without `digits` it follows the readable
+ * rule: a dollar or more gets two decimals and a thousands separator — the
+ * third decimal of a cost is noise, and the separator is what makes $1419.2758
+ * readable — while less than a dollar keeps four, so a $0.098 call does not
+ * read as $0.10. A caller that passes `digits` gets exactly that many: the
+ * log detail shows a charge to the micro-dollar so it can be reconciled.
+ */
+export const formatUSD = (micro: number, digits?: number) => {
   const value = toUSD(micro)
   const sign = value < 0 ? '-' : ''
   const abs = Math.abs(value)
-  if (abs !== 0 && abs < 0.0001) return `${sign}$${abs.toExponential(2)}`
-  // A dollar or more: two decimals and a thousands separator. The third
-  // decimal of a cost is noise, and the separator is what makes $1419.2758
-  // readable at a glance.
-  if (abs >= 1) {
-    return `${sign}$${abs.toLocaleString('en-US', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })}`
+  if (abs !== 0 && abs < 0.0001 && (digits === undefined || digits < 4)) {
+    return `${sign}$${abs.toExponential(2)}`
   }
-  // Below a dollar the cents are not the point: four decimals keep a
-  // $0.098 call from reading as $0.10.
-  return `${sign}$${abs.toFixed(digits)}`
+  const places = digits ?? (abs >= 1 ? 2 : 4)
+  return `${sign}$${abs.toLocaleString('en-US', {
+    minimumFractionDigits: places,
+    maximumFractionDigits: places,
+  })}`
 }
 
 /** Same precision rules as formatUSD, for values already in dollars. */
-export const formatUSDValue = (value: number, digits = 4) => formatUSD(value * MICRO_USD, digits)
+export const formatUSDValue = (value: number, digits?: number) =>
+  formatUSD(value * MICRO_USD, digits)
 
 /**
  * A per-1M-token unit price, as entered by the operator (a dollar amount, not

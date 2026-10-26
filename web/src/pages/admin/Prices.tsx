@@ -40,6 +40,7 @@ import LoadError from '../../components/LoadError'
 import PageHeader from '../../components/PageHeader'
 import usePagedList from '../../hooks/usePagedList'
 import { useTableScrollX, type TableGeometry } from '../../hooks/useTableScrollX'
+import { useSettings } from '../../settings/SettingsContext'
 import { formatPrice, formatRelative, formatTime } from '../../utils/format'
 
 const POLICY_LABEL: Record<UnpricedPolicy, string> = {
@@ -165,6 +166,8 @@ function PricePlanPreview({ plan }: { plan: PriceImportPlan }) {
 export default function Prices() {
   const { message, modal } = App.useApp()
   const scrollX = useTableScrollX(COLUMN_GEOMETRY)
+  // Named apart from the billing `settings` below, which is a different thing.
+  const { defaultPageSize } = useSettings()
   const [catalog, setCatalog] = useState<PriceCatalog | null>(null)
   const [settings, setSettings] = useState<BillingSettings | null>(null)
   const [unpriced, setUnpriced] = useState<UnpricedReport | null>(null)
@@ -175,20 +178,21 @@ export default function Prices() {
   const [policyOpen, setPolicyOpen] = useState(false)
   const [savingPolicy, setSavingPolicy] = useState(false)
   const [showAllMissing, setShowAllMissing] = useState(false)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(defaultPageSize)
   const [editing, setEditing] = useState<ModelPrice | null>(null)
   const [form] = Form.useForm<ModelPrice>()
   const [policyForm] = Form.useForm<BillingSettings>()
   const policy = Form.useWatch('unpriced_policy', policyForm)
 
-  // The whole price list arrives at once and the table pages it locally; the
-  // hook still owns loading, the error and the pager. Its page/size arguments
-  // go unused by the request.
+  // The whole price list arrives at once and is filtered and paged here; the
+  // hook only owns loading and the error. Its pager would count the unfiltered
+  // list and refetch all three endpoints on every page turn.
   const {
     rows,
     loading,
     error,
     reload: load,
-    pagination,
   } = usePagedList<ModelPrice>({
     fetcher: async () => {
       const [prices, billing, missing] = await Promise.all([
@@ -202,10 +206,6 @@ export default function Prices() {
       return { data: prices.data ?? [], total: prices.data?.length ?? 0 }
     },
     unit: '模型',
-    showSizeChanger: true,
-    // Hiding the bar on a single page would also hide the size changer,
-    // leaving no way back once a page size larger than the table is picked.
-    hideOnSinglePage: false,
     onError: (text) => message.error(text),
   })
 
@@ -340,7 +340,11 @@ export default function Prices() {
               aria-label="搜索模型"
               style={{ width: 180, maxWidth: '100%' }}
               value={keyword}
-              onChange={(event) => setKeyword(event.target.value)}
+              onChange={(event) => {
+                setKeyword(event.target.value)
+                // 前端过滤下翻页残留会让搜索结果看起来是空的
+                setPage(1)
+              }}
             />
             <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
               刷新
@@ -495,7 +499,14 @@ export default function Prices() {
               }
               action={
                 keyword ? (
-                  <Button onClick={() => setKeyword('')}>清除搜索</Button>
+                  <Button
+                    onClick={() => {
+                      setKeyword('')
+                      setPage(1)
+                    }}
+                  >
+                    清除搜索
+                  </Button>
                 ) : (
                   <Button
                     type="primary"
@@ -510,7 +521,21 @@ export default function Prices() {
             />
           ),
         }}
-        pagination={pagination}
+        // No total: antd counts the filtered rows, and pulls `current` back
+        // when a deletion empties the last page.
+        pagination={{
+          current: page,
+          pageSize,
+          showSizeChanger: true,
+          // Hiding the bar on a single page would also hide the size changer,
+          // leaving no way back once a page size larger than the table is picked.
+          hideOnSinglePage: false,
+          showTotal: (count) => `共 ${count} 个模型`,
+          onChange: (nextPage, nextSize) => {
+            setPage(nextPage)
+            setPageSize(nextSize)
+          },
+        }}
         columns={[
           {
             ...COLUMN_GEOMETRY.model,

@@ -59,14 +59,14 @@ type Dict = Record<string, unknown>
 const isDict = (value: unknown): value is Dict =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
-/** Walks a path of keys, then parses what it finds. */
-const dig = <T,>(value: unknown, parse: (raw: unknown) => T, ...path: string[]): T => {
+/** Walks a path of keys, giving up quietly on anything unexpected. */
+const dig = (value: unknown, ...path: string[]): unknown => {
   let current = value
   for (const key of path) {
-    if (!isDict(current)) return parse(undefined)
+    if (!isDict(current)) return undefined
     current = current[key]
   }
-  return parse(current)
+  return current
 }
 
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
@@ -154,12 +154,11 @@ const PROTOCOLS: Record<Protocol, ProtocolSpec> = {
       stream,
       ...(stream ? { stream_options: { include_usage: true } } : {}),
     }),
-    text: (payload) =>
-      dig(dig(payload, asArray, 'choices')[0], asText, 'message', 'content'),
-    usage: (payload) => dig(payload, openAIUsage, 'usage'),
+    text: (payload) => asText(dig(asArray(dig(payload, 'choices'))[0], 'message', 'content')),
+    usage: (payload) => openAIUsage(dig(payload, 'usage')),
     event: (chunk) => ({
-      delta: dig(dig(chunk, asArray, 'choices')[0], asText, 'delta', 'content'),
-      usage: dig(chunk, openAIUsage, 'usage'),
+      delta: asText(dig(asArray(dig(chunk, 'choices'))[0], 'delta', 'content')),
+      usage: openAIUsage(dig(chunk, 'usage')),
     }),
   },
   messages: {
@@ -176,18 +175,19 @@ const PROTOCOLS: Record<Protocol, ProtocolSpec> = {
       stream,
     }),
     text: (payload) =>
-      dig(payload, asArray, 'content')
-        .map((block) => dig(block, asText, 'text'))
+      asArray(dig(payload, 'content'))
+        .map((block) => asText(dig(block, 'text')))
         .join(''),
-    usage: (payload) => dig(payload, nativeUsage, 'usage'),
+    usage: (payload) => nativeUsage(dig(payload, 'usage')),
     event: (chunk) => ({
       // Tool arguments and thinking arrive as deltas of their own; only the
       // text ones belong in the answer pane.
       delta:
-        dig(chunk, asText, 'type') === 'content_block_delta'
-          ? dig(chunk, asText, 'delta', 'text')
+        asText(dig(chunk, 'type')) === 'content_block_delta'
+          ? asText(dig(chunk, 'delta', 'text'))
           : '',
-      usage: dig(chunk, nativeUsage, 'usage') ?? dig(chunk, nativeUsage, 'message', 'usage'),
+      usage:
+        nativeUsage(dig(chunk, 'usage')) ?? nativeUsage(dig(chunk, 'message', 'usage')),
     }),
   },
   responses: {
@@ -201,17 +201,18 @@ const PROTOCOLS: Record<Protocol, ProtocolSpec> = {
     }),
     // Reasoning items carry no `content`, so flattening skips them on its own.
     text: (payload) =>
-      dig(payload, asArray, 'output')
-        .flatMap((item) => dig(item, asArray, 'content'))
-        .map((part) => dig(part, asText, 'text'))
+      asArray(dig(payload, 'output'))
+        .flatMap((item) => asArray(dig(item, 'content')))
+        .map((part) => asText(dig(part, 'text')))
         .join(''),
-    usage: (payload) => dig(payload, nativeUsage, 'usage'),
+    usage: (payload) => nativeUsage(dig(payload, 'usage')),
     event: (chunk) => ({
       delta:
-        dig(chunk, asText, 'type') === 'response.output_text.delta'
-          ? dig(chunk, asText, 'delta')
+        asText(dig(chunk, 'type')) === 'response.output_text.delta'
+          ? asText(dig(chunk, 'delta'))
           : '',
-      usage: dig(chunk, nativeUsage, 'usage') ?? dig(chunk, nativeUsage, 'response', 'usage'),
+      usage:
+        nativeUsage(dig(chunk, 'usage')) ?? nativeUsage(dig(chunk, 'response', 'usage')),
     }),
   },
 }

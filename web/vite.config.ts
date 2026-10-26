@@ -5,9 +5,10 @@ import { cssVars, dark, light } from './src/theme/palette'
 
 /**
  * The palette is the only place colours are written down. index.html gets them
- * as a style block ahead of everything else: a `<style>` element passes a
- * script-src CSP without a hash, and being inline means the first paint is
- * already the right colour.
+ * as a style block ahead of everything but the charset: a `<style>` element
+ * passes a script-src CSP without a hash, and being inline means the first
+ * paint is already the right colour. The charset goes first because it has to
+ * sit in the first 1024 bytes, and the block alone is longer than that.
  */
 function paletteStyles(): Plugin {
   const block = (selector: string, vars: Record<string, string>, scheme: string) =>
@@ -20,11 +21,14 @@ function paletteStyles(): Plugin {
     block("[data-theme='dark']", cssVars(dark), 'dark'),
   ].join('')
 
+  const charset = /<meta charset[^>]*>/i
+
   return {
     name: 'faketoken-palette',
-    transformIndexHtml: () => [
-      { tag: 'style', children: css, injectTo: 'head-prepend' as const },
-    ],
+    transformIndexHtml: (html) =>
+      charset.test(html)
+        ? html.replace(charset, (meta) => `${meta}<style>${css}</style>`)
+        : [{ tag: 'style', children: css, injectTo: 'head-prepend' as const }],
   }
 }
 

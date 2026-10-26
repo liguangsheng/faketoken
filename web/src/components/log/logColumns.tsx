@@ -276,6 +276,7 @@ export function logColumns({
             status={row.status_code}
             upstream={row.upstream_status}
             error={row.error}
+            cancelled={row.cancelled}
           />
           )}
           {/* Streaming used to be its own column; it is one bit, so it
@@ -452,7 +453,14 @@ export function logColumns({
           </Popconfirm>
         ) : value ? (
           <Tooltip title={value}>
-            <span style={{ color: "var(--app-danger)" }}>{value}</span>
+            {/* An interrupted call says why it ended; nothing failed. */}
+            <span
+              style={{
+                color: row.cancelled ? "var(--app-text-muted)" : "var(--app-danger)",
+              }}
+            >
+              {value}
+            </span>
           </Tooltip>
         ) : (
           <span className="text-muted">-</span>
@@ -504,6 +512,7 @@ export function phoneColumns({
                   status={row.status_code}
                   upstream={row.upstream_status}
                   error={row.error}
+                  cancelled={row.cancelled}
                   style={{ marginInlineEnd: 0 }}
                 />
               )}
@@ -571,7 +580,11 @@ export function phoneColumns({
             </div>
 
             {row.error && (
-              <div className="log-card__error">{row.error}</div>
+              <div
+                className={`log-card__error${row.cancelled ? " log-card__error--muted" : ""}`}
+              >
+                {row.error}
+              </div>
             )}
           </div>
         );
