@@ -1810,66 +1810,132 @@ a.rank-row:hover .rank-row__name {
    Settings page
    =========================================================================== */
 
-/* The content area runs to 1560px, which is right for a table and wrong for a
-   form: at that width a label and its input sit at opposite ends of the screen.
-
-   The card is capped at what the widest tab needs. Four of the five tabs are
-   plain forms that stop at about 640px; only the rule editor, which puts
-   keywords and their replies side by side, uses the rest. */
 .settings-page {
-  /* One number for the control column and for every control in it, so the whole
-     page shares a single right edge. */
-  --settings-field-w: 420px;
-  max-width: 880px;
+  max-width: 1040px;
   width: 100%;
 }
 
-/* Label column plus control column. Anything that is not a Form.Item — a
-   section heading, an alert — lines up with the same measure. */
+.settings-tabs > .ant-tabs-nav {
+  margin-bottom: 8px;
+}
+
+.settings-panel {
+  padding-block: 12px 24px;
+}
+
 .settings-form {
-  max-width: calc(176px + var(--settings-field-w));
-}
-
-/* antd gives the Col min-width:auto, which resolves to its content's minimum.
-   Without this the fixed basis on the control column is only a suggestion: a
-   long help sentence can still force the row wider than the form and wrap it,
-   dropping the control below its own label. */
-.settings-form .ant-form-item-control {
-  min-width: 0;
-}
-
-/* Marks the fields that would otherwise size themselves: a Select fills its
-   Form.Item on its own, an InputNumber sits at a 90px default, and neither
-   should end anywhere but the column's right edge. A textarea, a reply list or
-   a switch row carries no class and sizes itself. */
-.settings-control {
-  max-width: var(--settings-field-w);
   width: 100%;
 }
 
-.settings-form__last.ant-form-item {
-  margin-bottom: 0;
+.settings-control {
+  width: 100%;
 }
 
 .settings-section + .settings-section {
   border-block-start: 1px solid var(--app-border);
-  margin-block-start: 18px;
-  padding-block-start: 18px;
+  margin-block-start: 12px;
+  padding-block-start: 26px;
 }
 
-/* The help text of the last field in a section was sitting on the divider of
-   the next one. The item's own margin collapses out of the section and
-   cancels the next section's top margin, so the room has to be made inside
-   the item. */
-.settings-section > .ant-form-item:last-child .ant-form-item-explain {
-  margin-bottom: 10px;
+.settings-section__head {
+  margin-bottom: 4px;
 }
 
 .settings-section__title {
+  color: var(--app-text);
   display: block;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
-  margin-bottom: 14px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.settings-section__description {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 5px 0 0;
+}
+
+.settings-row {
+  align-items: start;
+  display: grid;
+  gap: 12px 40px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-block: 20px;
+}
+
+.settings-row + .settings-row {
+  border-block-start: 1px solid var(--app-border-faint);
+}
+
+.settings-row__copy {
+  max-width: 650px;
+  min-width: 0;
+}
+
+.settings-row__label {
+  color: var(--app-text);
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.6;
+}
+
+.settings-row__description {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+  margin-block-start: 4px;
+  overflow-wrap: anywhere;
+}
+
+.settings-row__control {
+  max-width: 100%;
+  width: 208px;
+}
+
+.settings-row--wide .settings-row__control {
+  width: 320px;
+}
+
+.settings-registration-modes {
+  display: flex;
+}
+
+.settings-registration-modes .ant-radio-button-wrapper {
+  flex: 1;
+  padding-inline: 10px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.settings-details {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 1.8;
+  margin-block-start: 8px;
+}
+
+.settings-details > summary {
+  color: var(--app-brand);
+  cursor: pointer;
+  max-width: 100%;
+  width: fit-content;
+}
+
+.settings-details > summary:hover {
+  text-decoration: underline;
+}
+
+.settings-details > summary:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--app-brand);
+  outline-offset: 3px;
+}
+
+.settings-details__body {
+  padding-block-start: 8px;
 }
 
 /* An unsaved change two tabs away is invisible otherwise. */
@@ -1887,46 +1953,147 @@ a.rank-row:hover .rank-row__name {
 }
 
 .settings-rules {
+  border-block-start: 1px solid var(--app-border);
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-block-start: 20px;
+  gap: 18px;
+  padding-block-start: 26px;
 }
 
 .settings-rules__head {
-  align-items: center;
+  align-items: flex-start;
   display: flex;
   gap: 12px;
   justify-content: space-between;
 }
 
-.settings-rules__head .settings-section__title {
-  margin-bottom: 0;
+.settings-rules__head > .ant-btn {
+  flex-shrink: 0;
 }
 
-/* Keywords and their replies are read against each other, so they sit side by
-   side wherever there is room for both to stay legible. The breakpoint tracks
-   the card's own cap: below this the card is the viewport, and two columns
-   would leave each textarea too narrow to read a keyword list in. */
+.settings-rule-list {
+  border-block-start: 1px solid var(--app-border);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.settings-rule {
+  align-items: center;
+  border-block-end: 1px solid var(--app-border);
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  padding-block: 18px;
+}
+
+.settings-rule__order {
+  align-self: start;
+  color: var(--app-text-faint);
+  font-size: 12px;
+  padding-block-start: 3px;
+}
+
+.settings-rule__summary {
+  min-width: 0;
+}
+
+.settings-rule__title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-weight: 500;
+  gap: 6px 8px;
+  overflow-wrap: anywhere;
+}
+
+.settings-rule__title .ant-tag {
+  font-weight: 400;
+  margin-inline-end: 0;
+}
+
+.settings-rule__meta {
+  color: var(--app-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 4px 14px;
+  margin-block-start: 6px;
+}
+
+.settings-rule__actions {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+.settings-rule__actions > .ant-switch {
+  margin-inline-end: 8px;
+}
+
+.settings-rules__note {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 1.8;
+  margin: 0;
+}
+
 .settings-rule-form__cols {
   display: grid;
-  gap: 0 16px;
-  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-@media (max-width: 899px) {
-  .settings-rule-form__cols {
-    grid-template-columns: 1fr;
-    /* Stacked, the two columns become consecutive blocks, and the last field of
-       the first one has had its margin removed for the side-by-side case. */
-    row-gap: 18px;
-  }
+.settings-rule-form__cols + .settings-rule-form__cols {
+  margin-block-start: 16px;
+}
+
+.settings-rule-form__label {
+  color: var(--app-text);
+  font-size: 14px;
+}
+
+.settings-rule-form__help {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 4px 0 12px;
+}
+
+.settings-rule-reply .ant-input-data-count {
+  font-size: 11px;
 }
 
 .settings-reply {
   align-items: flex-start;
   display: flex;
-  gap: 8px;
+  gap: 4px;
+}
+
+.settings-reply .ant-input-textarea {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-rule-drawer .ant-drawer-content-wrapper {
+  max-width: 100vw;
+}
+
+.settings-rule-drawer__footer {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding-block: 4px;
+}
+
+.settings-rule-drawer__footer > span {
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+
+.settings-rule-drawer__footer > .ant-btn {
+  flex-shrink: 0;
 }
 
 .settings-problems {
@@ -1934,19 +2101,136 @@ a.rank-row:hover .rank-row__name {
   padding-inline-start: 18px;
 }
 
-/* Sticks to the bottom of the viewport while the page is scrolled, so the save
-   button is reachable from the middle of a long rule list. */
 .settings-savebar {
   align-items: center;
   background: var(--app-surface);
   border: 1px solid var(--app-border);
-  border-radius: 12px;
+  border-radius: 10px;
   bottom: 12px;
   box-shadow: var(--app-shadow-lg);
   display: flex;
   gap: 12px;
   justify-content: space-between;
-  padding: 10px 16px;
+  margin-block-start: 12px;
+  padding: 12px 16px;
   position: sticky;
   z-index: 10;
+}
+
+.settings-savebar__status {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.settings-savebar__status .ant-typography {
+  font-size: 13px;
+}
+
+.settings-drawer-note {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 0 0 24px;
+}
+
+.settings-change + .settings-change {
+  border-block-start: 1px solid var(--app-border);
+  margin-block-start: 20px;
+  padding-block-start: 20px;
+}
+
+.settings-change h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+.settings-change__values {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  overflow-wrap: anywhere;
+}
+
+.settings-change__label {
+  color: var(--app-text-muted);
+  display: block;
+  font-size: 12px;
+  margin-block-end: 4px;
+}
+
+.settings-change__arrow {
+  align-self: center;
+  color: var(--app-text-faint);
+}
+
+.settings-change__rules pre {
+  background: var(--app-surface-sunken);
+  border-radius: 6px;
+  font-size: 12px;
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.settings-changes-drawer .ant-drawer-content-wrapper {
+  max-width: 100vw;
+}
+
+@media (max-width: 767px) {
+  .settings-row {
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr);
+    padding-block: 18px;
+  }
+
+  .settings-row__control,
+  .settings-row--wide .settings-row__control {
+    width: 100%;
+  }
+
+  .settings-section + .settings-section {
+    padding-block-start: 22px;
+  }
+
+  .settings-savebar {
+    align-items: stretch;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .settings-savebar > .ant-space {
+    justify-content: flex-end;
+  }
+
+  .settings-rule {
+    gap: 10px;
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+
+  .settings-rule__actions {
+    grid-column: 2;
+    justify-content: flex-end;
+  }
+
+  .settings-rule-form__cols {
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-rule-form__cols + .settings-rule-form__cols {
+    margin-block-start: 8px;
+  }
+
+  .settings-changes-drawer .ant-drawer-body,
+  .settings-rule-drawer .ant-drawer-body {
+    padding: 20px 16px;
+  }
 }

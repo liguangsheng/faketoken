@@ -1,50 +1,78 @@
-import type { ReactNode } from 'react'
-import { Form, Typography } from 'antd'
+import { useId, type ReactNode } from 'react'
+import { Form } from 'antd'
 
-import { useMediaQuery } from '../../../hooks/useMediaQuery'
-
-/**
- * The one form layout every settings panel uses: label in a fixed column,
- * control and its explanation in a second fixed column beside it.
- *
- * Both columns are fixed rather than fluid, and that is the whole point. A
- * fluid control column takes its width from its content, so the longest help
- * sentence decides how wide the row wants to be — and when that exceeds the
- * form, antd wraps the row, dropping the control below its own label. The
- * result is a form where some fields are horizontal and some are vertical
- * depending on how much prose each one carries.
- *
- * Fixing the column also lines the control up with its help text, so every
- * field in the page shares one left edge and one right edge.
- */
 export default function SettingsForm({ children }: { children: ReactNode }) {
-  const narrow = useMediaQuery('(max-width: 767px)')
-
   return (
-    <Form
-      className="settings-form"
-      colon={false}
-      layout={narrow ? 'vertical' : 'horizontal'}
-      labelAlign="left"
-      labelWrap
-      labelCol={narrow ? undefined : { flex: '0 0 176px' }}
-      wrapperCol={narrow ? undefined : { flex: '0 0 var(--settings-field-w)' }}
-    >
+    <Form className="settings-form" layout="vertical" requiredMark={false}>
       {children}
     </Form>
   )
 }
 
-/**
- * A heading between groups of fields inside one tab, for a panel that holds two
- * related-but-distinct things (retention and capture, say). Cheaper visually
- * than nesting a second Card.
- */
-export function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
+export function SettingsSection({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description?: ReactNode
+  children: ReactNode
+}) {
   return (
-    <div className="settings-section">
-      <Typography.Text className="settings-section__title">{title}</Typography.Text>
+    <section className="settings-section">
+      <header className="settings-section__head">
+        <h2 className="settings-section__title">{title}</h2>
+        {description && <p className="settings-section__description">{description}</p>}
+      </header>
       {children}
+    </section>
+  )
+}
+
+export function SettingsDetails({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <details className="settings-details">
+      <summary>{title}</summary>
+      <div className="settings-details__body">{children}</div>
+    </details>
+  )
+}
+
+interface ControlProps {
+  id: string
+  'aria-labelledby': string
+  'aria-describedby': string
+}
+
+interface RowProps {
+  label: string
+  description: ReactNode
+  details?: { title: string; content: ReactNode }
+  wide?: boolean
+  children: (props: ControlProps) => ReactNode
+}
+
+export function SettingsRow({ label, description, details, wide, children }: RowProps) {
+  const id = useId()
+
+  return (
+    <div className={`settings-row${wide ? ' settings-row--wide' : ''}`}>
+      <div className="settings-row__copy">
+        <label className="settings-row__label" id={`${id}-label`} htmlFor={id}>
+          {label}
+        </label>
+        <div className="settings-row__description" id={`${id}-description`}>
+          {description}
+        </div>
+        {details && <SettingsDetails title={details.title}>{details.content}</SettingsDetails>}
+      </div>
+      <div className="settings-row__control">
+        {children({
+          id,
+          'aria-labelledby': `${id}-label`,
+          'aria-describedby': `${id}-description`,
+        })}
+      </div>
     </div>
   )
 }

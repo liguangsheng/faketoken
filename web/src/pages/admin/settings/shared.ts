@@ -12,6 +12,8 @@ import type { ConsoleSettings } from '../../../api/types'
 /** A panel edits one draft and reports every change straight back up. */
 export interface PanelProps {
   draft: ConsoleSettings
+  saved: ConsoleSettings
+  disabled: boolean
   patch: (patch: Partial<ConsoleSettings>) => void
 }
 
@@ -90,8 +92,6 @@ export interface BlocklistStats {
   droppedLines: number
   /** Replies over the byte cap; the server rejects a save carrying one. */
   oversizedReplies: number
-  /** Whether any group answers with a 2xx, which some endpoints cannot. */
-  anyMasked: boolean
 }
 
 export const blocklistStats = (settings: ConsoleSettings): BlocklistStats => {
@@ -110,8 +110,5 @@ export const blocklistStats = (settings: ConsoleSettings): BlocklistStats => {
         total + rule.replies.filter((reply) => byteLength(reply) > MAX_REPLY_BYTES).length,
       0,
     ),
-    // Endpoints that cannot carry prose refuse with a 401 whatever is
-    // configured, which is worth saying wherever a 2xx is in play.
-    anyMasked: rules.some((rule) => (rule.status || settings.blocked_status) < 400),
   }
 }

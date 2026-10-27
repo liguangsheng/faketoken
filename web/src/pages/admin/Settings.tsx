@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, App, Button, Card, Skeleton, Space, Typography } from 'antd'
+import { Alert, App, Button, ConfigProvider, Skeleton, Space, Tabs, Typography } from 'antd'
 import { SaveOutlined } from '@ant-design/icons'
 
 import { api, type ConsoleSettings } from '../../api/client'
@@ -10,7 +10,8 @@ import GeneralPanel from './settings/GeneralPanel'
 import LoggingPanel from './settings/LoggingPanel'
 import RegistrationPanel from './settings/RegistrationPanel'
 import RelayPanel from './settings/RelayPanel'
-import { blocklistStats } from './settings/shared'
+import SettingsChanges from './settings/SettingsChanges'
+import { blocklistStats, type PanelProps } from './settings/shared'
 
 /**
  * Which tab owns which field.
@@ -55,10 +56,7 @@ const TABS = [
   key: string
   label: string
   fields: readonly (keyof ConsoleSettings)[]
-  Panel: (props: {
-    draft: ConsoleSettings
-    patch: (patch: Partial<ConsoleSettings>) => void
-  }) => JSX.Element
+  Panel: (props: PanelProps) => JSX.Element
 }[]
 
 /** Fails to compile if a settings field is claimed by no tab at all. */
@@ -88,15 +86,20 @@ export default function Settings() {
   const [baseline, setBaseline] = useState<ConsoleSettings>(settings)
   const [tab, setTab] = useState<string>(TABS[0].key as string)
   const [saving, setSaving] = useState(false)
+  const [reviewing, setReviewing] = useState(false)
+  const savingRef = useRef(false)
   // Guards the sync below: a refresh landing mid-edit must not eat the edit.
   const dirtyRef = useRef(false)
 
+  const dirtyFields = TABS.flatMap((entry) =>
+    entry.fields.filter((field) => changed(draft, baseline, field)),
+  )
   const dirtyTabs = new Set(
-    TABS.filter((entry) => entry.fields.some((field) => changed(draft, baseline, field))).map(
+    TABS.filter((entry) => entry.fields.some((field) => dirtyFields.includes(field))).map(
       (entry) => entry.key,
     ),
   )
-  const dirty = dirtyTabs.size > 0
+  const dirty = dirtyFields.length > 0
   dirtyRef.current = dirty
 
   useEffect(() => {
@@ -118,6 +121,8 @@ export default function Settings() {
   }, [dirty])
 
   const persist = async () => {
+    if (savingRef.current) return
+    savingRef.current = true
     setSaving(true)
     try {
       const saved = await api.admin.updateSettings(draft)
@@ -131,6 +136,7 @@ export default function Settings() {
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败')
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
   }
@@ -166,21 +172,23 @@ export default function Settings() {
     await persist()
   }
 
-  const active = TABS.find((entry) => entry.key === tab) ?? TABS[0]
-  const patch = (next: Partial<ConsoleSettings>) => setDraft({ ...draft, ...next })
+  const patch = (next: Partial<ConsoleSettings>) => {
+    if (savingRef.current || !loaded) return
+    setDraft((current) => ({ ...current, ...next }))
+  }
 
   return (
-    <>
+    <div className="settings-page">
       <PageHeader
         title="全局设置"
-        description="这里的配置存放在服务端，对所有用户和所有浏览器生效。"
+        description="保存后对所有用户和浏览器生效，无需重启服务。"
       />
 
       {/* 首次加载中不渲染表单：可编辑的默认值配上红色告警是在把「加载中」演成「加载失败」 */}
       {!ready ? (
         <Skeleton active paragraph={{ rows: 10 }} />
       ) : (
-        <Space direction="vertical" size={12} className="settings-page">
+        <>
           {!loaded && (
             <Alert
               type="error"
@@ -195,53 +203,81 @@ export default function Settings() {
             />
           )}
 
-          <Card
-            activeTabKey={active.key}
-            onTabChange={setTab}
-            tabList={TABS.map((entry) => ({
+          <Tabs
+            className="settings-tabs"
+            activeKey={tab}
+            onChange={setTab}
+            destroyOnHidden
+            items={TABS.map((entry) => ({
               key: entry.key,
               label: (
                 <span className="settings-tab">
                   {entry.label}
-                  {/* 改动在别的页签里也要看得见，否则切回去才发现自己漏了一处 */}
                   {dirtyTabs.has(entry.key) && (
                     <span className="settings-tab__dot" aria-label="有未保存的修改" />
                   )}
                 </span>
               ),
+              children: (
+                <ConfigProvider componentDisabled={saving || !loaded}>
+                  <div className="settings-panel">
+                    <entry.Panel
+                      draft={draft}
+                      saved={settings}
+                      disabled={saving || !loaded}
+                      patch={patch}
+                    />
+                  </div>
+                </ConfigProvider>
+              ),
             }))}
-          >
-            <active.Panel draft={draft} patch={patch} />
-          </Card>
+          />
 
-          {dirty && (
-            <div className="settings-savebar">
-              <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                有未保存的修改
+          <div className="settings-savebar">
+            <div className="settings-savebar__status" aria-live="polite">
+              <Typography.Text type="secondary">
+                {!loaded
+                  ? '配置尚未加载'
+                  : dirty
+                    ? `已修改 ${dirtyFields.length} 项`
+                    : '没有未保存的修改'}
               </Typography.Text>
-              <Space size={8}>
-                <Button
-                  onClick={() => {
-                    setDraft(settings)
-                    setBaseline(settings)
-                  }}
-                >
-                  放弃修改
+              {dirty && (
+                <Button type="link" size="small" onClick={() => setReviewing(true)}>
+                  查看变更
                 </Button>
-                <Button
-                  type="primary"
-                  icon={<SaveOutlined />}
-                  loading={saving}
-                  disabled={!loaded}
-                  onClick={() => void save()}
-                >
-                  保存
-                </Button>
-              </Space>
+              )}
             </div>
-          )}
-        </Space>
+            <Space size={8}>
+              <Button
+                disabled={!dirty || saving}
+                onClick={() => {
+                  setDraft(settings)
+                  setBaseline(settings)
+                }}
+              >
+                放弃修改
+              </Button>
+              <Button
+                type="primary"
+                icon={<SaveOutlined />}
+                loading={saving}
+                disabled={!loaded || !dirty}
+                onClick={() => void save()}
+              >
+                保存全部
+              </Button>
+            </Space>
+          </div>
+          <SettingsChanges
+            open={reviewing}
+            onClose={() => setReviewing(false)}
+            before={baseline}
+            after={draft}
+            fields={dirtyFields}
+          />
+        </>
       )}
-    </>
+    </div>
   )
 }

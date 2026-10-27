@@ -1,81 +1,105 @@
-import { Form, InputNumber } from 'antd'
+import { InputNumber } from 'antd'
 
-import SettingsForm from './SettingsForm'
+import SettingsForm, { SettingsRow, SettingsSection } from './SettingsForm'
 import type { PanelProps } from './shared'
 
-/** How hard a failed request is retried, how long it waits between tries,
- *  how long one try may take, and how long a stream may stay silent. */
 export default function RelayPanel({ draft, patch }: PanelProps) {
   return (
     <SettingsForm>
-      <Form.Item
-        label="最大重试次数"
-        help="单次请求最多访问多少个渠道。渠道自己配的重试次数会先用完，然后才换下一个渠道。"
-      >
-        <InputNumber
-          aria-label="最大重试次数"
-          className="settings-control"
-          min={1}
-          max={20}
-          step={1}
-          precision={0}
-          addonAfter="次"
-          value={draft.max_retries}
-          onChange={(value) => patch({ max_retries: value ?? 1 })}
-        />
-      </Form.Item>
+      <SettingsSection title="重试策略" description="上游失败时，如何尝试其他渠道。">
+        <SettingsRow
+          label="最大尝试渠道数"
+          description="包含首次尝试。渠道自身的重试次数用完后，才换下一个渠道。"
+        >
+          {(control) => (
+            <InputNumber
+              {...control}
+              className="settings-control"
+              min={1}
+              max={20}
+              step={1}
+              precision={0}
+              addonAfter="个"
+              value={draft.max_retries}
+              onChange={(value) => patch({ max_retries: value ?? 1 })}
+            />
+          )}
+        </SettingsRow>
 
-      <Form.Item
-        label="重试间隔"
-        help="换到下一个渠道重试前的停顿基数，按尝试次数递增，上限 2 秒。设为 0 则不等待。渠道自己配了重试间隔时以渠道为准；上游返回 Retry-After 时，该渠道的熔断冷却直接采用上游给定的时间。"
-      >
-        <InputNumber
-          aria-label="重试间隔"
-          className="settings-control"
-          min={0}
-          max={10000}
-          step={50}
-          precision={0}
-          addonAfter="毫秒"
-          value={draft.retry_backoff_ms}
-          onChange={(value) => patch({ retry_backoff_ms: value ?? 0 })}
-        />
-      </Form.Item>
+        <SettingsRow
+          label="重试间隔"
+          description="切换渠道前的等待基数；设为 0 则不等待。"
+          details={{
+            title: '退避规则与渠道配置',
+            content:
+              '等待时间按尝试次数递增，上限 2 秒。渠道配置了重试间隔时以渠道为准；上游返回 Retry-After 时，该渠道的熔断冷却采用上游给定的时间。',
+          }}
+        >
+          {(control) => (
+            <InputNumber
+              {...control}
+              className="settings-control"
+              min={0}
+              max={10000}
+              step={50}
+              precision={0}
+              addonAfter="毫秒"
+              value={draft.retry_backoff_ms}
+              onChange={(value) => patch({ retry_backoff_ms: value ?? 0 })}
+            />
+          )}
+        </SettingsRow>
+      </SettingsSection>
 
-      <Form.Item
-        label="请求超时"
-        help="单次上游请求从发出到响应结束（含流式输出）的最长时间。超时即断开，还没开始响应的会换渠道重试。设为 0 表示不限制。渠道自己设了超时时以渠道为准。"
-      >
-        <InputNumber
-          aria-label="请求超时"
-          className="settings-control"
-          min={0}
-          max={86400}
-          step={60}
-          precision={0}
-          addonAfter="秒"
-          value={draft.relay_timeout_secs}
-          onChange={(value) => patch({ relay_timeout_secs: value ?? 0 })}
-        />
-      </Form.Item>
+      <SettingsSection title="超时控制" description="限制单次上游请求的总时长和静默时长。">
+        <SettingsRow
+          label="请求超时"
+          description="从发出请求到响应结束，包含流式输出；设为 0 表示不限制。"
+          details={{
+            title: '超时后的处理与渠道覆盖',
+            content:
+              '超时即断开；尚未开始响应时会换渠道重试。渠道单独设置了超时时，以渠道为准。',
+          }}
+        >
+          {(control) => (
+            <InputNumber
+              {...control}
+              className="settings-control"
+              min={0}
+              max={86400}
+              step={60}
+              precision={0}
+              addonAfter="秒"
+              value={draft.relay_timeout_secs}
+              onChange={(value) => patch({ relay_timeout_secs: value ?? 0 })}
+            />
+          )}
+        </SettingsRow>
 
-      <Form.Item
-        label="流式空闲超时"
-        help="流式响应连续这么久收不到任何数据，就判定上游卡死并断开。有的上游会把整个工具调用生成完才一次发出，写大文件时可能静默几分钟，设太短会误断。设为 0 表示不限制，只受请求超时约束。"
-        className="settings-form__last"
-      >
-        <InputNumber
-          aria-label="流式空闲超时"
-          className="settings-control"
-          min={0}
-          max={86400}
-          step={60}
-          precision={0}
-          addonAfter="秒"
-          value={draft.stream_idle_secs}
-          onChange={(value) => patch({ stream_idle_secs: value ?? 0 })}
-        />
-      </Form.Item>
+        <SettingsRow
+          label="流式空闲超时"
+          description="连续没有数据时断开；设为 0 则只受请求超时约束。"
+          details={{
+            title: '为什么不宜设得太短',
+            content:
+              '部分上游会生成完整个工具调用才一次发出。写大文件时可能静默几分钟，过短的空闲时限会误断仍在工作的请求。',
+          }}
+        >
+          {(control) => (
+            <InputNumber
+              {...control}
+              className="settings-control"
+              min={0}
+              max={86400}
+              step={60}
+              precision={0}
+              addonAfter="秒"
+              value={draft.stream_idle_secs}
+              onChange={(value) => patch({ stream_idle_secs: value ?? 0 })}
+            />
+          )}
+        </SettingsRow>
+      </SettingsSection>
     </SettingsForm>
   )
 }
