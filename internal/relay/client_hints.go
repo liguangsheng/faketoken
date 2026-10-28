@@ -178,6 +178,13 @@ func clientType(r *http.Request) string {
 	if isSpore(r.Header.Get("User-Agent")) {
 		return "spore"
 	}
+	// deepseek-harness also names itself first, then links its repository:
+	// "deepseek-harness/0.2.1-rc.2 (+https://github.com/deepseek-ai/deepseek-harness)".
+	// Only the product position counts, so an agent that merely links the
+	// repository is not mislabelled.
+	if namesProduct(r, "deepseek-harness") {
+		return "deepseek-harness"
+	}
 
 	switch {
 	case strings.Contains(both, "codex-desktop"):

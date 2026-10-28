@@ -234,6 +234,35 @@ func TestClientType(t *testing.T) {
 			want:    "curl",
 		},
 		{
+			// What deepseek-harness actually sends. The X-Stainless-* headers
+			// come from the OpenAI Node SDK underneath; the agent string is its
+			// own.
+			name: "deepseek harness",
+			headers: map[string]string{
+				"User-Agent":                  "deepseek-harness/0.2.1-rc.2 (+https://github.com/deepseek-ai/deepseek-harness)",
+				"X-Stainless-Lang":            "js",
+				"X-Stainless-Package-Version": "7.19.0",
+			},
+			want: "deepseek-harness",
+		},
+		{
+			name:    "deepseek harness is matched regardless of case",
+			headers: map[string]string{"User-Agent": "DeepSeek-Harness/0.2.1"},
+			want:    "deepseek-harness",
+		},
+		{
+			// The product position is read before the substring switch.
+			name:    "deepseek harness keeps its label when it names another tool later",
+			headers: map[string]string{"User-Agent": "deepseek-harness/0.3.0 (codex; linux)"},
+			want:    "deepseek-harness",
+		},
+		{
+			// Linking the repository does not make another agent the harness.
+			name:    "deepseek harness is not claimed from another agent's comment",
+			headers: map[string]string{"User-Agent": "curl/8.5.0 (+https://github.com/deepseek-ai/deepseek-harness)"},
+			want:    "curl",
+		},
+		{
 			name:    "curl",
 			headers: map[string]string{"User-Agent": "curl/8.5.0"},
 			want:    "curl",
