@@ -1,6 +1,11 @@
 import { useState } from 'react'
-import { App, Button, Dropdown, Space } from 'antd'
-import { DeleteOutlined, DownOutlined } from '@ant-design/icons'
+import { App, Button, Dropdown, Space, Tooltip } from 'antd'
+import {
+  DeleteOutlined,
+  DownOutlined,
+  EyeInvisibleOutlined,
+  EyeOutlined,
+} from '@ant-design/icons'
 
 import { api } from '../../api/client'
 import LogTable from '../../components/log/LogTable'
@@ -11,6 +16,7 @@ const PURGE_OPTIONS = [7, 30, 90]
 export default function AdminLogs() {
   const { message, modal } = App.useApp()
   const [reloadToken, setReloadToken] = useState(0)
+  const [redacted, setRedacted] = useState(false)
 
   const purge = (days: number) => {
     modal.confirm({
@@ -39,26 +45,43 @@ export default function AdminLogs() {
         title="全局日志"
         description="全部用户的逐次调用记录与完整正文。"
         extra={
-          <Dropdown
-            menu={{
-              items: PURGE_OPTIONS.map((days) => ({
-                key: String(days),
-                label: `清理 ${days} 天前`,
-                danger: true,
-              })),
-              onClick: ({ key }) => purge(Number(key)),
-            }}
-          >
-            <Button danger icon={<DeleteOutlined />}>
-              <Space size={6}>
-                清理历史日志
-                <DownOutlined style={{ fontSize: 10 }} />
-              </Space>
-            </Button>
-          </Dropdown>
+          <Space size={8}>
+            <Tooltip title={redacted ? '显示敏感信息' : '隐藏敏感信息'}>
+              <Button
+                type="text"
+                size="small"
+                aria-label={redacted ? '显示敏感信息' : '隐藏敏感信息'}
+                icon={redacted ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                onClick={() => setRedacted((value) => !value)}
+              />
+            </Tooltip>
+            <Dropdown
+              menu={{
+                items: PURGE_OPTIONS.map((days) => ({
+                  key: String(days),
+                  label: `清理 ${days} 天前`,
+                  danger: true,
+                })),
+                onClick: ({ key }) => purge(Number(key)),
+              }}
+            >
+              <Button danger icon={<DeleteOutlined />}>
+                <Space size={6}>
+                  清理历史日志
+                  <DownOutlined style={{ fontSize: 10 }} />
+                </Space>
+              </Button>
+            </Dropdown>
+          </Space>
         }
       />
-      <LogTable admin showRate fetcher={api.admin.logs} reloadToken={reloadToken} />
+      <LogTable
+        admin
+        showRate
+        fetcher={api.admin.logs}
+        reloadToken={reloadToken}
+        redacted={redacted}
+      />
     </>
   )
 }

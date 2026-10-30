@@ -47,6 +47,8 @@ interface Props {
   showRate?: boolean;
   /** Bump to force a data reload without remounting (filters survive). */
   reloadToken?: number;
+  /** Hide channel, user/key and source-IP values on the administrator surface. */
+  redacted?: boolean;
 }
 
 // A stable empty list, so the table memo does not recompute on every render
@@ -59,6 +61,7 @@ export default function LogTable({
   extra,
   showRate,
   reloadToken,
+  redacted,
 }: Props) {
   const { message } = App.useApp();
   // A Drawer is not clamped to the viewport the way a Modal is.
@@ -380,9 +383,9 @@ export default function LogTable({
   const columns = useMemo(
     () =>
       narrow
-        ? phoneColumns({ admin })
-        : logColumns({ admin, cancelling, cancelCall }),
-    [admin, cancelCall, cancelling, narrow],
+        ? phoneColumns({ admin, redacted: Boolean(admin && redacted) })
+        : logColumns({ admin, cancelling, cancelCall, redacted: Boolean(admin && redacted) }),
+    [admin, cancelCall, cancelling, narrow, redacted],
   );
 
   // The toggle belongs next to the meters it governs, but those only render on

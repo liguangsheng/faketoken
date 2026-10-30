@@ -81,6 +81,8 @@ interface DesktopDeps {
   /** Keys with a cancel in flight. */
   cancelling: ReadonlySet<string>;
   cancelCall: (key: string) => void;
+  /** 隐私模式：渠道、用户/密钥、来源 IP 三列只显示占位符。 */
+  redacted?: boolean;
 }
 
 /**
@@ -96,6 +98,7 @@ export function logColumns({
   admin,
   cancelling,
   cancelCall,
+  redacted,
 }: DesktopDeps): TableProps<LogRow>["columns"] {
   return [
     {
@@ -135,7 +138,10 @@ export function logColumns({
       title: "渠道",
       dataIndex: "channel_id",
       render: (id: number, row: RequestLog) =>
-        id > 0 ? (
+        // 隐私模式保留列宽与可读性，只抹掉渠道身份。
+        redacted ? (
+          <span className="text-muted">•••</span>
+        ) : id > 0 ? (
           <div className="cell-stack" style={{ minWidth: 0 }}>
             <span>
               <Tag className="mono" style={{ marginInlineEnd: 0 }}>
@@ -167,16 +173,19 @@ export function logColumns({
       ...COLUMN_GEOMETRY.token,
       title: admin ? "用户 / 密钥" : "密钥",
       dataIndex: "token_name",
-      render: (tokenName: string, row: RequestLog) => (
-        <div className="cell-stack">
-          {admin && <span>{row.username || "-"}</span>}
-          <span
-            className={admin ? "text-muted cell-stack__sub" : undefined}
-          >
-            {tokenName || "-"}
-          </span>
-        </div>
-      ),
+      render: (tokenName: string, row: RequestLog) =>
+        redacted ? (
+          <span className="text-muted">•••</span>
+        ) : (
+          <div className="cell-stack">
+            {admin && <span>{row.username || "-"}</span>}
+            <span
+              className={admin ? "text-muted cell-stack__sub" : undefined}
+            >
+              {tokenName || "-"}
+            </span>
+          </div>
+        ),
     },
     {
       ...COLUMN_GEOMETRY.client,
@@ -249,7 +258,9 @@ export function logColumns({
             dataIndex: "client_ip",
             ellipsis: true,
             render: (value: string) =>
-              value ? (
+              redacted ? (
+                <span className="text-muted">•••</span>
+              ) : value ? (
                 <Tooltip title={value}>
                   <span className="mono">{value}</span>
                 </Tooltip>
@@ -477,8 +488,10 @@ export function logColumns({
  */
 export function phoneColumns({
   admin,
+  redacted,
 }: {
   admin?: boolean;
+  redacted?: boolean;
 }): TableProps<LogRow>["columns"] {
   return [
     {
@@ -565,16 +578,18 @@ export function phoneColumns({
                 <span className="log-card__meta-item log-card__meta-item--wide">
                   <ApiOutlined />
                   <span className="log-card__meta-text">
-                    #{row.channel_id}
-                    {row.channel_name ? ` ${row.channel_name}` : ""}
+                    {redacted
+                      ? "•••"
+                      : `#${row.channel_id}${row.channel_name ? ` ${row.channel_name}` : ""}`}
                   </span>
                 </span>
               )}
               <span className="log-card__meta-item log-card__meta-item--wide">
                 <KeyOutlined />
                 <span className="log-card__meta-text">
-                  {admin && row.username ? `${row.username} · ` : ""}
-                  {row.token_name || "-"}
+                  {redacted
+                    ? "•••"
+                    : `${admin && row.username ? `${row.username} · ` : ""}${row.token_name || "-"}`}
                 </span>
               </span>
             </div>
