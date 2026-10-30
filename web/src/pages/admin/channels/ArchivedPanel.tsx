@@ -3,12 +3,15 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useRef,
   useState,
 } from 'react'
-import { Collapse, Space, Table, Tag, Typography } from 'antd'
+import { Collapse, Input, Select, Space, Table, Tag, Typography } from 'antd'
+import { SearchOutlined } from '@ant-design/icons'
 import type { MessageInstance } from 'antd/es/message/interface'
 
 import { api, type Channel } from '../../../api/client'
+import { useDebouncedValue } from '../../../hooks/useDebouncedValue'
 import { archivedColumns } from './channelColumns'
 import type { ChannelActions } from './useChannelActions'
 
@@ -24,6 +27,7 @@ interface Props {
   /** The row whose unarchive is still running. */
   archivingId: number | null
   message: MessageInstance
+  groupOptions: { value: string; label: string }[]
   /**
    * Reported upward: the listing's empty state points down here whenever the
    * archive is non-empty, and the panel is hidden while it is empty.
@@ -38,7 +42,7 @@ interface Props {
  * never archived a channel.
  */
 const ArchivedPanel = forwardRef<ArchivedPanelHandle, Props>(function ArchivedPanel(
-  { actions, archivingId, message, onTotalChange },
+  { actions, archivingId, groupOptions, message, onTotalChange },
   ref,
 ) {
   const [rows, setRows] = useState<Channel[]>([])
@@ -46,35 +50,51 @@ const ArchivedPanel = forwardRef<ArchivedPanelHandle, Props>(function ArchivedPa
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
-  // Rows are only drawn inside the panel, so they wait for its first opening;
-  // until then the header's count is all that is fetched. Sticky: folding the
-  // panel again keeps them, so reopening does not wait on the network.
+  const [keywordInput, setKeywordInput] = useState('')
+  const [groupFilter, setGroupFilter] = useState<string>()
+  const [modelInput, setModelInput] = useState('')
+  const keyword = useDebouncedValue(keywordInput)
+  const model = useDebouncedValue(modelInput)
+  const filtered = Boolean(keyword || groupFilter || model)
+  const [resultTotal, setResultTotal] = useState(0)
+  // Rows wait for the first opening; after that, folding the panel keeps them
+  // so reopening does not wait on the network.
   const [wanted, setWanted] = useState(false)
+  const requestSequence = useRef(0)
 
-  // Deliberately unfiltered: the boxes above narrow what currently serves
-  // traffic, and an archived channel is by definition not that. Keeping the
-  // archive out of them is what lets the collapsed header's count mean one
-  // thing always. The listing's empty state points down here whenever the
-  // archive is non-empty, so a keyword search that misses cannot read as
-  // "somebody deleted it".
+  // The controls here apply only to archived rows. Keep the shelf's overall
+  // count separate so a search with no matches does not hide the panel.
   const load = useCallback(async () => {
+    const request = ++requestSequence.current
     setLoading(true)
     try {
-      // Count only: page_size cannot go below 1, so one row comes back unused.
-      const result = await api.admin.listChannels({
-        page: wanted ? page : 1,
-        page_size: wanted ? PAGE_SIZE : 1,
-        archived: true,
-      })
+      const [result, countResult] = await Promise.all([
+        api.admin.listChannels({
+          page: wanted ? page : 1,
+          page_size: wanted ? PAGE_SIZE : 1,
+          keyword: keyword || undefined,
+          group: groupFilter,
+          model: model || undefined,
+          archived: true,
+        }),
+        filtered
+          ? api.admin.listChannels({ page: 1, page_size: 1, archived: true })
+          : Promise.resolve(null),
+      ])
+      if (request !== requestSequence.current) return
       if (wanted) setRows(result.data ?? [])
-      setTotal(result.total)
-      onTotalChange(result.total)
+      setResultTotal(result.total)
+      const nextTotal = countResult?.total ?? result.total
+      setTotal(nextTotal)
+      onTotalChange(nextTotal)
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载已归档渠道失败')
+      if (request === requestSequence.current) {
+        message.error(error instanceof Error ? error.message : '加载已归档渠道失败')
+      }
     } finally {
-      setLoading(false)
+      if (request === requestSequence.current) setLoading(false)
     }
-  }, [message, onTotalChange, page, wanted])
+  }, [filtered, groupFilter, keyword, message, model, onTotalChange, page, wanted])
 
   useEffect(() => {
     void load()
@@ -83,9 +103,9 @@ const ArchivedPanel = forwardRef<ArchivedPanelHandle, Props>(function ArchivedPa
   // Taking the last row off a page would otherwise strand the panel on an empty
   // one, with no control visible to get back.
   useEffect(() => {
-    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+    const pages = Math.max(1, Math.ceil(resultTotal / PAGE_SIZE))
     if (page > pages) setPage(pages)
-  }, [page, total])
+  }, [page, resultTotal])
 
   const reload = useCallback(async () => {
     await load()
@@ -120,23 +140,76 @@ const ArchivedPanel = forwardRef<ArchivedPanelHandle, Props>(function ArchivedPa
             </Space>
           ),
           children: (
-            <Table
-              rowKey="id"
-              size="small"
-              loading={loading}
-              dataSource={rows}
-              scroll={{ x: 620 }}
-              pagination={{
-                current: page,
-                pageSize: PAGE_SIZE,
-                total,
-                hideOnSinglePage: true,
-                showSizeChanger: false,
-                showTotal: (count) => `共 ${count} 个已归档渠道`,
-                onChange: (next) => setPage(next),
-              }}
-              columns={archivedColumns({ actions, archivingId })}
-            />
+            <>
+              <Space wrap size={8} style={{ marginBottom: 12 }}>
+                <Input
+                  allowClear
+                  prefix={<SearchOutlined className="text-muted" />}
+                  placeholder="搜索名称、地址、模型、分组、备注"
+                  aria-label="搜索已归档渠道"
+                  style={{ width: 300 }}
+                  value={keywordInput}
+                  onChange={(event) => {
+                    setPage(1)
+                    setKeywordInput(event.target.value)
+                  }}
+                />
+                <Select
+                  allowClear
+                  showSearch
+                  placeholder="分组"
+                  style={{ width: 150 }}
+                  value={groupFilter}
+                  onChange={(value) => {
+                    setPage(1)
+                    setGroupFilter(value)
+                  }}
+                  options={groupOptions}
+                />
+                <Input
+                  allowClear
+                  placeholder="按模型搜索，支持片段"
+                  aria-label="按模型筛选已归档渠道"
+                  style={{ width: 180 }}
+                  value={modelInput}
+                  onChange={(event) => {
+                    setPage(1)
+                    setModelInput(event.target.value)
+                  }}
+                />
+                {filtered && (
+                  <Typography.Link
+                    onClick={() => {
+                      setPage(1)
+                      setKeywordInput('')
+                      setGroupFilter(undefined)
+                      setModelInput('')
+                    }}
+                  >
+                    重置
+                  </Typography.Link>
+                )}
+              </Space>
+              <Table
+                rowKey="id"
+                size="small"
+                loading={loading}
+                dataSource={rows}
+                scroll={{ x: 620 }}
+                locale={{ emptyText: filtered ? '没有匹配的已归档渠道' : '暂无已归档渠道' }}
+                pagination={{
+                  current: page,
+                  pageSize: PAGE_SIZE,
+                  total: resultTotal,
+                  hideOnSinglePage: true,
+                  showSizeChanger: false,
+                  showTotal: (count) =>
+                    `共 ${count} 个${filtered ? '匹配的已归档' : '已归档'}渠道`,
+                  onChange: (next) => setPage(next),
+                }}
+                columns={archivedColumns({ actions, archivingId })}
+              />
+            </>
           ),
         },
       ]}

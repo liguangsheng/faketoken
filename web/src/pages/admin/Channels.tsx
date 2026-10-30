@@ -143,7 +143,8 @@ export default function Channels() {
   )
 
   const openDrawer = useCallback(
-    (channel?: Channel, overrides?: Record<string, unknown>) => setDraft({ channel, overrides }),
+    (channel?: Channel, overrides?: Record<string, unknown>, unarchiveOnSave?: boolean) =>
+      setDraft({ channel, overrides, unarchiveOnSave }),
     [],
   )
 
@@ -363,6 +364,7 @@ export default function Channels() {
         actions={actions}
         archivingId={archivingId}
         message={message}
+        groupOptions={groupOptions}
         onTotalChange={setArchivedTotal}
       />
 
@@ -385,9 +387,9 @@ export default function Channels() {
       <QuickImportModal
         open={importOpen}
         onClose={() => setImportOpen(false)}
-        onApply={(channel, overrides) => {
+        onApply={(channel, overrides, unarchiveOnSave) => {
           setImportOpen(false)
-          openDrawer(channel, overrides)
+          openDrawer(channel, overrides, unarchiveOnSave)
         }}
       />
 

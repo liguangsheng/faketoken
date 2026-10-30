@@ -71,6 +71,7 @@ function parseClock(value: string | null | undefined) {
 export interface ChannelDraft {
   channel?: Channel
   overrides?: Record<string, unknown>
+  unarchiveOnSave?: boolean
 }
 
 interface Props {
@@ -91,7 +92,7 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
   const narrow = useMediaQuery('(max-width: 768px)')
   const [form] = Form.useForm()
   const [editing, setEditing] = useState<Channel | null>(null)
-  // The advanced fields fold away: a new channel needs three fields, not
+  // The advanced fields fold away: a new channel needs four fields, not
   // seventeen.
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -123,6 +124,7 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
       ...(channel
         ? {
             ...channel,
+            enabled: channel.status === STATUS.ENABLED,
             api_key: '',
             models: channel.models,
             model_prefixes: (channel.model_prefixes ?? []).join('\n'),
@@ -137,7 +139,7 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
             base_url: '',
             auth_style: 'auto',
             api_key: '',
-            status: STATUS.ENABLED,
+            enabled: true,
             priority: 0,
             weight: 1,
             groups: ['default'],
@@ -217,7 +219,8 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
       base_url: values.base_url ?? '',
       auth_style: values.auth_style ?? 'auto',
       api_key: values.api_key ?? '',
-      status: values.status ?? STATUS.ENABLED,
+      status: values.enabled ? STATUS.ENABLED : STATUS.DISABLED,
+      unarchive: Boolean(draft?.unarchiveOnSave || (editing?.archived && values.enabled)),
       priority: Number(values.priority ?? 0),
       weight: Number(values.weight ?? 1),
       groups: values.groups ?? ['default'],
@@ -338,6 +341,15 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
             rules={[{ required: true, message: '请输入名称' }]}
           >
             <Input placeholder="例如：主渠道" />
+          </Form.Item>
+
+          <Form.Item
+            name="enabled"
+            label="状态"
+            valuePropName="checked"
+            tooltip="已归档渠道启用后保存时会自动取消归档"
+          >
+            <Switch checkedChildren="启用" unCheckedChildren="禁用" />
           </Form.Item>
 
           <Form.Item
@@ -523,16 +535,6 @@ export default function ChannelDrawer({ draft, groupOptions, onClose, onSaved, o
                             step={50}
                             precision={0}
                             style={{ width: '100%' }}
-                          />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={8}>
-                        <Form.Item name="status" label="状态">
-                          <Select
-                            options={[
-                              { value: STATUS.ENABLED, label: '启用' },
-                              { value: STATUS.DISABLED, label: '禁用' },
-                            ]}
                           />
                         </Form.Item>
                       </Col>

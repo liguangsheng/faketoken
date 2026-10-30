@@ -55,6 +55,7 @@ type channelInput struct {
 	LockUserAgent     bool              `json:"lock_user_agent"`
 	LockedUserAgents  map[string]string `json:"locked_user_agents"`
 	Note              string            `json:"note"`
+	Unarchive         bool              `json:"unarchive"`
 	// Keepalive configuration. The window's own state (open, progress, when it
 	// last opened) is owned by the scheduler and the relay bookkeeping, and is
 	// never accepted from a request: saving the form must not reset a counter.
@@ -388,7 +389,7 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, message)
 		return
 	}
-	updated, err := s.store.UpdateChannel(r.Context(), ch)
+	updated, err := s.store.UpdateChannel(r.Context(), ch, in.Unarchive)
 	if err != nil {
 		failErr(w, err)
 		return

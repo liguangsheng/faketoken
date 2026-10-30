@@ -21,7 +21,11 @@ interface Options {
   setSelectedIds: Dispatch<SetStateAction<number[]>>
   /** The current selection; bulk actions read it. */
   selectedIds: number[]
-  openDrawer: (channel?: Channel, overrides?: Record<string, unknown>) => void
+  openDrawer: (
+    channel?: Channel,
+    overrides?: Record<string, unknown>,
+    unarchiveOnSave?: boolean,
+  ) => void
   /** Open the global log filtered to this channel. */
   viewLogs: (channel: Channel) => void
 }

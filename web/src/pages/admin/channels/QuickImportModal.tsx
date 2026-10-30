@@ -25,7 +25,11 @@ interface Props {
    * saves it, so a bad guess costs one cancel. channel is the existing row when
    * the paste names an upstream that is already configured.
    */
-  onApply: (channel: Channel | undefined, overrides: Record<string, unknown>) => void
+  onApply: (
+    channel: Channel | undefined,
+    overrides: Record<string, unknown>,
+    unarchiveOnSave?: boolean,
+  ) => void
 }
 
 export default function QuickImportModal({ open, onClose, onApply }: Props) {
@@ -130,7 +134,7 @@ export default function QuickImportModal({ open, onClose, onApply }: Props) {
       // — instead of silently resetting it to defaults.
       try {
         const current = await api.admin.getChannel(existing.id)
-        onApply(current, overrides)
+        onApply(current, { ...overrides, enabled: true }, current.archived)
         message.info(`将覆盖已有渠道「${existing.name}」，确认后保存`)
       } catch (error) {
         message.error(error instanceof Error ? error.message : '读取同名渠道失败')
@@ -221,7 +225,7 @@ export default function QuickImportModal({ open, onClose, onApply }: Props) {
                 type="warning"
                 showIcon
                 message={`已存在同名渠道「${preview.existing_channel.name}」`}
-                description="填入表单后会以覆盖方式编辑该渠道，而不是新建。"
+                description="填入表单后会覆盖并启用该渠道；若已归档，保存时会自动取消归档。"
               />
             )}
             {preview.model_error && (

@@ -204,6 +204,40 @@ func TestAnArchivedChannelCannotBeEnabledWithoutUnarchiving(t *testing.T) {
 	}
 }
 
+func TestImportOverwriteUnarchivesAndEnablesChannel(t *testing.T) {
+	h := newHarness(t)
+
+	id := h.createChannel(channelInput{
+		Name: "shelved", Type: "openai", BaseURL: "https://example.invalid", APIKey: "k",
+		Models: []string{"gpt-4o"}, Groups: []string{"default"},
+	})
+	h.archive(id, true)
+
+	var updated model.Channel
+	resp := h.do(http.MethodPut, fmt.Sprintf("/api/admin/channels/%d", id), h.admin,
+		channelInput{
+			Name: "shelved", Type: "openai", BaseURL: "https://example.invalid", APIKey: "k",
+			Status: model.StatusEnabled, Models: []string{"gpt-4o"},
+			Groups: []string{"default"}, Unarchive: true,
+		}, &updated)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("import overwrite update = %d, want 200", resp.StatusCode)
+	}
+	if updated.Archived || updated.Status != model.StatusEnabled {
+		t.Fatalf("overwrite state = archived %t, status %d; want unarchived and enabled",
+			updated.Archived, updated.Status)
+	}
+
+	candidates, err := h.store.Candidates(context.Background(), "default", "gpt-4o", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].ChannelID != id {
+		t.Fatalf("the overwritten channel is not routable: %+v", candidates)
+	}
+}
+
 // A rebuild derives the routing tables from the channel rows, so it has to
 // arrive at the same answer archiving did. Without this it is a way to hand an
 // archived channel its routes back.

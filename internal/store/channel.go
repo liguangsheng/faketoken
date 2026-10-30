@@ -148,7 +148,7 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 	return created, nil
 }
 
-func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Channel, error) {
+func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel, unarchive bool) (*model.Channel, error) {
 	headers, proxy, err := s.sealedSecrets(c.Headers, c.ProxyURL)
 	if err != nil {
 		return nil, err
@@ -169,7 +169,7 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		model.NormaliseEffortMapping(c.ReasoningEffortMapping),
 		c.AllowAttachments, c.LockUserAgent, c.LockedUserAgents,
 		c.KeepaliveEnabled, c.KeepaliveAt, c.KeepaliveTarget,
-		statusMapping(c.StatusCodeMapping)}
+		statusMapping(c.StatusCodeMapping), unarchive}
 	if c.APIKey != "" {
 		enc, err := s.cipher.Encrypt(c.APIKey)
 		if err != nil {
@@ -179,14 +179,13 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		keyClause = fmt.Sprintf("$%d", len(args))
 	}
 
-	// archived in the SET clause reads the row as it was before this statement,
-	// which is what lets an archived channel keep its status pinned: the form
-	// carries a status field, and the listing hides archived rows, so honouring
-	// it here would let an edit send traffic to a channel nobody can see.
-	// Unarchiving is the way to make a channel eligible again.
+	// Archived rows stay disabled during ordinary edits, so the form cannot
+	// make a hidden channel routable. An explicit unarchive request clears the
+	// flag and applies the submitted status in this same transaction.
 	row := tx.QueryRow(ctx, fmt.Sprintf(`UPDATE channels SET
 		name = $2, base_url = $3, auth_style = $4,
-		status = CASE WHEN archived THEN %[1]d::smallint ELSE $5::smallint END,
+		status = CASE WHEN archived AND NOT $30::boolean THEN %[1]d::smallint ELSE $5::smallint END,
+		archived = archived AND NOT $30::boolean,
 		priority = $6, weight = $7,
 		channel_groups = $8, models = $9, model_mapping = $10, headers = $11,
 		timeout_secs = $12, proxy_url = $13, price_ratio = $14, rpm_limit = $15, note = $16,
@@ -199,7 +198,7 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) (*model.Cha
 		-- The form carries status, so saving a channel as disabled abandons its
 		-- keepalive window here just as the listing toggle does. Progress is
 		-- otherwise left alone: saving the form must not reset the counter.
-		keepalive_open = CASE WHEN archived OR $5::smallint <> %[2]d::smallint
+		keepalive_open = CASE WHEN (archived AND NOT $30::boolean) OR $5::smallint <> %[2]d::smallint
 		                     THEN FALSE ELSE keepalive_open END,
 		api_key_enc = %[3]s, updated_at = now()
 		WHERE id = $1 RETURNING %[4]s`,
