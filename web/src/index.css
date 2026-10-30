@@ -921,14 +921,6 @@ a.rank-row:hover .rank-row__name {
 /* On a phone a channel row is read for its name, its switch and its menu; the
    card puts those on the first line and the rest underneath, so nothing has
    to be found by swiping sideways. */
-/* Five stat cards share the row evenly: antd's grid has no 4.8 span. */
-@media (min-width: 1200px) {
-  .dashboard-stats--five > .ant-col {
-    flex: 0 0 20%;
-    max-width: 20%;
-  }
-}
-
 .channels-table--phone .ant-table-thead {
   /* The card has no column headings, and the header's select-all checkbox
      would float above the cards on its own. */

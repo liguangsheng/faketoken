@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Card, Col, Row, Segmented, Skeleton, Spin, Typography } from 'antd'
+import { Button, Card, Col, DatePicker, Row, Segmented, Skeleton, Spin, Typography } from 'antd'
 import {
   ApiOutlined,
   BarChartOutlined,
@@ -9,7 +9,7 @@ import {
   TeamOutlined,
   WalletOutlined,
 } from '@ant-design/icons'
-import dayjs from 'dayjs'
+import dayjs, { type Dayjs } from 'dayjs'
 import { Link, useNavigate } from 'react-router-dom'
 
 import { api, type Stats } from '../api/client'
@@ -31,45 +31,92 @@ import {
 
 const UsageChart = lazy(() => import('../components/UsageChart'))
 
-// Zero represents today; the other values are rolling backend windows.
+// 自定义: whole calendar days from the picker.
+const CUSTOM = -1
+
+// Zero represents today; the other presets are rolling backend windows.
 const RANGES = [
   { value: 0, label: '今日' },
   { value: 1, label: '24 小时' },
   { value: 7, label: '7 天' },
   { value: 30, label: '30 天' },
   { value: 90, label: '90 天' },
+  { value: CUSTOM, label: '自定义' },
 ]
+
+/**
+ * The page's range as instants for the server, and as calendar days for the
+ * heatmap's cards. A preset counts back from now: 7 天 at 15:00 starts at
+ * 15:00 a week ago, and its days are today and the six before. 自定义 is
+ * whole days, cut off at now.
+ */
+function rangeOf(days: number, custom: [Dayjs, Dayjs] | null, now: Dayjs) {
+  const today = now.startOf('day')
+  if (days === CUSTOM) {
+    const [first, last] = custom ?? [today, today]
+    const close = last.endOf('day')
+    return { start: first, end: close.isAfter(now) ? now : close, first, last }
+  }
+  return {
+    start: days === 0 ? today : now.subtract(days, 'day'),
+    end: now,
+    first: today.subtract(Math.max(days - 1, 0), 'day'),
+    last: today,
+  }
+}
+
+// Two days or fewer are read by the hour.
+const hourlyOf = (days: number, custom: [Dayjs, Dayjs] | null) =>
+  days === CUSTOM ? !custom || custom[1].diff(custom[0], 'day') < 2 : days <= 2
 
 export default function Dashboard() {
   const { user, isAdmin } = useAuth()
   const navigate = useNavigate()
   const [days, setDays] = useState(0)
+  // 自定义's first and last day, kept through a preset for coming back to.
+  const [custom, setCustom] = useState<[Dayjs, Dayjs] | null>(null)
+  const [picking, setPicking] = useState(false)
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   // Bumped by the refresh button; the heatmap ignores the range switch.
   const [refreshes, setRefreshes] = useState(0)
   // The window the numbers on screen were counted over, so a ranking row opens
-  // the same calls in the log rather than all of them.
-  const [span, setSpan] = useState<{ start: string; end: string } | null>(null)
+  // the same calls in the log rather than all of them; and its calendar days,
+  // which the heatmap's cards read.
+  const [span, setSpan] = useState<{
+    start: string
+    end: string
+    first: string
+    last: string
+  } | null>(null)
   // Requests race: switching from a slow 90-day query to a fast one must not
   // let the stale answer land last and overwrite the fresh one.
   const requestSeq = useRef(0)
+  const hourly = hourlyOf(days, custom)
 
   const load = useCallback(async () => {
     const seq = ++requestSeq.current
     setLoading(true)
     try {
-      const now = dayjs()
-      const start = days === 0 ? now.startOf('day') : now.subtract(days, 'day')
+      const { start, end, first, last } = rangeOf(days, custom, dayjs())
+      const interval = hourly ? 'hour' : 'day'
+      // A preset past 今日 goes as a day count, which the server counts back.
       const params =
-        days === 0
-          ? { start: start.toISOString(), interval: 'hour' }
-          : { days, interval: days <= 2 ? 'hour' : 'day' }
+        days === CUSTOM
+          ? { start: start.toISOString(), end: end.toISOString(), interval }
+          : days === 0
+            ? { start: start.toISOString(), interval }
+            : { days, interval }
       const result = isAdmin ? await api.admin.stats(params) : await api.stats(params)
       if (seq !== requestSeq.current) return
       setStats(result)
-      setSpan({ start: start.toISOString(), end: now.toISOString() })
+      setSpan({
+        start: start.toISOString(),
+        end: end.toISOString(),
+        first: first.format('YYYY-MM-DD'),
+        last: last.format('YYYY-MM-DD'),
+      })
       setError(null)
     } catch (err) {
       if (seq !== requestSeq.current) return
@@ -77,22 +124,32 @@ export default function Dashboard() {
     } finally {
       if (seq === requestSeq.current) setLoading(false)
     }
-  }, [days, isAdmin])
+  }, [days, custom, hourly, isAdmin])
 
   useEffect(() => {
     void load()
   }, [load])
 
+  // 自定义 opens on the days already on screen, with the picker out to change them.
+  const pickRange = (value: number) => {
+    if (value === CUSTOM && !custom) {
+      const today = dayjs().startOf('day')
+      setCustom(span ? [dayjs(span.first), dayjs(span.last)] : [today, today])
+    }
+    setPicking(value === CUSTOM)
+    setDays(value)
+  }
+
   const series = useMemo<ChartPoint[]>(
     () =>
       (stats?.series ?? []).map((point) => ({
-        label: dayjs(point.bucket).format(days <= 2 ? 'HH:mm' : 'MM-DD'),
-        fullLabel: dayjs(point.bucket).format(days <= 2 ? 'MM-DD HH:mm' : 'YYYY-MM-DD'),
+        label: dayjs(point.bucket).format(hourly ? 'HH:mm' : 'MM-DD'),
+        fullLabel: dayjs(point.bucket).format(hourly ? 'MM-DD HH:mm' : 'YYYY-MM-DD'),
         requests: point.requests,
         errors: point.errors,
         costUsd: toUSD(point.cost),
       })),
-    [stats, days],
+    [stats, hourly],
   )
 
   const summary = stats?.summary
@@ -112,14 +169,49 @@ export default function Dashboard() {
   // row it leaves behind would be a hole in the grid. Exactly one: a count
   // that failed to arrive is not a single-user deployment.
   const singleUser = isAdmin && stats?.user_count === 1
-  // Five cards do not divide antd's 24-column grid, and its grid only ships
-  // integer spans, so the fifth card takes its width from the stylesheet.
+  // Money and accounts, in even shares: two cards for an account, four for an
+  // administrator, three when the user count is left out.
   const statSpan = isAdmin
     ? singleUser
-      ? { xs: 12, sm: 12, md: 8 }
-      : { xs: 12, sm: 12, md: 8, xl: 4 }
-    : { xs: 12, md: 12, xl: 6 }
+      ? { xs: 12, md: 8 }
+      : { xs: 12, xl: 6 }
+    : { xs: 12 }
   const quotaEmpty = (user?.quota ?? 0) <= 0
+
+  // Usage opens the row above the heatmap, beside the days it is made of.
+  const usageCards = [
+    <StatCard
+      key="requests"
+      label="调用次数"
+      value={formatNumber(requests)}
+      hint={
+        errors ? (
+          <Typography.Text type="danger" style={{ fontSize: 12 }}>
+            失败 {formatNumber(errors)} 次 · 成功率 {formatPercent(successRate)}
+          </Typography.Text>
+        ) : !requests ? (
+          '暂无调用'
+        ) : cancelled ? (
+          `没有失败 · 中断 ${formatNumber(cancelled)} 次`
+        ) : (
+          '全部成功'
+        )
+      }
+      icon={<ThunderboltOutlined />}
+      tone={errors ? 'danger' : 'success'}
+      loading={firstLoad}
+    />,
+    <StatCard
+      key="tokens"
+      label="消耗 Token"
+      value={formatCompact(tokens)}
+      hint={requests ? `平均每次 ${formatCompact(tokens / requests)}` : '暂无调用'}
+      icon={<BarChartOutlined />}
+      tone="neutral"
+      tooltip={formatNumber(tokens)}
+      loading={firstLoad}
+    />,
+  ]
 
   // /admin/logs?q=gpt-4o&start=…&end=…
   const logsLink = (path: string, filter: Record<string, string>) => {
@@ -142,9 +234,26 @@ export default function Dashboard() {
           <>
             <Segmented
               value={days}
-              onChange={(value) => setDays(Number(value))}
+              onChange={(value) => pickRange(Number(value))}
               options={RANGES}
             />
+            {days === CUSTOM && (
+              <DatePicker.RangePicker
+                value={custom}
+                open={picking}
+                onOpenChange={setPicking}
+                allowClear={false}
+                // A year back at most, which the heatmap's cards still hold.
+                disabledDate={(date) =>
+                  date.isAfter(dayjs(), 'day') ||
+                  date.isBefore(dayjs().subtract(1, 'year'), 'day')
+                }
+                onChange={(dates) => {
+                  const [first, last] = dates ?? []
+                  if (first && last) setCustom([first.startOf('day'), last.startOf('day')])
+                }}
+              />
+            )}
             <Button
               icon={<ReloadOutlined />}
               loading={loading}
@@ -162,7 +271,7 @@ export default function Dashboard() {
       {/* Range switches keep the old numbers on screen; the spinner says a new
           answer is on its way. delay skips it entirely on fast responses. */}
       <Spin spinning={loading && Boolean(stats)} delay={200}>
-        <Row gutter={[12, 12]} className={singleUser ? 'dashboard-stats--five' : undefined}>
+        <Row gutter={[12, 12]}>
           <Col {...statSpan}>
             <StatCard
               label={isAdmin ? '我的余额' : '账户余额'}
@@ -192,39 +301,6 @@ export default function Dashboard() {
               loading={firstLoad}
             />
           </Col>
-          <Col {...statSpan}>
-            <StatCard
-              label="调用次数"
-              value={formatNumber(requests)}
-              hint={
-                errors ? (
-                  <Typography.Text type="danger" style={{ fontSize: 12 }}>
-                    失败 {formatNumber(errors)} 次 · 成功率 {formatPercent(successRate)}
-                  </Typography.Text>
-                ) : !requests ? (
-                  '暂无调用'
-                ) : cancelled ? (
-                  `没有失败 · 中断 ${formatNumber(cancelled)} 次`
-                ) : (
-                  '全部成功'
-                )
-              }
-              icon={<ThunderboltOutlined />}
-              tone={errors ? 'danger' : 'success'}
-              loading={firstLoad}
-            />
-          </Col>
-          <Col {...statSpan}>
-            <StatCard
-              label="消耗 Token"
-              value={formatCompact(tokens)}
-              hint={requests ? `平均每次 ${formatCompact(tokens / requests)}` : '暂无调用'}
-              icon={<BarChartOutlined />}
-              tone="neutral"
-              tooltip={formatNumber(tokens)}
-              loading={firstLoad}
-            />
-          </Col>
           {isAdmin && !singleUser && (
             <Col {...statSpan}>
               <StatCard
@@ -251,13 +327,15 @@ export default function Dashboard() {
           )}
         </Row>
 
+        <UsageHeatmap admin={isAdmin} version={refreshes} period={span} lead={usageCards} />
+
         <Card
           title="用量趋势"
           style={{ marginTop: 12 }}
           loading={firstLoad}
           extra={
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {days <= 2 ? '按小时聚合' : '按天聚合'}
+              {hourly ? '按小时聚合' : '按天聚合'}
             </Typography.Text>
           }
         >
@@ -304,8 +382,6 @@ export default function Dashboard() {
             />
           )}
         </Card>
-
-        <UsageHeatmap admin={isAdmin} version={refreshes} />
 
         <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
           {/* Three cards a row for an administrator, two when the user

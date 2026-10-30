@@ -127,7 +127,9 @@ export const dark: Palette = {
   dangerSoft: 'rgba(248, 113, 113, 0.16)',
   accent: '#38bdf8',
   // Reversed on dark: more usage is lighter, further from the surface.
-  heat: ['#1d212b', '#4840c4', '#6763ea', '#8b87f5', '#bcbafb'],
+  // Chroma rises too and tops out at brand: indigo any lighter only pales
+  // (#bcbafb), and a pale top step reads as less, not more.
+  heat: ['#1d212b', '#474775', '#5e5ca3', '#7672d0', '#8f8bfa'],
   headerBg: 'rgba(20, 23, 31, 0.82)',
   siderBg: '#101319',
   triggerBg: '#1a1e28',
